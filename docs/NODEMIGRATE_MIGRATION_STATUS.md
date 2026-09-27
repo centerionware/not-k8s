@@ -1131,3 +1131,10 @@ The integration workflow currently defaults to K3s `v1.35.0+k3s1`, Cilium
 the Kubernetes stable minor at dispatch time. Override the pinned values with
 the workflow environment when testing a different compatibility combination,
 and record the resolved versions in the run log.
+
+
+## Current follow-up (2026-09-27)
+
+Run [36300720876](https://github.com/centerionware/not-k8s/actions/runs/36300720876) at SHA `958f75fd85c7a8145765432a6f80590f7995c9b9` failed both the K3s+Cilium and upstream Kubernetes+Cilium lanes. Docker five-node preflight and utility/runtime builds passed. K3s never reached its nodestore workload checkpoint because API discovery continued to omit `nodes.metrics.k8s.io` and `pods.metrics.k8s.io` after the 60-second inventory retry, despite APIService `Available=True`; upstream reached its checkpoint but strict source-object parity failed. Neither lane completed reverse migration. Full logs are under `/tmp/nodemigrate-36300720876/`.
+
+The current branch follow-up makes APIService resolution and discovery bypass the informer cache and read nodestore state directly. This tests the stale-cache explanation without changing availability policy. A focused `nodeapiserver` quick-check and a new dedicated migration run are pending; metrics-server's unknown-CA scrape errors and the CSI volume-handle/catalog mismatch remain unresolved. No PV/PVC/backing-volume deletion was observed.

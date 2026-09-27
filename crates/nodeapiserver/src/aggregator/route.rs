@@ -38,14 +38,16 @@ pub enum Error {
 /// doesn't attempt to detect, same "not our job to police" posture
 /// `apiextensions::registry::resolve_in`'s own doc comment already takes
 /// for a CRD naming collision.
-pub async fn resolve(storage: &mut StorageClient, group: &str, version: &str, cache_registry: Option<&crate::cacher::CacheRegistry>) -> Result<Option<Value>, Error> {
+pub async fn resolve(storage: &mut StorageClient, group: &str, version: &str) -> Result<Option<Value>, Error> {
     if group.is_empty() {
         // The core group is never aggregated -- real upstream's own rule,
         // and this build has no `APIService` bootstrap for it anyway.
         return Ok(None);
     }
-    let cache = cache_registry.and_then(|registry| registry.get("apiregistration.k8s.io", "v1", "apiservices"));
-    let list = match rest::list(storage, cache.as_ref(), "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
+    // APIService routing decisions use current stored state rather than a
+    // potentially behind informer snapshot. A stale registration can route
+    // requests to an old backend or suppress a newly registered one.
+    let list = match rest::list(storage, None, "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
         rest::ListOutcome::Found(list) => list,
         rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken => return Ok(None),
     };
@@ -69,16 +71,17 @@ pub async fn resolve(storage: &mut StorageClient, group: &str, version: &str, ca
 /// backend (its Service deleted, no ready endpoints, ...) is correctly
 /// left out of discovery rather than advertised and then failing every
 /// real request — matching real upstream's own "only an `Available`
-/// `APIService`'s group-version appears in discovery" posture. Prefers
-/// `aggregator::reconcile`'s own already-computed condition when one
-/// exists (`availability::cached_available` — zero extra I/O), falling
-/// back to a fresh `preflight_check` (one `Service` GET + one
-/// `EndpointSlice` LIST, bounded by the same small real-world
-/// cardinality `resolve`'s own doc comment already assumes) only for an
-/// `APIService` the reconciliation loop hasn't reached yet.
-pub async fn discoverable_group_versions(storage: &mut StorageClient, cache_registry: Option<&crate::cacher::CacheRegistry>) -> Result<Vec<(String, String)>, Error> {
-    let cache = cache_registry.and_then(|registry| registry.get("apiregistration.k8s.io", "v1", "apiservices"));
-    let list = match rest::list(storage, cache.as_ref(), "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
+/// `APIService`'s group-version appears in discovery" posture. Reads the
+/// small APIService collection directly from storage so a lagging reflector
+/// cannot hide a newly available API group or keep a removed registration
+/// discoverable. Uses the reconciled Available condition when present,
+/// falling back to fresh Service/EndpointSlice preflight only before the
+/// availability controller has written one.
+pub async fn discoverable_group_versions(storage: &mut StorageClient) -> Result<Vec<(String, String)>, Error> {
+    // APIService objects are few, and their status gates discovery. Read the
+    // current nodestore snapshot instead of trusting an informer that may
+    // lag a status transition for the full discovery retry window.
+    let list = match rest::list(storage, None, "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
         rest::ListOutcome::Found(list) => list,
         rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken => return Ok(Vec::new()),
     };

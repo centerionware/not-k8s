@@ -789,3 +789,10 @@ in the `v0.8.1` runtime and the standalone utility artifact must carry that
 same version. This tracker does not authorize publication or merging.
 
 See the [CI run record](NODEMIGRATE_CI_STATUS.md), [migration status](NODEMIGRATE_MIGRATION_STATUS.md), and [release status](NODEMIGRATE_RELEASE_STATUS.md).
+
+
+## Follow-up: aggregated API discovery cache
+
+The failure in [run 36300720876](https://github.com/centerionware/not-k8s/actions/runs/36300720876) remained after the fixture waited 60 seconds: `nodes.metrics.k8s.io` and `pods.metrics.k8s.io` were absent although the metrics APIService was reported `Available=True` and metrics-server added `metrics.k8s.io/v1beta1`. This was consistent with, but did not by itself prove, a stale APIService watch-cache snapshot in nodeapiserver.
+
+The branch now makes APIService route resolution and aggregated group discovery list APIService objects directly from nodestore. These objects are few, while their status controls whether groups appear in discovery; using the reflector cache could preserve stale registration or availability state. Existing discovery still honors a current `Available=False` condition and fresh-preflights an APIService without a condition. A `nodeapiserver` quick-check and a dedicated migration rerun are still required to verify this fix. The metrics-server-to-nodelet certificate trust failure remains a separate open issue.

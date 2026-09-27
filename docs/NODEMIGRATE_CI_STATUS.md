@@ -1745,3 +1745,10 @@ For every new result, record the commit SHA, workflow run URL, lane, resolved
 Kubernetes/K3s/Cilium/add-on versions, and pass/fail state at each checkpoint.
 Keep failures and skipped checks visible rather than replacing them with a
 later green run.
+
+
+## 2026-09-27 follow-up
+
+| SHA | Workflow | Result | Evidence |
+| --- | --- | --- | --- |
+| Worktree after `958f75fd` | APIService discovery freshness | Changed `nodeapiserver` route lookup and discovery to read the small APIService set directly from nodestore instead of its informer cache. This addresses the stale-cache hypothesis from run `36300720876`; quick-check and migration rerun are pending. No standard build or general e2e was dispatched. | Source diff in `crates/nodeapiserver/src/aggregator/route.rs`; regression coverage is not yet runtime-verified. |
