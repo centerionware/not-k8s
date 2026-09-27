@@ -15,7 +15,9 @@ is `/tmp/nodemigrate-36343008296-k3s/nodemigrate-k3s.log`; it ends immediately
 after `waiting for retained destination API readiness`, so the underlying API
 failure is not known. A timeout and per-probe error logging were added;
 focused `nodemigrate` and `nodebootstrap` tests pass at the fix SHA `2d98e05e`
-in [run 36350477684](https://github.com/centerionware/not-k8s/actions/runs/36350477684).
+in [run 36350477684](https://github.com/centerionware/not-k8s/actions/runs/36350477684);
+the PR's targeted `nodemigrate` test also passed at SHA `c9007b9c` in
+[run 36350708110](https://github.com/centerionware/not-k8s/actions/runs/36350708110).
 The probe failure cause and runtime fix remain unverified. The paired upstream
 lane failed and is not evidence for the current branch.
 

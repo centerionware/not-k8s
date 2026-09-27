@@ -26,6 +26,8 @@ separate living documents below.
 - At code SHA `2d98e05edc709b7aeec145d652b29aa1fe0137a9`, focused
   `nodemigrate` and `nodebootstrap` tests passed in
   [36350477684](https://github.com/centerionware/not-k8s/actions/runs/36350477684).
+  The PR's targeted `nodemigrate` test passed at SHA `c9007b9c` in
+  [36350708110](https://github.com/centerionware/not-k8s/actions/runs/36350708110).
   The fix bounds each API readiness probe to ten seconds and promotes a newly
   joined control-plane member after Node readiness. Run
   [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
