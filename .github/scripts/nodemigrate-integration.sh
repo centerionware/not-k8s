@@ -687,6 +687,11 @@ install_containerd() {
 
 install_source() {
     install_containerd
+    local cilium_kpr="${NODEMIGRATE_CILIUM_KPR:-false}"
+    [[ "$cilium_kpr" == false || "$cilium_kpr" == true ]] || {
+        echo "NODEMIGRATE_CILIUM_KPR must be false or true, got '$cilium_kpr'" >&2
+        return 2
+    }
     if [[ "$SOURCE_DIST" == k3s ]]; then
         apt-get install -y -qq containernetworking-plugins
         local cni_bridge cni_plugin_dir
@@ -703,9 +708,13 @@ install_source() {
             done
         fi
         local k3s_version="${K3S_VERSION:-v1.35.0+k3s1}"
+        local kube_proxy_flag=""
+        if [[ "$cilium_kpr" == true ]]; then
+            kube_proxy_flag="--disable-kube-proxy"
+        fi
         curl -sfL https://get.k3s.io -o /tmp/install-k3s.sh
         INSTALL_K3S_VERSION="$k3s_version" \
-        INSTALL_K3S_EXEC='server --flannel-backend=none --disable-network-policy --disable=traefik --cluster-cidr=10.42.0.0/16 --write-kubeconfig-mode=644' \
+        INSTALL_K3S_EXEC="server $kube_proxy_flag --flannel-backend=none --disable-network-policy --disable=traefik --cluster-cidr=10.42.0.0/16 --write-kubeconfig-mode=644" \
             sh /tmp/install-k3s.sh
         SOURCE_KUBECONFIG=/etc/rancher/k3s/k3s.yaml
     else
@@ -733,11 +742,16 @@ install_source() {
         apt-mark hold kubelet kubeadm kubectl
         swapoff -a
         sed -i.bak '/\sswap\s/s/^/#/' /etc/fstab
+        local -a kubeadm_proxy_args=()
+        if [[ "$cilium_kpr" == true ]]; then
+            kubeadm_proxy_args+=(--skip-phases=addon/kube-proxy)
+        fi
         kubeadm init \
             --kubernetes-version "$stable" \
             --pod-network-cidr=10.42.0.0/16 \
             --service-cidr=10.96.0.0/12 \
-            --cri-socket=unix:///run/containerd/containerd.sock
+            --cri-socket=unix:///run/containerd/containerd.sock \
+            "${kubeadm_proxy_args[@]}"
         SOURCE_KUBECONFIG=/etc/kubernetes/admin.conf
         export KUBECONFIG="$SOURCE_KUBECONFIG"
         kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
@@ -751,6 +765,7 @@ install_source() {
 
 install_cilium() {
     local version="${CILIUM_VERSION:-1.20.2}"
+    local kube_proxy_replacement="${NODEMIGRATE_CILIUM_KPR:-false}"
     local cni_conf_path=/etc/cni/net.d
     local cni_bin_path=/opt/cni/bin
     local api_host="${NODEMIGRATE_CILIUM_API_HOST:-}"
@@ -773,7 +788,7 @@ install_cilium() {
         --set ipam.mode=kubernetes \
         --set cni.confPath="$cni_conf_path" \
         --set cni.binPath="$cni_bin_path" \
-        --set kubeProxyReplacement=false \
+        --set kubeProxyReplacement="$kube_proxy_replacement" \
         --set operator.replicas=1 \
         --set k8sServiceHost="$api_host" \
         --set k8sServicePort=6443 \
@@ -781,6 +796,12 @@ install_cilium() {
     kubectl rollout status daemonset/cilium -n kube-system --timeout=10m
     kubectl rollout status deployment/cilium-operator -n kube-system --timeout=10m
     kubectl wait --for=condition=Ready node --all --timeout=5m
+    if [[ "$kube_proxy_replacement" == true ]] \
+        && kubectl get daemonset kube-proxy -n kube-system >/dev/null 2>&1; then
+        echo "Cilium KPR is enabled but kube-proxy DaemonSet is still installed" >&2
+        return 1
+    fi
+    echo "Cilium kube-proxy replacement=$kube_proxy_replacement"
 }
 
 install_hostpath_driver() {
@@ -2491,8 +2512,9 @@ YAML
         return 1
     }
     helm get manifest cilium -n kube-system | grep '^kind: DaemonSet$' >/dev/null
-    helm get values cilium -n kube-system -o json | jq -e \
-        '.ipam.mode == "kubernetes" and .kubeProxyReplacement == false and .cni.confPath == "/etc/cni/net.d"' >/dev/null
+    local expected_kpr="${NODEMIGRATE_CILIUM_KPR:-false}"
+    helm get values cilium -n kube-system -o json | jq -e --argjson kpr "$expected_kpr" \
+        '.ipam.mode == "kubernetes" and .kubeProxyReplacement == $kpr and .cni.confPath == "/etc/cni/net.d"' >/dev/null
     helm history cilium -n kube-system -o json | jq -e 'any(.[]; .status == "deployed")' >/dev/null
     helm upgrade cilium cilium/cilium -n kube-system --version "$cilium_chart_version" \
         --reuse-values --dry-run=server --hide-secret >/dev/null
