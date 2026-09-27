@@ -63,6 +63,14 @@ another branch-runtime migration are pending. No return migration or parity
 comparison passed. Full artifacts:
 `/tmp/nodemigrate-36288813404-artifacts/nodemigrate-{k3s,kubernetes}-36288813404/`.
 
+On `0d519f85a540c59edb032b7724826399101ba720`, focused `nodecontroller`
+quick-check [36290302028](https://github.com/centerionware/not-k8s/actions/runs/36290302028)
+passed after copying the claimRef identity before the PV update. The immediately
+preceding migration run [36290028538](https://github.com/centerionware/not-k8s/actions/runs/36290028538)
+used the earlier `42d42cfb` SHA: five-node Docker preflight passed, but both
+runtime build jobs failed to compile, so neither lane performed migration or
+changed a PV. Rerun the migration workflow on the corrected SHA is pending.
+
 Release-backed migration run [36283329273](https://github.com/centerionware/not-k8s/actions/runs/36283329273)
 at SHA `786e95577686f1fd5ed08a94f76ade48861314b4` fetched the exact regular
 v0.8.0 runtime. The five-node Docker/kubeadm/Cilium preflight passed in 7m32s.

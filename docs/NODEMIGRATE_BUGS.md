@@ -44,7 +44,11 @@ Confirmed defect and branch work:
   migration path must preserve source PVs, PVCs, backing storage, and data.
   The first quick-check of this ordering fix failed compilation because the
   claimRef borrow crossed the PV update; its identity fields are now copied
-  before mutation. Targeted CI and runtime verification are pending. Artifacts:
+  before mutation, and focused `nodecontroller` quick-check passed at
+  [36290302028](https://github.com/centerionware/not-k8s/actions/runs/36290302028).
+  Runtime verification is pending. Migration preserves the source PV/PVC/data;
+  the reclaim check deletes only the explicitly removed temporary claim's PV.
+  Artifacts:
   `/tmp/nodemigrate-36288813404-artifacts/nodemigrate-{k3s,kubernetes}-36288813404/`.
 
 ## Release-backed run 36279843865
