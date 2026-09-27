@@ -29,13 +29,17 @@ lane has passed a full round trip, and no PV/PVC/backing-volume deletion was
 reported. Full lane evidence is recorded in the [CI status](NODEMIGRATE_CI_STATUS.md).
 
 The migration fixture installs Cilium 1.20.2 with
-`kubeProxyReplacement=false`. That lane therefore expects kube-proxy on the
-upstream source/return cluster; it tests Cilium as the CNI, not Cilium's eBPF
-Service replacement mode. The `kube-proxy` watcher output is diagnostic and an
-empty result is valid for a Cilium KPR cluster. Add explicit KPR-enabled
-coverage and verify that kube-proxy and not-k8s `nodeproxy` do not compete with
-Cilium for Service routing. Cilium's Envoy L7 proxy remains a separate
-component. See the expanded requirement in [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md).
+`kubeProxyReplacement=false`. Its upstream stages therefore use kube-proxy;
+the `kube-proxy` watcher output is diagnostic, and an empty result is valid
+for a Cilium KPR cluster. At `7c1c0b1b`, joined-worker bootstrap reads
+`kube-system/cilium-config` and passes `--proxy=none` when Cilium KPR is
+enabled; otherwise nodeproxy remains the Service proxy. Plan output and logs
+report that choice. The focused nodemigrate quick-check
+[36342042535](https://github.com/centerionware/not-k8s/actions/runs/36342042535)
+passed. The current Cilium migration lanes still exercise only KPR disabled;
+runtime coverage for KPR enabled and per-node Cilium overrides remains open.
+Cilium's Envoy L7 proxy remains a separate component. See the expanded
+requirement in [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md).
 
 The staged reverse control-plane export change is at `3f807ba8`. Its first
 crate run, [36340951765](https://github.com/centerionware/not-k8s/actions/runs/36340951765),
