@@ -15,6 +15,21 @@ new fixes.
 
 ## Most recent evidence
 
+Run [36299240279](https://github.com/centerionware/not-k8s/actions/runs/36299240279)
+at SHA `20648debff0f7f338c3e37303bbaf367ffa449a4` completed with a passed
+five-node Docker/kubeadm/Cilium preflight and both utility/runtime builds;
+both migration lanes failed during runtime checks. K3s passed its
+nodestore-stage workloads (including Deployment scale and StatefulSet data),
+then failed because its discovered-resource inventory lacked `nodes.metrics.k8s.io`
+and `pods.metrics.k8s.io`. The APIService was Available, but metrics-server
+logged an unknown-CA error scraping nodelet. The hostPath CSI driver registered
+but reported a migrated volume handle missing from its volume list. Upstream
+passed stage behavior and resource exposure, then failed strict same-identity
+object parity across CoreDNS, workload replica fields, Leases, system RBAC and
+PriorityClasses, CSI, Cilium, and other listed objects. Neither lane reached
+the return leg. Full logs were downloaded once to
+`/tmp/nodemigrate-36299240279/`.
+
 The destination aggregated-API trust fix at SHA
 `d2eebede56084347cbc8eeba03fb12336bed7e6e` passed the targeted
 `quick-check` for `nodebootstrap,nodemigrate` in
@@ -44,11 +59,11 @@ trip. Full logs:
 `/tmp/nodemigrate-36297966919-k3s.log` and
 `/tmp/nodemigrate-36297966919-kubernetes.log`.
 
-The harness now prints Deployment, ReplicaSet, Pod, and event state when its
+The harness now prints Deployment, ReplicaSet, Pod, and event state if its
 scale assertion fails. That change is in
 [36299240279](https://github.com/centerionware/not-k8s/actions/runs/36299240279)
-at SHA `20648deb`; Docker preflight passed and both migration lanes are still
-running. Nodelet now logs the full error chain for CSI volume mount failures;
+at SHA `20648deb`; in this run the scale assertion passed. Nodelet now logs the
+full error chain for CSI volume mount failures;
 the component check passed at SHA `aa96d6b5` in
 [36299331009](https://github.com/centerionware/not-k8s/actions/runs/36299331009).
 The active runtime run predates that nodelet change, so CSI status diagnostics

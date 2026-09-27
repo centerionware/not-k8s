@@ -18,7 +18,49 @@ Last updated: 2026-09-27
   source, nodestore, and returned-source checkpoints. Source review confirms
   the gap; no runtime token-Secret round trip currently verifies a fix.
 
-## Branch-runtime findings from run 36297966919
+## Latest runtime findings from run 36299240279
+
+Run [36299240279](https://github.com/centerionware/not-k8s/actions/runs/36299240279)
+at SHA `20648debff0f7f338c3e37303bbaf367ffa449a4` passed the isolated
+five-node Docker/kubeadm/Cilium preflight and both builds. K3s passed the
+nodestore-stage workload checks, including Deployment scaling and StatefulSet
+ordinal-0 data, then failed listable API-resource parity. Upstream passed the
+same-stage workload/resource checks but failed strict source-object parity.
+Neither lane reached return migration. The run did not delete a PV, PVC, or
+backing volume.
+
+- **`nodelet` / `nodebootstrap`: K3s metrics resource availability is still
+  broken after cutover.** `nodes.metrics.k8s.io` and `pods.metrics.k8s.io` were
+  absent from destination discovery, causing the source-discovered inventory
+  check to fail. The APIService condition was `Available=True` with `all checks
+  passed`, while metrics-server repeatedly logged an unknown-CA error scraping
+  nodelet's `:10250/metrics/resource`. The relationship between failed scrapes
+  and missing discovery is not yet proven. Nodelet currently issues a
+  self-signed serving certificate. Fix and verify both discovery and returned
+  node metrics without weakening TLS validation.
+- **CSI provider state / migration fixture: a migrated hostPath CSI volume
+  handle was missing from the driver's volume catalog.** Nodelet dynamically
+  registered `hostpath.csi.k8s.io`; the driver then returned
+  `volume id ... does not exist in the volumes list` for
+  `state-migration-stateful-0`. The same run's StatefulSet ordinal-0 data
+  assertion passed, so this failure is not evidence that the PV was deleted or
+  that all fixture data was lost. Establish which mounted CSI PV generated the
+  failed request, prove its provider data directory survives source shutdown
+  and destination redeployment, and verify the same handle can be staged and
+  read at both stages.
+- **Deployment `/scale` regression is not reproduced.** The earlier run
+  36297966919 failed its two-available-replicas assertion, but the same
+  assertion passed in 36299240279 without a controller behavior change. Keep
+  this as an unresolved intermittent result until the scale check passes
+  repeatedly and the expected replica state is observed.
+- **Upstream same-object parity remains incomplete.** The strict comparator
+  still reports CoreDNS spec changes, ReplicaSet replicas, CSI driver and
+  StatefulSet fields, CiliumNode data, Lease state, system RBAC/PriorityClass
+  fields, and other paths in the saved log. Preserve the source behavior and
+  state or regenerate target-owned fields explicitly; no blanket field
+  normalization is justified.
+
+## Previous branch-runtime findings from run 36297966919
 
 Run [36297966919](https://github.com/centerionware/not-k8s/actions/runs/36297966919)
 at SHA `d2eebede56084347cbc8eeba03fb12336bed7e6e` built the migration utility
@@ -33,18 +75,21 @@ completed forward migration but failed before return migration.
   path but do not identify why later staging failed; the run's final failure
   diagnostics do not include the error chain from `NodeStageVolume`. The
   driver endpoint therefore was eventually discovered, and the remaining
-  storage failure is unresolved. Add the full CSI status/error chain to
-  nodelet logs and verify the same bound PVC mounts and reads its original
-  data at every checkpoint. This live finding is not fixed.
+  storage failure is unresolved. Nodelet now includes the complete error chain
+  in its volume-mount warning (commit `aa96d6b5`); targeted `nodelet` quick
+  check [36299331009](https://github.com/centerionware/not-k8s/actions/runs/36299331009)
+  passed, but the runtime run at `20648deb` predates this logging change.
+  Verify the same bound PVC mounts and reads its original data at every
+  checkpoint before treating the CSI issue as fixed.
 - **`nodecontroller` / migration harness: Deployment `/scale` check failed at the K3s target
   checkpoint.** The target accepted `kubectl scale --replicas=2` and the
   fixture's rollout command returned success, but its follow-up assertion did
   not observe both requested replicas as available. The current failure
   diagnostic did not print Deployment/ReplicaSet state, so the exact
-  controller state transition is not yet established. The integration script
-  now emits Deployment, ReplicaSet, Pod, and event state on this failure; the
-  change is not yet runtime-verified. Use that evidence to identify and fix the
-  owning reconciliation behavior.
+  controller state transition was not established in that run. The integration
+  script now emits Deployment, ReplicaSet, Pod, and event state on this failure;
+  the assertion passed in run 36299240279 without a controller behavior change.
+  Treat the earlier failure as intermittent until repeated target runs pass.
 - **`nodelet` / `nodebootstrap`: metrics-server cannot verify the target
   kubelet serving certificate.** Regenerating the aggregated-API trust bundle
   worked: the K3s `v1beta1.metrics.k8s.io` APIService reports `Available=True`

@@ -9,6 +9,25 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration result
 
+Run [36299240279](https://github.com/centerionware/not-k8s/actions/runs/36299240279)
+at SHA `20648debff0f7f338c3e37303bbaf367ffa449a4` passed the five-node
+Docker/kubeadm/Cilium preflight and both utility/runtime builds. In K3s, the
+source and nodestore workload checks passed, including Deployment scale and
+StatefulSet ordinal-0 data. The target then failed source-discovered API
+inventory because `nodes.metrics.k8s.io` and `pods.metrics.k8s.io` were
+missing. The metrics APIService reported Available, while metrics-server
+logged `x509: certificate signed by unknown authority` scraping nodelet; the
+precise link between discovery and scrape failure still needs confirmation.
+CSI also registered dynamically but the hostPath driver reported a migrated
+volume handle missing from its volumes list. Neither lane reached return
+migration. Upstream passed its stage behavior/resource checks, then strict
+source-object parity found changed fields in CoreDNS, ReplicaSets,
+StatefulSets, Leases, RBAC, PriorityClasses, CSINode, CSIDriver, and CiliumNode.
+These remain failures; no normalization was added. Full logs:
+`/tmp/nodemigrate-36299240279/nodemigrate-k3s-36299240279/nodemigrate-k3s.log`
+and
+`/tmp/nodemigrate-36299240279/nodemigrate-kubernetes-36299240279/nodemigrate-kubernetes.log`.
+
 Run [36297966919](https://github.com/centerionware/not-k8s/actions/runs/36297966919)
 at SHA `d2eebede56084347cbc8eeba03fb12336bed7e6e` passed the Docker
 five-node kubeadm/Cilium preflight and built both `nodemigrate` and the branch
