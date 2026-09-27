@@ -1751,4 +1751,4 @@ later green run.
 
 | SHA | Workflow | Result | Evidence |
 | --- | --- | --- | --- |
-| Worktree after `958f75fd` | APIService discovery freshness | Changed `nodeapiserver` route lookup and discovery to read the small APIService set directly from nodestore instead of its informer cache. This addresses the stale-cache hypothesis from run `36300720876`; quick-check and migration rerun are pending. No standard build or general e2e was dispatched. | Source diff in `crates/nodeapiserver/src/aggregator/route.rs`; regression coverage is not yet runtime-verified. |
+| `f8ff6a93b719453df806ee366d5d6403829d6bb8` | APIService freshness quick-check | Passed focused `nodeapiserver` quick-check. The route lookup and discovery read the small APIService set directly from nodestore rather than the informer cache. No standard build.yml or general e2e was dispatched. | [Run 36301964871](https://github.com/centerionware/not-k8s/actions/runs/36301964871); migration run [36301989587](https://github.com/centerionware/not-k8s/actions/runs/36301989587) is still running against this SHA. |
