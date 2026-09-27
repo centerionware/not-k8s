@@ -91,8 +91,8 @@ pub async fn discoverable_group_versions(storage: &mut StorageClient) -> Result<
     let mut out = Vec::new();
     for api_service in candidates {
         let Some(service_ref) = api_service.pointer("/spec/service") else { continue };
-        let Some(group) = api_service.pointer("/spec/group").and_then(Value::as_str) else { continue };
-        let Some(version) = api_service.pointer("/spec/version").and_then(Value::as_str) else { continue };
+        let Some(group) = api_service.pointer("/spec/group").and_then(Value::as_str).map(str::to_owned) else { continue };
+        let Some(version) = api_service.pointer("/spec/version").and_then(Value::as_str).map(str::to_owned) else { continue };
         // `aggregator::reconcile`'s own already-computed condition, when
         // one exists, answers this without any I/O at all -- real
         // correctness is unaffected either way (`cached_available`'s own
@@ -101,7 +101,7 @@ pub async fn discoverable_group_versions(storage: &mut StorageClient) -> Result<
         // `APIService` the reconciliation loop hasn't reached yet).
         if let Some(available) = availability::cached_available(&api_service) {
             if available {
-                out.push((group.to_string(), version.to_string()));
+                out.push((group.clone(), version.clone()));
             }
             continue;
         }
@@ -119,7 +119,7 @@ pub async fn discoverable_group_versions(storage: &mut StorageClient) -> Result<
             rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken => Vec::new(),
         };
         if availability::preflight_check(namespace.as_str(), name.as_str(), port, service.as_ref(), &endpoint_slices).is_ok() {
-            out.push((group.to_string(), version.to_string()));
+            out.push((group.clone(), version.clone()));
         }
     }
     Ok(out)
@@ -136,7 +136,9 @@ pub async fn fetch_discovery_resource_lists(
 ) -> Vec<(String, String, Value)> {
     let mut results = Vec::new();
     for (group, version) in group_versions {
-        let api_service = match resolve(storage, group, version).await {
+        let group = group.clone();
+        let version = version.clone();
+        let api_service = match resolve(storage, &group, &version).await {
             Ok(Some(api_service)) => api_service,
             Ok(None) => continue,
             Err(error) => {
@@ -231,7 +233,7 @@ pub async fn fetch_discovery_resource_lists(
             tracing::warn!(%group, %version, "aggregated discovery: backend response is not an APIResourceList");
             continue;
         }
-        results.push((group.clone(), version.clone(), resource_list));
+        results.push((group, version, resource_list));
     }
     results
 }
