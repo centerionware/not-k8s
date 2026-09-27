@@ -50,8 +50,11 @@ Last updated: 2026-09-27
   [36311005893](https://github.com/centerionware/not-k8s/actions/runs/36311005893)
   passed at SHA `42162ef2`. Fresh branch-runtime migration
   [36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956)
-  is running. The earlier run's source PVC/PV and payload checks passed; its
-  nodestore payload checks did not run after this earlier assertion failed.
+  confirmed current-Node ownership and passed source and nodestore PVC/PV
+  binding and StatefulSet payload checks in both lanes. Both then failed strict
+  source-object parity at nodestore, so neither reached return migration. The
+  earlier run's source PVC/PV and payload checks passed; its nodestore payload
+  checks did not run after the earlier owner-reference assertion failed.
   Upstream run [36310603619](https://github.com/centerionware/not-k8s/actions/runs/36310603619)
   at SHA `1dc1c2db` reproduced the failure: it reached the nodestore
   checkpoint with the hostPath CSI driver registered, but the CSINode still

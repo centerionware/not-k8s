@@ -16,19 +16,22 @@ new fixes.
 At SHA `42162ef20afca2e4b4f616cc1d83fbd05071a9ae`, focused `nodelet`
 quick-check [36311005893](https://github.com/centerionware/not-k8s/actions/runs/36311005893)
 passed. Migration run [36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956)
-passed its five-node Docker preflight; its upstream lane has started migration
-and its K3s lane is still building. Earlier branch-runtime run
+passed its five-node Docker preflight and both migration lanes passed the
+source and nodestore PV/PVC binding and StatefulSet payload checks. Both then
+failed strict source-object parity at nodestore; neither ran the return
+migration. The successful storage checks confirm that migration did not delete
+the PVs, PVCs, or payloads in either lane. Earlier branch-runtime run
 [36310603619](https://github.com/centerionware/not-k8s/actions/runs/36310603619)
 at SHA `1dc1c2db` failed both nodestore checkpoints because the registered
 hostPath driver had no CSINode owner reference to the current Node. That SHA
 predates the Nodelet owner-reference repair. Neither lane completed its
-nodestore storage checks or return migration.
+return migration.
 Latest-release run [36310054614](https://github.com/centerionware/not-k8s/actions/runs/36310054614)
 successfully fetched regular release `v0.8.0`; its K3s lane failed during
 Gateway API CRD CEL validation after source PVC/PV/data checks passed and
-restored the source with the protected export retained. The upstream lane is
-still running. No nodestore checkpoint or return migration has passed in these
-new runs.
+restored the source with the protected export retained. The upstream lane was
+still running at the last status check. No nodestore checkpoint or return
+migration has passed in this release-baseline run.
 
 ## Most recent evidence
 
