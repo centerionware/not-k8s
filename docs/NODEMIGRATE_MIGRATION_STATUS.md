@@ -9,6 +9,21 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration result
 
+Branch-runtime run
+[36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)
+at SHA `f186930d7333a0b1c96967f2418b9be18b1155d6` passed the Docker
+five-node preflight and both utility/runtime builds. The upstream lane passed
+source and nodestore PV/PVC/data checks and completed forward migration. Its
+return import then timed out on the cert-manager webhook Service ClusterIP;
+nodemigrate restored nodestore and retained the export. Rollback fixture
+verification separately observed a Pod disappear before `kubectl exec`, so
+the non-root `emptyDir` marker failure is not yet attributed to migration.
+K3s remains in progress. The upstream log contains 226 jq parse errors from
+the watcher; its stderr/JSON handling fix is at `deaed970`, and the follow-up
+diagnostics at `bb32d6c8` now capture kube-proxy readiness as well. Neither
+lane has passed a full round trip, and no PV/PVC/backing-volume deletion was
+reported. Full lane evidence is recorded in the [CI status](NODEMIGRATE_CI_STATUS.md).
+
 The nodemigrate quick-check passed at utility SHA `17281efb42343ae2f934f681f57f031a59bc6016`
 in [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874).
 The fixture failure at
