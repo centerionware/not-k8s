@@ -7,6 +7,164 @@ pub enum BindOutcome {
     Invalid(Vec<String>),
 }
 
+#[derive(Debug, PartialEq)]
+pub enum EvictOutcome {
+    Evicted,
+    NotFound,
+    UnknownResource,
+    Invalid(String),
+    Protected { budget: String, allowed: i64 },
+    Conflict,
+}
+
+/// Applies the policy/v1 Pod eviction contract against the persisted PDB
+/// status before requesting the normal graceful Pod deletion. The PDB
+/// controller owns status calculation; eviction consumes that status just
+/// as the upstream apiserver does.
+pub async fn evict_pod(
+    storage: &mut StorageClient,
+    namespace: &str,
+    name: &str,
+    eviction: &Value,
+) -> Result<EvictOutcome, Error> {
+    if eviction.get("apiVersion").and_then(Value::as_str) != Some("policy/v1")
+        || eviction.get("kind").and_then(Value::as_str) != Some("Eviction")
+    {
+        return Ok(EvictOutcome::Invalid(
+            "request body must be a policy/v1 Eviction".to_string(),
+        ));
+    }
+    if eviction.pointer("/metadata/name").and_then(Value::as_str) != Some(name)
+        || eviction
+            .pointer("/metadata/namespace")
+            .and_then(Value::as_str)
+            .is_some_and(|body_namespace| body_namespace != namespace)
+    {
+        return Ok(EvictOutcome::Invalid(
+            "Eviction metadata must identify the Pod in the request URL".to_string(),
+        ));
+    }
+
+    let pod = match get(storage, None, "", "v1", "pods", Some(namespace), name).await? {
+        GetOutcome::Found(pod) => pod,
+        GetOutcome::ObjectNotFound => return Ok(EvictOutcome::NotFound),
+        GetOutcome::UnknownResource => return Ok(EvictOutcome::UnknownResource),
+    };
+    let labels = pod.pointer("/metadata/labels").and_then(Value::as_object);
+    let budgets = list(
+        storage,
+        None,
+        "policy",
+        "v1",
+        "poddisruptionbudgets",
+        Some(namespace),
+        "",
+        "",
+        0,
+        "",
+    )
+    .await?;
+    let ListOutcome::Found(budgets) = budgets else {
+        return Ok(EvictOutcome::UnknownResource);
+    };
+    let Some(budgets) = budgets.get("items").and_then(Value::as_array) else {
+        return Err(Error::InvalidProtobufRequest(
+            "PodDisruptionBudget list has no items array".to_string(),
+        ));
+    };
+    for budget in budgets {
+        if !pdb_selects_pod(budget, labels) {
+            continue;
+        }
+        let allowed = pdb_disruptions_allowed(budget);
+        if allowed <= 0 {
+            let budget_name = budget
+                .pointer("/metadata/name")
+                .and_then(Value::as_str)
+                .unwrap_or("<unnamed>")
+                .to_string();
+            return Ok(EvictOutcome::Protected {
+                budget: budget_name,
+                allowed,
+            });
+        }
+    }
+
+    let grace = eviction
+        .pointer("/deleteOptions/gracePeriodSeconds")
+        .and_then(Value::as_i64);
+    match delete_with_options(
+        storage,
+        "",
+        "v1",
+        "pods",
+        Some(namespace),
+        name,
+        None,
+        grace,
+        false,
+    )
+    .await?
+    {
+        DeleteOutcome::Deleted(_) => Ok(EvictOutcome::Evicted),
+        DeleteOutcome::ObjectNotFound => Ok(EvictOutcome::NotFound),
+        DeleteOutcome::UnknownResource => Ok(EvictOutcome::UnknownResource),
+        DeleteOutcome::PreconditionFailed => Ok(EvictOutcome::Conflict),
+    }
+}
+
+fn pdb_disruptions_allowed(budget: &Value) -> i64 {
+    budget
+        .pointer("/status/disruptionsAllowed")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+}
+
+fn pdb_selects_pod(budget: &Value, pod_labels: Option<&serde_json::Map<String, Value>>) -> bool {
+    let Some(selector) = budget.pointer("/spec/selector") else {
+        return false;
+    };
+    let labels_match = selector
+        .get("matchLabels")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .all(|(key, expected)| {
+            expected.as_str().is_some_and(|expected| {
+                pod_labels
+                    .and_then(|labels| labels.get(key))
+                    .and_then(Value::as_str)
+                    == Some(expected)
+            })
+        });
+    labels_match
+        && selector
+            .get("matchExpressions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .all(|requirement| {
+                let key = requirement.get("key").and_then(Value::as_str).unwrap_or("");
+                let value = pod_labels
+                    .and_then(|labels| labels.get(key))
+                    .and_then(Value::as_str);
+                let values = requirement
+                    .get("values")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>();
+                match requirement.get("operator").and_then(Value::as_str) {
+                    Some("In") => value.is_some_and(|value| values.contains(&value)),
+                    Some("NotIn") => value.is_none_or(|value| !values.contains(&value)),
+                    Some("Exists") => value.is_some(),
+                    Some("DoesNotExist") => value.is_none(),
+                    _ => false,
+                }
+            })
+}
+
 /// Implements the core Pod `binding` subresource used by the scheduler.
 /// Real upstream's `BindingREST` validates the binding preconditions, sets
 /// `spec.nodeName`, merges binding metadata, and marks the Pod scheduled in

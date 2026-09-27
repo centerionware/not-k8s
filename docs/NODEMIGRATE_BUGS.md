@@ -2,6 +2,30 @@
 
 Last updated: 2026-09-27
 
+## Branch-runtime run 36285968999
+
+Run [36285968999](https://github.com/centerionware/not-k8s/actions/runs/36285968999)
+at SHA `879a0a618efe933d084023300460128da446da17` completed with both K3s and
+upstream lanes failing at the target checkpoint. Both lanes built the utility
+and branch runtime, completed migration, passed API readiness, and then got
+HTTP 404 from the target for the fixture's PDB-protected Pod eviction request.
+K3s applied all 59 CRDs; no return leg or parity comparison ran. Full artifacts
+are under `/tmp/nodemigrate-36285968999-artifacts/`.
+
+Confirmed defect and branch work:
+
+- **`nodeapiserver`: missing Pod eviction REST handler.** The listener parsed
+  `POST /api/v1/namespaces/{namespace}/pods/{name}/eviction` as a create
+  subresource, but dispatch had no handler. Existing NodeRestriction logic
+  already covered node-originated eviction, and nodecontroller computes PDB
+  status, but neither was connected to an eviction endpoint. A handler now
+  validates `policy/v1 Eviction`, runs NodeRestriction, matches PDB label
+  selectors, returns 429 when matching status allows no disruptions, and
+  otherwise requests graceful deletion. Focused tests cover selector matching
+  and missing/zero/positive allowance values. Quick-check and migration
+  rerun are pending. The current positive-allowance path does not reserve the
+  PDB allowance atomically, so concurrent evictions remain a known gap.
+
 ## Release-backed run 36279843865
 
 Run [36279843865](https://github.com/centerionware/not-k8s/actions/runs/36279843865)

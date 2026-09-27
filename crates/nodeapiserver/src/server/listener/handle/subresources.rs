@@ -12,6 +12,92 @@ macro_rules! handle_subresources {
         $is_certificate_status_subresource:ident,
         $wants_partial_metadata:ident, $has_body:ident
     ) => {{
+    // The eviction API is a policy-controlled Pod delete, not generic CRUD:
+    // it must consult every matching PDB before marking the Pod for graceful
+    // termination and report a retryable 429 when the current budget is
+    // exhausted.
+    if $info.is_resource_request
+        && $info.api_group.is_empty()
+        && $info.api_version == "v1"
+        && $info.resource == "pods"
+        && $info.subresource == "eviction"
+        && $info.verb == "create"
+        && !$info.name.is_empty()
+    {
+        if $info.namespace.is_empty() {
+            return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, "Pod eviction requires a namespace")));
+        }
+        let Some(mut client) = $storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
+        };
+        let body_bytes = match read_body_bytes($req).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(path = %$path_str, error = ?error, "reading the Pod eviction request failed");
+                return Ok(body_read_error_response(&$path_str, &error));
+            }
+        };
+        let body: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+            Ok(body) => body,
+            Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &error.to_string()))),
+        };
+        if let Err(error) = admission::node_restriction::validate(
+            &mut client,
+            $identity.as_ref(),
+            admission::attributes::Operation::Create,
+            &$info.api_group,
+            &$info.resource,
+            &$info.subresource,
+            &$info.namespace,
+            &$info.name,
+            Some(&body),
+            None,
+        )
+        .await
+        {
+            return match error {
+                admission::node_restriction::Error::Forbidden(message) => Ok(json_response(
+                    StatusCode::FORBIDDEN,
+                    &admission_forbidden_status(&$path_str, &message),
+                )),
+                admission::node_restriction::Error::Lookup(error) => {
+                    warn!(path = %$path_str, error = %error, "NodeRestriction lookup for Pod eviction failed");
+                    Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)))
+                }
+            };
+        }
+        return match rest::evict_pod(&mut client, &$info.namespace, &$info.name, &body).await {
+            Ok(rest::EvictOutcome::Evicted) => Ok(json_response(
+                StatusCode::OK,
+                &serde_json::json!({"kind":"Status","apiVersion":"v1","metadata":{},"status":"Success","code":200}),
+            )),
+            Ok(rest::EvictOutcome::NotFound) | Ok(rest::EvictOutcome::UnknownResource) => {
+                Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&$path_str)))
+            }
+            Ok(rest::EvictOutcome::Invalid(detail)) => {
+                Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &detail)))
+            }
+            Ok(rest::EvictOutcome::Protected { budget, .. }) => Ok(json_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                &serde_json::json!({
+                    "kind":"Status",
+                    "apiVersion":"v1",
+                    "metadata":{},
+                    "status":"Failure",
+                    "message":format!("Cannot evict pod as it would violate the pod's disruption budget {budget:?}"),
+                    "reason":"TooManyRequests",
+                    "details":{"name":$info.name,"kind":"Pod","retryAfterSeconds":5},
+                    "code":429
+                }),
+            )),
+            Ok(rest::EvictOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &precondition_failed_status(&$path_str))),
+            Err(error) => {
+                warn!(path = %$path_str, error = ?error, "rest::evict_pod failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)))
+            }
+        };
+    }
+
     // The scheduler binds a pending Pod through the real core
     // `pods/binding` subresource rather than replacing the whole Pod. This
     // must run before generic CRUD dispatch: `Binding` contains only the

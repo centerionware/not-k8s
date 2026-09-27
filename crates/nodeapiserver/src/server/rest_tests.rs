@@ -13,6 +13,35 @@ mod tests {
     }
 
     #[test]
+    fn pod_disruption_budget_selector_matches_labels_and_expressions() {
+        let budget = json!({
+            "spec": {"selector": {
+                "matchLabels": {"app": "web"},
+                "matchExpressions": [
+                    {"key": "tier", "operator": "In", "values": ["frontend", "edge"]},
+                    {"key": "maintenance", "operator": "DoesNotExist"}
+                ]
+            }}
+        });
+        let labels = json!({"app":"web", "tier":"frontend"});
+        assert!(pdb_selects_pod(&budget, labels.as_object()));
+
+        let wrong_app = json!({"app":"worker", "tier":"frontend"});
+        assert!(!pdb_selects_pod(&budget, wrong_app.as_object()));
+        let excluded = json!({"app":"web", "tier":"frontend", "maintenance":"true"});
+        assert!(!pdb_selects_pod(&budget, excluded.as_object()));
+        assert!(!pdb_selects_pod(&budget, None));
+    }
+
+    #[test]
+    fn pod_disruption_budget_without_available_disruptions_is_blocking() {
+        assert_eq!(pdb_disruptions_allowed(&json!({"status":{"disruptionsAllowed":0}})), 0);
+        assert_eq!(pdb_disruptions_allowed(&json!({"status":{"disruptionsAllowed":-1}})), -1);
+        assert_eq!(pdb_disruptions_allowed(&json!({"status":{"disruptionsAllowed":2}})), 2);
+        assert_eq!(pdb_disruptions_allowed(&json!({"status":{}})), 0);
+    }
+
+    #[test]
     fn finalizer_patch_uses_the_mvcc_revision_not_the_persisted_deletion_revision() {
         let deleted = json!({"metadata":{"name":"test", "resourceVersion":"7",
             "deletionTimestamp":"2026-09-05T07:00:00Z", "finalizers":["example.com/hold"]}});

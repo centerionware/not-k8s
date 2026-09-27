@@ -15,6 +15,29 @@ new fixes.
 
 ## Most recent evidence
 
+Branch-runtime run [36285968999](https://github.com/centerionware/not-k8s/actions/runs/36285968999)
+at SHA `879a0a618efe933d084023300460128da446da17` completed. Docker's
+five-node kubeadm/Cilium preflight, both `nodemigrate` builds, and both branch
+runtime builds passed. Both source lanes migrated to nodestore and passed API
+readiness; K3s applied all 59 CRDs successfully. Both lanes then failed the
+same nodestore checkpoint assertion: `POST .../pods/{name}/eviction` returned
+404 where the fixture expects a PDB-protected 429. The upstream audit event
+confirms response code 404 for the eviction request. The target REST dispatcher
+had no eviction handler despite existing NodeRestriction checks and the
+disruption controller's PDB status support. No return migration or round-trip
+comparison ran. The completed lane logs and preflight log are in
+`/tmp/nodemigrate-36285968999-artifacts/`; the K3s log is also at
+`/tmp/nodemigrate-36285968999-k3s/nodemigrate-k3s.log`.
+
+The feature branch now adds a `pods/eviction` handler that checks matching
+PDB selectors and returns `TooManyRequests` when `disruptionsAllowed` is zero,
+then uses graceful Pod deletion when allowed. It also invokes NodeRestriction
+for node identities and adds focused selector/status tests. These changes have
+not yet passed quick-check or runtime migration validation. The eviction path
+does not yet reserve disruption allowance atomically for concurrent eviction
+requests; that remains a correctness gap to address before claiming full PDB
+semantics.
+
 Release-backed migration run [36283329273](https://github.com/centerionware/not-k8s/actions/runs/36283329273)
 at SHA `786e95577686f1fd5ed08a94f76ade48861314b4` fetched the exact regular
 v0.8.0 runtime. The five-node Docker/kubeadm/Cilium preflight passed in 7m32s.

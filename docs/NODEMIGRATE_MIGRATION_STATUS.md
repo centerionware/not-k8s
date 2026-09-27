@@ -68,9 +68,13 @@ the sole replica is healthy; the Pod must remain Ready. The PDB is included in
 the durable application snapshot. Shell and existing targeted fixture checks
 pass locally. PR workflow validation [36265900635](https://github.com/centerionware/not-k8s/actions/runs/36265900635)
 passed at `2ee43f2a`, including shell syntax and the snapshot/Helm helper
-checks. The PDB behavior itself has not yet run on a real cluster; the active
-K3s migration job predates this fixture addition and remained in progress at
-2026-09-26 19:24 UTC.
+checks. Branch-runtime run [36285968999](https://github.com/centerionware/not-k8s/actions/runs/36285968999)
+ran this fixture at both K3s and upstream nodestore checkpoints. Both target
+apiserver lanes returned 404 for `pods/eviction`, proving the endpoint was
+missing before PDB behavior could be checked. The branch now dispatches the
+endpoint and applies NodeRestriction plus PDB selector/status checks. Focused
+quick-check and a fresh migration run are pending; concurrent allowance
+reservation is not yet atomic.
 
 The same checkpoint now exercises the Deployment `/scale` subresource by
 scaling nginx to two available replicas and back to one, waiting for each
