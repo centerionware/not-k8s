@@ -230,6 +230,32 @@ probe_webhook_route() {
     ' <<< "$endpoint_json")
 }
 
+# The migration watcher runs while target APIs and optional add-ons are still
+# converging. Keep kubectl stderr out of jq's JSON input, and record failed
+# requests as structured diagnostic data instead of emitting jq parse errors.
+diagnostic_kubectl_json() {
+    local kubeconfig="${1:?missing diagnostic kubeconfig}"
+    local filter="${2:?missing diagnostic jq filter}"
+    local error_file response error
+    local -a jq_args=()
+    shift 2
+    if [[ "${1:-}" == --arg ]]; then
+        jq_args+=("$1" "$2" "$3")
+        shift 3
+    fi
+    error_file="$(mktemp)" || return 0
+    if response="$(KUBECONFIG="$kubeconfig" kubectl "$@" -o json 2>"$error_file")"; then
+        if ! jq -cS "${jq_args[@]}" "$filter" <<< "$response" 2>/dev/null; then
+            printf '%s\n' '{"diagnosticError":"kubectl returned invalid JSON"}'
+        fi
+    else
+        error="$(<"$error_file")"
+        jq -cn --arg error "${error:-kubectl request failed without stderr}" \
+            '{kubectlError: $error}'
+    fi
+    rm -f "$error_file"
+}
+
 watch_migration_target_state() {
     local kubeconfig="${1:?missing target kubeconfig}"
     local ready_service="${2:?missing target API service}"
@@ -245,9 +271,7 @@ watch_migration_target_state() {
                 get --raw=/readyz >/dev/null 2>&1; then
             snapshot="$(
                 echo 'system pods:'
-                KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
-                    -l 'k8s-app in (cilium,cilium-envoy,kube-dns)' -o json 2>&1 \
-                    | jq -cS '[.items[]? | {
+                diagnostic_kubectl_json "$kubeconfig" '[.items[]? | {
                         name: .metadata.name,
                         phase: .status.phase,
                         conditions: [.status.conditions[]? | {type, status, reason, message}],
@@ -255,30 +279,26 @@ watch_migration_target_state() {
                         initContainers: [.status.initContainerStatuses[]? | {name, ready, restartCount, state}],
                         podIP: .status.podIP,
                         nodeName: .spec.nodeName
-                    }]' || true
+                    }]' get pods -n kube-system -l 'k8s-app in (cilium,cilium-envoy,kube-dns)' || true
                 echo 'target node scheduling and readiness:'
-                KUBECONFIG="$kubeconfig" kubectl get nodes -o json 2>&1 \
-                    | jq -cS '[.items[]? | {
+                diagnostic_kubectl_json "$kubeconfig" '[.items[]? | {
                         name: .metadata.name,
                         unschedulable: (.spec.unschedulable // false),
                         taints: .spec.taints,
                         conditions: [.status.conditions[]? | {type, status, reason, message}],
                         addresses: .status.addresses
-                    }]' || true
+                    }]' get nodes || true
                 echo 'cert-manager pods:'
-                KUBECONFIG="$kubeconfig" kubectl get pods -n cert-manager -o json 2>&1 \
-                    | jq -cS '[.items[]? | {
+                diagnostic_kubectl_json "$kubeconfig" '[.items[]? | {
                         name: .metadata.name,
                         phase: .status.phase,
                         conditions: [.status.conditions[]? | {type, status, reason, message}],
                         containers: [.status.containerStatuses[]? | {name, ready, restartCount, state}],
                         podIP: .status.podIP,
                         nodeName: .spec.nodeName
-                    }]' || true
+                    }]' get pods -n cert-manager || true
                 echo 'cert-manager services and endpoints:'
-                KUBECONFIG="$kubeconfig" kubectl get services,endpoints,endpointslices \
-                    -n cert-manager -o json 2>&1 \
-                    | jq -cS '[.items[]? | {
+                diagnostic_kubectl_json "$kubeconfig" '[.items[]? | {
                         kind,
                         name: .metadata.name,
                         clusterIP: .spec.clusterIP,
@@ -287,22 +307,21 @@ watch_migration_target_state() {
                         endpointPorts: .ports,
                         subsets,
                         endpoints: [.endpoints[]? | {addresses, conditions}]
-                    }]' || true
+                    }]' get services,endpoints,endpointslices -n cert-manager || true
                 echo 'kubernetes API service:'
-                KUBECONFIG="$kubeconfig" kubectl get service kubernetes \
-                    -n default -o json 2>&1 \
-                    | jq -cS '{clusterIP: .spec.clusterIP, clusterIPs: .spec.clusterIPs, ports: .spec.ports}' || true
+                diagnostic_kubectl_json "$kubeconfig" \
+                    '{clusterIP: .spec.clusterIP, clusterIPs: .spec.clusterIPs, ports: .spec.ports}' \
+                    get service kubernetes -n default || true
                 echo 'kubernetes API endpoints:'
-                KUBECONFIG="$kubeconfig" kubectl get endpoints kubernetes \
-                    -n default -o json 2>&1 \
-                    | jq -cS '[.subsets[]? | {addresses, notReadyAddresses, ports}]' || true
-                KUBECONFIG="$kubeconfig" kubectl get endpointslices \
-                    -n default -l kubernetes.io/service-name=kubernetes -o json 2>&1 \
-                    | jq -cS '[.items[]? | {
+                diagnostic_kubectl_json "$kubeconfig" \
+                    '[.subsets[]? | {addresses, notReadyAddresses, ports}]' \
+                    get endpoints kubernetes -n default || true
+                diagnostic_kubectl_json "$kubeconfig" '[.items[]? | {
                         name: .metadata.name,
                         ports,
                         endpoints: [.endpoints[]? | {addresses, conditions, nodeName, targetRef}]
-                    }]' || true
+                    }]' get endpointslices -n default \
+                    -l kubernetes.io/service-name=kubernetes || true
                 echo 'nodeproxy service state:'
                 systemctl is-active nodeproxy 2>&1 || true
                 echo 'cert-manager webhook host-network probes:'
@@ -313,13 +332,11 @@ watch_migration_target_state() {
                     | jq -r '.clusters[0].cluster["certificate-authority-data"] // empty' \
                     || true)"
                 if [[ -n "$target_ca_b64" ]]; then
-                    KUBECONFIG="$kubeconfig" kubectl get configmaps -A -o json 2>&1 \
-                        | jq -cS --arg ca "$target_ca_b64" '
-                            [.items[]? | select(.metadata.name == "kube-root-ca.crt") | {
+                    diagnostic_kubectl_json "$kubeconfig" \
+                        '[.items[]? | select(.metadata.name == "kube-root-ca.crt") | {
                               namespace: .metadata.namespace,
                               matchesTargetApiCa: ((.data["ca.crt"] // "" | @base64) == $ca)
-                            }]
-                          ' || true
+                            }]' --arg ca "$target_ca_b64" get configmaps -A || true
                     echo 'target API CA fingerprint:'
                     printf '%s' "$target_ca_b64" | base64 -d 2>/dev/null | sha256sum || true
                 else

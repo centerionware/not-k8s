@@ -21,6 +21,7 @@ on:
       - '.github/scripts/nodemigrate-integration.sh'
       - '.github/scripts/check_nodemigrate_helm_snapshot.sh'
       - '.github/scripts/check_nodemigrate_api_inventory.sh'
+      - '.github/scripts/check_nodemigrate_diagnostics.sh'
       - '.github/scripts/nodemigrate-docker-preflight.sh'
       - '.github/scripts/nodemigrate-snapshot-normalize.jq'
       - '.github/scripts/nodemigrate-application-snapshot.jq'
@@ -54,6 +55,7 @@ jobs:
         run: |
           bash -n .github/scripts/nodemigrate-integration.sh
           bash -n .github/scripts/nodemigrate-docker-preflight.sh
+          bash -n .github/scripts/check_nodemigrate_diagnostics.sh
 
       - name: Check snapshot jq
         run: bash .github/scripts/check_nodemigrate_snapshot_filter.sh
@@ -63,6 +65,9 @@ jobs:
 
       - name: Check API inventory
         run: bash .github/scripts/check_nodemigrate_api_inventory.sh
+
+      - name: Check diag JSON
+        run: bash .github/scripts/check_nodemigrate_diagnostics.sh
 
   docker-preflight:
     if: github.event_name == 'workflow_dispatch'

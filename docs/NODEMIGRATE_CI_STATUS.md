@@ -92,6 +92,15 @@ before/after evidence.
 
 ## Most recent evidence
 
+Branch-runtime migration run
+[36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)
+was dispatched at SHA `f186930d7333a0b1c96967f2418b9be18b1155d6` with both
+source lanes enabled. The five-node Docker preflight and both utility/runtime
+builds passed. Both migration jobs remain active; this SHA predates the
+target-state watcher JSON-diagnostic fix now under review. The completed job
+logs must be checked for the reported `jq` parse errors, and a run at the fix
+SHA is required to verify their removal.
+
 Release-backed migration run
 [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663)
 was dispatched at PR #591 head `012f1b7351da10cd78bec309e1efc6a2e9de439e`
