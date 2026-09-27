@@ -50,8 +50,12 @@ addon, configures Cilium KPR, and fails the source fixture if kube-proxy's
 DaemonSet remains; the nodestore checkpoint also fails if nodeproxy is active.
 The five-node kubeadm/Cilium preflight now receives the same KPR input, skips
 the kube-proxy addon when enabled, configures Cilium accordingly, and asserts
-the DaemonSet is absent. Earlier preflight runs used KPR disabled and do not
-verify the enabled five-node setup.
+the DaemonSet is absent. Enabled-KPR preflight
+[36345278305](https://github.com/centerionware/not-k8s/actions/runs/36345278305)
+passed at SHA `74068255`: five isolated nodes became Ready, Cilium reported
+KPR enabled with kube-proxy absent, and the cluster recovered after control
+plane loss. This validates the five-node simulation setup only; it did not run
+nodemigrate. Earlier preflight runs used KPR disabled.
 Workflow validation passed at `027ee68d` in
 [36342627911](https://github.com/centerionware/not-k8s/actions/runs/36342627911);
 nodemigrate crate tests passed in

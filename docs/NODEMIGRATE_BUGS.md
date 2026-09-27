@@ -12,9 +12,12 @@ Last updated: 2026-09-27
   kube-proxy. The five-node portion therefore did not cover the requested KPR
   mode. The script now passes KPR into kubeadm and Helm, skips the kube-proxy
   add-on when enabled, and asserts the kube-proxy DaemonSet is absent. Shell
-  syntax passed locally; PR validation and an enabled-KPR preflight run remain
-  pending. The active run predates the fix and is not evidence for five-node
-  KPR.
+  syntax and PR validation passed at SHA `74068255`; enabled-KPR preflight
+  [36345278305](https://github.com/centerionware/not-k8s/actions/runs/36345278305)
+  also passed. Its artifact confirms all five nodes became Ready, kube-proxy
+  was absent, and the cluster recovered after control-plane loss. This only
+  verifies the five-node setup, not nodemigrate across that topology. Run
+  36343008296 predates the fix and is not evidence for five-node KPR.
 
 - **nodemigrate / Cilium initial control-plane bootstrap started nodeproxy with
   kube-proxy replacement enabled.** Code review while KPR-enabled migration

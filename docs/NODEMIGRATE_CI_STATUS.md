@@ -133,8 +133,14 @@ setup used KPR disabled despite the workflow input; only the two single-node
 source fixtures requested KPR enabled. The run also predates the initial
 control-plane `--proxy=none` fix and nodeproxy-inactive assertion. Do not claim
 five-node KPR, target proxy selection, or post-fix behavior from it. The current
-preflight now honors the KPR input, with validation and runtime verification
-pending.
+preflight now honors the KPR input. Five-node preflight run
+[36345278305](https://github.com/centerionware/not-k8s/actions/runs/36345278305)
+passed at `74068255` with `docker_only=true`, `cilium_kpr=true`, and
+`runtime_source=branch`. Its uploaded log confirms five isolated kubeadm nodes,
+Cilium KPR enabled with kube-proxy absent, and cluster recovery after
+control-plane loss. This run did not invoke nodemigrate and does not verify the
+full five-node migration gate. Artifact:
+`/tmp/nodemigrate-36345278305-artifacts/nodemigrate-docker-preflight-36345278305/nodemigrate-docker-preflight.log`.
 
 Release-backed migration run
 [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663)
