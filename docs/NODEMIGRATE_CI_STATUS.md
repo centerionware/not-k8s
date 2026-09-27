@@ -87,6 +87,21 @@ before/after evidence.
 
 ## Most recent evidence
 
+Latest branch-runtime migration run
+[36320456287](https://github.com/centerionware/not-k8s/actions/runs/36320456287)
+tested SHA `ad861cdc7f57876c1c865a7d0b42a2b52bd3b8d4`. The five-node Docker
+preflight passed its kubeadm 3-control-plane/2-worker Cilium setup and
+control-plane recovery probe. Both single-node lanes passed source and
+nodestore behavior checks, PV/PVC binding and payload checks, strict API
+object parity, and the new assertion that the source CSI `/dev` volume remains
+present immediately after forward migration and after fixture setup. They
+then failed only the application snapshot comparison because the target
+StatefulSet had API-defaulted `minReadySeconds: 0`, absent at source. Neither
+lane reached return migration. Artifacts are at
+`/tmp/nodemigrate-36320456287-artifacts/`. The snapshot filter now treats only
+that default as equivalent, with a focused test that nonzero values remain
+significant; the dedicated migration rerun is pending.
+
 Latest migration run
 [36318123614](https://github.com/centerionware/not-k8s/actions/runs/36318123614)
 tested code SHA `a95833a4a32122ba2b91b4d3c95f40db5363e491`. The five-node Docker

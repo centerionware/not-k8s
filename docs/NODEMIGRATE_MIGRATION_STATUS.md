@@ -16,30 +16,28 @@ The fixture failure at
 was fixed at SHA `b69ef4e7` by creating the legacy token Secret with its
 required ServiceAccount annotations.
 
-At code SHA `a95833a4a32122ba2b91b4d3c95f40db5363e491`, branch-runtime
-migration [36318123614](https://github.com/centerionware/not-k8s/actions/runs/36318123614)
+At code SHA `ad861cdc7f57876c1c865a7d0b42a2b52bd3b8d4`, branch-runtime
+migration [36320456287](https://github.com/centerionware/not-k8s/actions/runs/36320456287)
 passed the five-node Docker kubeadm/Cilium preflight and both single-node
-source and nodestore checkpoints. PV/PVC bindings, StatefulSet data,
-ServiceAccount token/RBAC, ingress, certificate, and 119-resource API
-inventory checks passed at nodestore in both K3s and upstream lanes. Strict
-parity then found the source hostPath CSI `default/csi-hostpathplugin` includes
-a `dev-dir` `/dev` mount (`type: Directory`) absent on the not-k8s target; the
-CSI data-root volume stayed the same. Neither lane reached return migration.
-No PV, PVC, or backing-volume deletion was reported. Logs are at
-`/tmp/nodemigrate-36318123614-artifacts/nodemigrate-k3s-36318123614/nodemigrate-k3s.log`
-and `/tmp/nodemigrate-36318123614-artifacts/nodemigrate-kubernetes-36318123614/nodemigrate-kubernetes.log`.
-The five-node job was a preflight only and did not migrate the cluster. The
-nodeapiserver quick-check
-[36319639827](https://github.com/centerionware/not-k8s/actions/runs/36319639827)
-passed the focused built-in schema-pruning regression; follow-up quick-check
-[36319953565](https://github.com/centerionware/not-k8s/actions/runs/36319953565)
-also passed the protobuf StatefulSet storage round-trip regression. These
-isolated paths preserve `/dev`; full HTTP read/write behavior remains
-unverified. The integration fixture now checks the volume immediately after
-each migration, before re-installing CSI, and restores its exact source value
-if test setup changes it. `bash -n` and `git diff --check` pass, but this
-fixture correction still needs a migration run. Return migration remains
-unverified.
+source and nodestore stages. PV/PVC bindings and data, StatefulSet scale/data,
+token/RBAC, ingress, certificate, 119-resource API inventory, strict API
+object parity, and the source CSI `/dev` volume before and after fixture setup
+passed in both lanes. Application snapshot comparison then differed only
+because the target API returned `StatefulSet.spec.minReadySeconds: 0` where
+source omitted the API default. Neither lane reached return migration. No PV,
+PVC, or backing-volume deletion was reported. Artifacts are at
+`/tmp/nodemigrate-36320456287-artifacts/`. The five-node job was a preflight
+only and did not migrate the cluster. The local `check_nodemigrate_snapshot_filter.sh`
+now covers this API default and confirms nonzero settings remain strict; the
+dedicated migration rerun is pending.
+
+The previous run at SHA `a95833a4a32122ba2b91b4d3c95f40db5363e491`,
+[36318123614](https://github.com/centerionware/not-k8s/actions/runs/36318123614),
+appeared to show the CSI `/dev` volume missing. Run 36320456287 established it
+is present immediately after migration; the earlier mismatch followed the
+test harness's CSI reinstall. Focused nodeapiserver schema-pruning and
+protobuf-storage round-trip checks passed in [36319639827](https://github.com/centerionware/not-k8s/actions/runs/36319639827)
+and [36319953565](https://github.com/centerionware/not-k8s/actions/runs/36319953565).
 
 The preceding run at SHA `f9356dad16a549fdaf07c2a79e135a8cbfc836e9`,
 [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064),

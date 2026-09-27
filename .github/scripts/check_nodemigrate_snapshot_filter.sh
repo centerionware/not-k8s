@@ -171,6 +171,18 @@ stateful_changed='{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name
     exit 1
 }
 
+application_stateful_source='{"items":[{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"database","namespace":"migration-apps"},"spec":{"minReadySeconds":0,"replicas":1}}]}'
+application_stateful_target='{"items":[{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"database","namespace":"migration-apps"},"spec":{"replicas":1}}]}'
+[[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$application_stateful_source")" == "$(jq -cS -f "$APPLICATION_FILTER" <<< "$application_stateful_target")" ]] || {
+    echo "application snapshot treated API-defaulted minReadySeconds zero as a workload change" >&2
+    exit 1
+}
+application_stateful_changed='{"items":[{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"database","namespace":"migration-apps"},"spec":{"minReadySeconds":1,"replicas":1}}]}'
+[[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$application_stateful_source")" != "$(jq -cS -f "$APPLICATION_FILTER" <<< "$application_stateful_changed")" ]] || {
+    echo "application snapshot normalized away non-default minReadySeconds" >&2
+    exit 1
+}
+
 owned_rs_source='{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"web-old","namespace":"apps","ownerReferences":[{"apiVersion":"apps/v1","kind":"Deployment","name":"web","controller":true}]},"spec":{"replicas":2,"selector":{"matchLabels":{"app":"web"}},"template":{"metadata":{"labels":{"app":"web"}},"spec":{"containers":[{"name":"web","image":"web:v1"}]}}}}'
 owned_rs_target="${owned_rs_source/\"replicas\":2/\"replicas\":0}"
 [[ "$(jq -cS -f "$FILTER" <<< "$owned_rs_source")" == "$(jq -cS -f "$FILTER" <<< "$owned_rs_target")" ]] || {

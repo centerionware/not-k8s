@@ -4,6 +4,7 @@
   # description annotation. Its CA contents are checked against the active API
   # CA separately at every migration stage.
   | select(.kind != "ConfigMap" or .metadata.name != "kube-root-ca.crt")
+  | .kind as $kind
   | {
       apiVersion,
       kind,
@@ -15,8 +16,12 @@
         ((.metadata.annotations // {}) | del(."kubernetes.io/service-account.uid"))
       else (.metadata.annotations // {}) end),
       ownerReferences: [(.metadata.ownerReferences // [])[] | {apiVersion, kind, name, controller}],
-      spec: ((.spec // {}) | if has("volumeClaimTemplates") then
-        .volumeClaimTemplates |= map(del(.apiVersion, .kind))
-      else . end)
+      spec: ((.spec // {})
+        | if $kind == "StatefulSet" and .minReadySeconds == 0 then
+            del(.minReadySeconds)
+          else . end
+        | if has("volumeClaimTemplates") then
+            .volumeClaimTemplates |= map(del(.apiVersion, .kind))
+          else . end)
     }
 ] | sort_by(.kind, .namespace, .name)

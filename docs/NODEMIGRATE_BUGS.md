@@ -2,32 +2,35 @@
 
 Last updated: 2026-09-27
 
-## Current source-review finding
+## Current fixture finding
 
-- **Target apiserver or migration write/read path / CSI StatefulSet volume
-  lost during forward migration.** Run
+- **Migration integration fixture / StatefulSet API default compared as a
+  data change.** Run
+  [36320456287](https://github.com/centerionware/not-k8s/actions/runs/36320456287)
+  at SHA `ad861cdc` proved the source CSI `dev-dir` `/dev` volume is present on
+  the target immediately after forward migration in both K3s and upstream
+  lanes. Strict normalized API object parity also passed after the CSI fixture
+  reinstall. The lanes then stopped because the application snapshot contained
+  `spec.minReadySeconds: 0` on a target StatefulSet while the source omitted
+  it; this is the API's zero default, not a changed workload setting. The
+  current snapshot filter removes only StatefulSet `minReadySeconds: 0` and a
+  focused check confirms a nonzero value remains significant. The five-node
+  kubeadm/Cilium preflight passed but did not run nodemigrate. No PV, PVC, or
+  backing-volume deletion was reported. Artifacts are at
+  `/tmp/nodemigrate-36320456287-artifacts/`.
+
+- **Migration harness / CSI driver redeployment changed a volume after
+  migration.** Run
   [36318123614](https://github.com/centerionware/not-k8s/actions/runs/36318123614)
-  at SHA `a95833a4` reported identical normalized changes in K3s and upstream:
-  source `default/csi-hostpathplugin` includes a `dev-dir` hostPath volume for
-  `/dev` (`type: Directory`), while the not-k8s target omits that final volume.
-  The CSI catalog volume `/var/lib/nodemigrate-csi-hostpath-data` is unchanged;
-  PV/PVC identities, bindings, and StatefulSet payload checks passed. Both
-  lanes failed strict source-object parity before return migration. The
-  migration exporter sanitizes metadata/status but does not filter StatefulSet
-  volumes. Focused nodeapiserver tests passed: built-in schema pruning at
-  [36319639827](https://github.com/centerionware/not-k8s/actions/runs/36319639827)
-  and protobuf StatefulSet storage round-trip at
-  [36319953565](https://github.com/centerionware/not-k8s/actions/runs/36319953565).
-  Both preserve the valid `/dev` volume, so neither isolated path reproduces
-  the loss; the full HTTP read/write path remains unverified. The harness
-  reinstalls the CSI driver after migration and only then captures strict
-  parity. The current script now asserts the source volume immediately after
-  each migration and before reinstallation, then restores that exact fixture
-  volume if the driver setup changes it. This distinguishes utility loss from
-  fixture reinstallation while keeping parity strict. No PV, PVC,
-  or backing-volume deletion was reported. The five-node kubeadm/Cilium
-  preflight passed but did not execute nodemigrate. Artifacts are at
-  `/tmp/nodemigrate-36318123614-artifacts/`.
+  at SHA `a95833a4` showed `default/csi-hostpathplugin`'s source `dev-dir`
+  `/dev` mount missing only after the integration harness reinstalled CSI.
+  Focused nodeapiserver schema-pruning and protobuf storage round-trip checks
+  passed at [36319639827](https://github.com/centerionware/not-k8s/actions/runs/36319639827)
+  and [36319953565](https://github.com/centerionware/not-k8s/actions/runs/36319953565).
+  At `ad861cdc`, the migration test asserted the volume before reinstallation
+  and strict API parity passed after it was restored. This was a fixture
+  mutation, not a confirmed migration loss. PV/PVC identity and data checks
+  passed; neither lane reached return in that run.
 
 - **Migration harness / ServiceAccount token fixture was rejected before
   migration.** In run
