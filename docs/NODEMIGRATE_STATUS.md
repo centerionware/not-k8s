@@ -16,12 +16,23 @@ separate living documents below.
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Current release-backed run [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663) passed the five-node Docker preflight, built `nodemigrate`, fetched the latest runtime in both lanes, then failed the K3s migration; upstream remains active. Branch-runtime run [36321804254](https://github.com/centerionware/not-k8s/actions/runs/36321804254) failed upstream after the target Cilium agent could not update `/proc/sys/net/ipv6/conf/cilium_host/forwarding`. Its K3s lane passed the source and nodestore checkpoints and started return migration, then timed out after 180 minutes before returned-source verification. Redacted CRI diagnostics and K3s containerd endpoint selection are included in the release-backed rerun. | [CI status](NODEMIGRATE_CI_STATUS.md) |
-| Nodemigrate merge gates | Both mandatory round-trip gates remain not passed: one-node K3s+Cilium and 3-control-plane + 2-worker upstream Kubernetes with Cilium and joined replacement. Run 36332106663 is exercising the single-node source lanes against regular `v0.8.0`; the five-node Docker preflight passed but is not the five-node migration gate. Neither round trip has passed all source/target/return parity and behavior checks. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest release-backed run [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663) failed both lanes on v0.8.0 Gateway API CRD compatibility, before nodestore checkpoints. Latest branch-runtime run [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680) passed source and nodestore storage checkpoints in both lanes; upstream failed return import when the cert-manager webhook ClusterIP timed out, while K3s remains in progress. The current branch adds kube-proxy readiness capture at `bb32d6c8`; PR static checks are in progress. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| Nodemigrate merge gates | Both mandatory round-trip gates remain not passed: one-node K3s+Cilium and 3-control-plane + 2-worker upstream Kubernetes with Cilium and joined replacement. The five-node Docker preflight in run 36335580680 passed, but it did not migrate the five-node cluster. Neither round trip has passed all source/target/return parity and behavior checks. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Passed [36278826637](https://github.com/centerionware/not-k8s/actions/runs/36278826637) at SHA `becc80a1de8cbb6c1204e3d27d62c39cb332f4a3`: five isolated nodes, kubeadm 3-control-plane/2-worker membership, Cilium 1.20.2 ready, API continuity through one control-plane loss, and all Nodes recovered after restart. This is infrastructure evidence only; migration was skipped. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
+
+- At branch SHA `bb32d6c86dfe614b87fa66edf26d313b3b1fa5ad`, the migration
+  watcher now records kube-proxy DaemonSet and Pod readiness during target
+  snapshots. Local shell syntax, diagnostic JSON regression, diff whitespace,
+  and commit-subject checks passed, as did migration workflow validation
+  [36339547744](https://github.com/centerionware/not-k8s/actions/runs/36339547744)
+  and targeted `nodemigrate` crate checks
+  [36339547796](https://github.com/centerionware/not-k8s/actions/runs/36339547796).
+  No runtime result is claimed for this instrumentation. The prior migration
+  run [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)
+  is still active in K3s, so no duplicate migration run has been dispatched.
 
 - Branch-runtime migration [36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
   at SHA `8c79470de60f288fc113db7b7b8c45da048b6ad7` passed the upstream source

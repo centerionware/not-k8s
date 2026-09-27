@@ -4,6 +4,24 @@ Last updated: 2026-09-27
 
 ## Current fixture finding
 
+- **Migration diagnostics / return Service routing failure lacked kube-proxy
+  readiness evidence.** Upstream lane of run
+  [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)
+  failed while importing three cert-manager resources: the retained API timed
+  out reaching the webhook Service ClusterIP. The captured snapshot recorded
+  `nodeproxy` as inactive but did not record kube-proxy DaemonSet or Pod
+  readiness, so this does not establish which Service-routing component was
+  missing or unhealthy. At `bb32d6c8`, the migration watcher now captures the
+  kube-proxy DaemonSet desired/current/ready/available counts and Pod
+  conditions alongside its existing Cilium and webhook probes. `bash -n`,
+  `git diff --check`, the migration-watcher JSON diagnostic check, and commit
+  subject validation passed locally. PR static validation
+  [36339547744](https://github.com/centerionware/not-k8s/actions/runs/36339547744)
+  and targeted nodemigrate checks
+  [36339547796](https://github.com/centerionware/not-k8s/actions/runs/36339547796)
+  passed at SHA `bb32d6c8`. A new migration lane must supply runtime evidence.
+  No PV deletion was reported in run 36335580680.
+
 - **Migration integration fixture / StatefulSet API default compared as a
   data change.** Run
   [36320456287](https://github.com/centerionware/not-k8s/actions/runs/36320456287)

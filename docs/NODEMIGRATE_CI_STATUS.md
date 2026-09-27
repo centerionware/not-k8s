@@ -111,6 +111,17 @@ fix now pushed at `deaed970`. Log:
 lane is still active. A new branch-runtime run at the fix SHA is required after
 this run finishes.
 
+At SHA `bb32d6c86dfe614b87fa66edf26d313b3b1fa5ad`, the target-state watcher
+adds kube-proxy DaemonSet and Pod readiness to its Cilium and webhook
+diagnostics, addressing a gap in the upstream failure capture above. Migration
+workflow validation passed in
+[36339547744](https://github.com/centerionware/not-k8s/actions/runs/36339547744),
+and the targeted nodemigrate crate checks passed in
+[36339547796](https://github.com/centerionware/not-k8s/actions/runs/36339547796).
+These checks do not exercise the watcher against a live target. Run
+36335580680 remains active in its K3s lane and predates this instrumentation;
+no duplicate migration run has been dispatched.
+
 Release-backed migration run
 [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663)
 was dispatched at PR #591 head `012f1b7351da10cd78bec309e1efc6a2e9de439e`
