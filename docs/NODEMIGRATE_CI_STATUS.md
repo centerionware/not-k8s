@@ -49,7 +49,11 @@ non-root `emptyDir` exec check. Code inspection points to CRI lookups choosing
 stale sandboxes or container attempts. Nodelet now selects by current Pod UID
 when available and prefers ready sandboxes and running container attempts;
 focused regressions are added, while nodelet quick-check and live migration
-verification are pending. Artifacts are in
+verification are pending. The first nodelet quick-check
+[36359505569](https://github.com/centerionware/not-k8s/actions/runs/36359505569)
+failed to compile two parts of the new selector (sibling test visibility and a
+borrow/move conflict); both are corrected in the next branch commit. Artifacts
+are in
 `/tmp/nodemigrate-36357521280/`.
 
 Branch-runtime migration run

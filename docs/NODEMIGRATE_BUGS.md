@@ -16,8 +16,9 @@ Last updated: 2026-09-27
   sandbox; container lookup prefers a running attempt, then the newest
   attempt. Focused regressions cover stale sandbox UIDs, readiness/order,
   exited attempts, and wrong-name filtering. This is the leading explanation
-  for the fixture failures; branch quick-check and live migration confirmation
-  are pending.
+  for the fixture failures. Quick-check [36359505569](https://github.com/centerionware/not-k8s/actions/runs/36359505569)
+  found selector visibility and ownership compile errors; both are corrected
+  locally, but the correction and live migration confirmation are pending CI.
 
 - **Five-node CI: setup-script copy collided with its `/tmp` source.** The same
   run passed Docker's five-node kubeadm/Cilium setup and control-plane-loss

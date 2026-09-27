@@ -33,7 +33,9 @@ separate living documents below.
   an unavailable `emptyDir` test container. Code inspection points to CRI
   lookups choosing stale sandboxes or container attempts. Nodelet now selects
   by current Pod UID when available and prefers ready sandboxes and running
-  container attempts; its quick-check and live migration rerun are pending. Logs
+  container attempts. Quick-check [36359505569](https://github.com/centerionware/not-k8s/actions/runs/36359505569)
+  found selector visibility and borrow/move compile errors, now corrected in
+  the working tree; live migration validation is pending. Logs
   are saved under `/tmp/nodemigrate-36357521280/`. No general build or full
   e2e gate was run.
 

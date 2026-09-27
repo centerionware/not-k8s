@@ -422,7 +422,7 @@ impl CriRuntime {
 /// sandbox matching the current Pod UID when one exists; otherwise return a
 /// stale candidate for ensure_pod() to replace. Name-only status and exec
 /// operations prefer a ready, newer sandbox.
-fn select_pod_sandbox(
+pub(crate) fn select_pod_sandbox(
     sandboxes: Vec<v1::PodSandbox>,
     expected_uid: Option<&str>,
 ) -> Option<(String, i32, String)> {
@@ -430,8 +430,12 @@ fn select_pod_sandbox(
     let mut matching: Vec<_> = sandboxes
         .into_iter()
         .map(|sandbox| {
-            let uid = sandbox.metadata.as_ref().map(|metadata| metadata.uid.as_str()).unwrap_or_default();
-            (sandbox, uid.to_string())
+            let uid = sandbox
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.uid.clone())
+                .unwrap_or_default();
+            (sandbox, uid)
         })
         .collect();
     if let Some(expected) = expected_uid {
