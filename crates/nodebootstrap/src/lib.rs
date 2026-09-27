@@ -714,6 +714,7 @@ fn dispatch(subcommand: Option<&str>) -> Result<()> {
         Some("manifests") => manifests::run_with(&cfg),
         Some("services") => services::run_with(&cfg),
         Some("nodestore") => services::ensure_nodestore(&cfg),
+        Some("promote-member") => cluster::promote_existing(&cfg),
         Some("replace-member") => cluster::replace_existing(&cfg),
         Some("nodelet") => services::ensure_nodelet(&cfg),
         Some("nodeproxy") => services::ensure_nodeproxy(&cfg),
@@ -763,6 +764,7 @@ fn print_help() {
     println!("  --remove-control-plane remove this member and its local control-plane services");
     println!("  --member-id=N          member id to remove with --remove-control-plane");
     println!("  replace-member         promote joined member, then retire --member-id");
+    println!("  promote-member         promote this joined control-plane member");
     println!("  --node-name=NAME       Kubernetes node name (defaults to hostname)");
     println!("  --e2e                  run bootstrap-native end-to-end checks");
     println!("  --e2e-list             list selected e2e checks without contacting a cluster");

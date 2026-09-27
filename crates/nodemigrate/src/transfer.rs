@@ -259,21 +259,25 @@ impl KubeApi {
     pub fn ready(&self) -> Result<()> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
-            let discovery = Discovery::new(client.clone())
-                .run()
-                .await
-                .context("discovering Kubernetes APIs")?;
-            let (resource, capabilities) = find_resource(&discovery, "Namespace", "v1")
-                .context("Kubernetes API does not expose Namespace")?;
-            ensure!(
-                capabilities.supports_operation(verbs::LIST),
-                "Kubernetes API cannot list namespaces"
-            );
-            let api: Api<DynamicObject> = Api::all_with(client, &resource);
-            api.list(&ListParams::default())
-                .await
-                .context("checking Kubernetes API readiness")?;
-            Ok(())
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                let discovery = Discovery::new(client.clone())
+                    .run()
+                    .await
+                    .context("discovering Kubernetes APIs")?;
+                let (resource, capabilities) = find_resource(&discovery, "Namespace", "v1")
+                    .context("Kubernetes API does not expose Namespace")?;
+                ensure!(
+                    capabilities.supports_operation(verbs::LIST),
+                    "Kubernetes API cannot list namespaces"
+                );
+                let api: Api<DynamicObject> = Api::all_with(client, &resource);
+                api.list(&ListParams::default())
+                    .await
+                    .context("checking Kubernetes API readiness")?;
+                Ok(())
+            })
+            .await
+            .context("Kubernetes API readiness probe exceeded 10 seconds")?
         })
     }
 

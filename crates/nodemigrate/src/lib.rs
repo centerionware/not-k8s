@@ -382,12 +382,15 @@ fn migrate_to_nodestore(
         );
     }
     if joins_existing {
-        if let Some(old_member_id) = replacement_member_id {
-            run_bootstrap(replace_member_command(&old_member_id.to_string())?).with_context(|| format!(
-                "promoting this Ready replacement before retiring old nodestore member {old_member_id}; source remains disabled and recovery export is at {}",
-                export.dir.display()
-            ))?;
-        }
+        let membership_command = if let Some(old_member_id) = replacement_member_id {
+            replace_member_command(&old_member_id.to_string())?
+        } else {
+            promote_member_command()?
+        };
+        run_bootstrap(membership_command).with_context(|| format!(
+            "promoting this Ready control-plane member and completing any requested member replacement; source remains disabled and recovery export is at {}",
+            export.dir.display()
+        ))?;
     }
     if request.uninstall_after_migrate {
         if let Err(uninstall_error) = service::uninstall_source(source) {
@@ -1278,12 +1281,23 @@ fn is_root() -> bool {
 
 fn wait_for_api(target: &transfer::KubeApi) -> Result<()> {
     let mut last_error = None;
-    for _ in 0..60 {
+    let started = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(300);
+    let mut attempt = 0;
+    while started.elapsed() < timeout {
+        attempt += 1;
         match target.ready() {
             Ok(()) => return Ok(()),
-            Err(error) => last_error = Some(error),
+            Err(error) => {
+                eprintln!("nodemigrate: destination API readiness probe {attempt} failed: {error:#}");
+                last_error = Some(error);
+            }
         }
-        std::thread::sleep(std::time::Duration::from_secs(5));
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5).min(remaining));
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("destination cluster did not become ready")))
         .context("waiting for the destination API and node to become ready")
@@ -1413,6 +1427,26 @@ fn replace_member_command(old_member_id: &str) -> Result<Command> {
         format!("--peer-url={peer_url}"),
         format!("--member-id={old_member_id}"),
         "replace-member".to_string(),
+    ]);
+    Ok(command)
+}
+
+fn promote_member_command() -> Result<Command> {
+    let endpoint = std::env::var("NODEBOOTSTRAP_JOIN_ENDPOINT")
+        .context("control-plane promotion requires NODEBOOTSTRAP_JOIN_ENDPOINT")?;
+    let peer_url = std::env::var("NODEBOOTSTRAP_PEER_URL")
+        .context("control-plane promotion requires NODEBOOTSTRAP_PEER_URL")?;
+    let binary = find_executable(&["notk8s", "nodebootstrap"])
+        .context("could not find the combined notk8s or standalone nodebootstrap binary on PATH")?;
+    let mut command = Command::new(binary);
+    if command.get_program().to_string_lossy().ends_with("notk8s") {
+        command.arg("bootstrap");
+    }
+    command.args([
+        "--release".to_string(),
+        format!("--join={endpoint}"),
+        format!("--peer-url={peer_url}"),
+        "promote-member".to_string(),
     ]);
     Ok(command)
 }

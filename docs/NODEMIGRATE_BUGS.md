@@ -4,6 +4,23 @@ Last updated: 2026-09-27
 
 ## Current fixture finding
 
+- **`nodemigrate`: a new control-plane join could stay a Raft learner.** The
+  five-node migration design joins each additional control plane to the
+  existing nodestore cluster, but the previous code promoted membership only
+  when replacing a known old member. A fresh control-plane join could
+  therefore be Ready in Kubernetes while never voting in the datastore
+  quorum. The migration now promotes the joined member after its Kubernetes
+  Node becomes Ready; the existing replacement path still promotes before
+  removing the old member. Focused tests and runtime evidence are pending.
+
+- **`nodemigrate`: retained-API readiness could hang inside one client call.**
+  Run [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
+  remained at the return-migration readiness message for over an hour. The
+  retry loop was five minutes, but a Kubernetes discovery/list call had no
+  deadline, so it could block past that loop. Each API probe now has a
+  ten-second deadline and each failed attempt logs its error. A new focused
+  check and a live migration run are pending.
+
 - **`nodemigrate`: later cluster nodes reused the first node's protected
   export.** Forward and staged reverse control-plane paths loaded
   `source-export=` and wrote node-specific host-path/CNI recovery material

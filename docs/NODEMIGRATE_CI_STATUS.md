@@ -7,6 +7,16 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+Run [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
+at SHA `7f1c53f1` is terminal `cancelled`. Its K3s lane completed forward
+migration and API export, then started retained K3s for the return leg and
+stalled inside retained-API readiness for over an hour. The final log artifact
+is `/tmp/nodemigrate-36343008296-k3s/nodemigrate-k3s.log`; it ends immediately
+after `waiting for retained destination API readiness`, so the underlying API
+failure is not known. A timeout and per-probe error logging are now being added;
+they still need focused CI verification. The paired upstream lane failed and
+is not evidence for the current branch.
+
 The [bug and fix tracker](NODEMIGRATE_BUGS.md) lists confirmed defects by
 owning component, branch fix, and focused test evidence. The target is the
 coordinated `v0.8.1` runtime and standalone utility; `v0.8.0` remains the
