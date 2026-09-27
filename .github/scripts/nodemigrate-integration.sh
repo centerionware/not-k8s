@@ -2118,12 +2118,33 @@ verify_stage() {
     CURRENT_KUBECONFIG="$2"
     export KUBECONFIG="$CURRENT_KUBECONFIG"
     echo "Verifying stage=$stage distro=$SOURCE_DIST kubeconfig=$CURRENT_KUBECONFIG"
-    if [[ "$stage" == nodestore && "${NODEMIGRATE_CILIUM_KPR:-false}" == true ]]; then
+    if [[ "$stage" == nodestore ]]; then
+        local kube_proxy_daemonset=false nodeproxy_active=false
+        if kubectl get daemonset kube-proxy -n kube-system >/dev/null 2>&1; then
+            kube_proxy_daemonset=true
+        fi
         if systemctl is-active --quiet nodeproxy; then
-            echo "nodeproxy is active at the Cilium KPR nodestore checkpoint" >&2
+            nodeproxy_active=true
+        fi
+        if [[ "$kube_proxy_daemonset" == true && "$nodeproxy_active" == true ]]; then
+            echo "kube-proxy DaemonSet and nodeproxy are competing Service datapaths" >&2
             return 1
         fi
-        echo "PASS nodeproxy is inactive with Cilium kube-proxy replacement at stage=$stage"
+        if [[ "${NODEMIGRATE_CILIUM_KPR:-false}" == true ]]; then
+            [[ "$kube_proxy_daemonset" == false && "$nodeproxy_active" == false ]] || {
+                echo "Cilium KPR owns Service routing, but another proxy is installed" >&2
+                return 1
+            }
+            echo "PASS Cilium eBPF owns Service routing without kube-proxy or nodeproxy"
+        elif [[ "$kube_proxy_daemonset" == true ]]; then
+            echo "PASS kube-proxy DaemonSet owns Service routing without nodeproxy"
+        else
+            [[ "$nodeproxy_active" == true ]] || {
+                echo "neither kube-proxy, Cilium KPR, nor nodeproxy owns Service routing" >&2
+                return 1
+            }
+            echo "PASS nodeproxy owns Service routing without kube-proxy"
+        fi
     fi
     capture_cilium_agent_cri_security "$CURRENT_KUBECONFIG"
     verify_ingress_spec "$stage"

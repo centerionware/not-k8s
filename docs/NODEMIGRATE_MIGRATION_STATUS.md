@@ -33,8 +33,13 @@ The migration fixture installs Cilium 1.20.2 with
 the `kube-proxy` watcher output is diagnostic, and an empty result is valid
 for a Cilium KPR cluster. At `7c1c0b1b`, joined-worker bootstrap reads
 `kube-system/cilium-config` and passes `--proxy=none` when Cilium KPR is
-enabled; otherwise nodeproxy remains the Service proxy. Plan output and logs
-report that choice. The focused nodemigrate quick-check
+enabled. Code review then found that an upstream kube-proxy DaemonSet could be
+imported while nodeproxy was also started when KPR was disabled. The current
+worktree preserves that DaemonSet as the Service proxy owner, disables
+nodeproxy, and checks that exactly one proxy owns routing at the nodestore
+checkpoint; K3s still uses nodeproxy when its embedded kube-proxy stops.
+Focused checks and migration runtime verification for this ownership fix are
+pending. Plan output and logs report the selected mode. The focused nodemigrate quick-check
 [36342042535](https://github.com/centerionware/not-k8s/actions/runs/36342042535)
 passed. KPR-enabled single-node migration run
 [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
@@ -51,6 +56,9 @@ The dedicated integration workflow now accepts `cilium_kpr=false|true`.
 For `true`, it disables the K3s kube-proxy or skips kubeadm's kube-proxy
 addon, configures Cilium KPR, and fails the source fixture if kube-proxy's
 DaemonSet remains; the nodestore checkpoint also fails if nodeproxy is active.
+Code review found that `sudo --preserve-env` dropped the KPR option before the
+root-run fixture; the workflow now forwards it. Validation for this fix is
+pending.
 The five-node kubeadm/Cilium preflight now receives the same KPR input, skips
 the kube-proxy addon when enabled, configures Cilium accordingly, and asserts
 the DaemonSet is absent. Enabled-KPR preflight

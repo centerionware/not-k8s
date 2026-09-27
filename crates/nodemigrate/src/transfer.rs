@@ -298,6 +298,26 @@ impl KubeApi {
         })
     }
 
+    /// Whether the source API still owns Service routing through kube-proxy.
+    pub fn kube_proxy_daemonset_present(&self) -> Result<bool> {
+        let (runtime, client) = self.connected()?;
+        runtime.block_on(async {
+            let discovery = Discovery::new(client.clone())
+                .run()
+                .await
+                .context("discovering APIs before checking kube-proxy ownership")?;
+            let (resource, capabilities) = find_resource(&discovery, "DaemonSet", "apps/v1")
+                .context("Kubernetes API does not expose apps/v1 DaemonSet")?;
+            ensure!(
+                capabilities.supports_operation(verbs::GET),
+                "Kubernetes API cannot inspect kube-proxy DaemonSet"
+            );
+            let api: Api<DynamicObject> =
+                Api::namespaced_with(client, "kube-system", &resource);
+            Ok(api.get_opt("kube-proxy").await?.is_some())
+        })
+    }
+
     pub fn node_count(&self) -> Result<usize> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
@@ -1507,6 +1527,26 @@ impl Export {
         Ok(false)
     }
 
+    pub(crate) fn kube_proxy_daemonset_present(&self) -> Result<bool> {
+        for object in &self.objects {
+            let value: Value = serde_json::from_slice(
+                &fs::read(&object.path)
+                    .with_context(|| {
+                        format!("reading migration object {}", object.path.display())
+                    })?,
+            )
+            .with_context(|| format!("decoding migration object {}", object.path.display()))?;
+            if value.get("kind").and_then(Value::as_str) == Some("DaemonSet")
+                && value.pointer("/metadata/namespace").and_then(Value::as_str)
+                    == Some("kube-system")
+                && value.pointer("/metadata/name").and_then(Value::as_str) == Some("kube-proxy")
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) fn control_plane_node_names(&self) -> Vec<String> {
         self.node_states
             .iter()
@@ -2710,15 +2750,25 @@ mod tests {
     fn reads_cilium_service_proxy_mode_from_protected_export() {
         let directory = tempfile::tempdir().unwrap();
         let object_path = directory.path().join("000001.json");
+        let proxy_path = directory.path().join("000002.json");
         fs::write(
             &object_path,
             br#"{"apiVersion":"v1","kind":"ConfigMap","metadata":{"namespace":"kube-system","name":"cilium-config"},"data":{"kube-proxy-replacement":"strict"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            &proxy_path,
+            br#"{"apiVersion":"apps/v1","kind":"DaemonSet","metadata":{"namespace":"kube-system","name":"kube-proxy"}}"#,
         )
         .unwrap();
         let export = Export {
             dir: directory.path().to_path_buf(),
             objects: vec![ExportedObject {
                 path: object_path,
+                source_uid: None,
+            },
+            ExportedObject {
+                path: proxy_path,
                 source_uid: None,
             }],
             node_states: BTreeMap::new(),
@@ -2728,6 +2778,7 @@ mod tests {
         };
 
         assert!(export.cilium_kube_proxy_replacement().unwrap());
+        assert!(export.kube_proxy_daemonset_present().unwrap());
     }
 
     #[test]

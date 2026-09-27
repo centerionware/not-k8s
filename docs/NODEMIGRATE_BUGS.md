@@ -4,6 +4,25 @@ Last updated: 2026-09-27
 
 ## Current fixture finding
 
+- **`nodemigrate`: kube-proxy and nodeproxy could both own Service
+  routing when Cilium KPR is disabled.** Code review found that upstream
+  a source cluster may export its kube-proxy DaemonSet, while nodemigrate
+  selected nodeproxy solely from Cilium's KPR setting. That could start two
+  Service datapaths on the target. Forward migration now detects the source
+  kube-proxy DaemonSet (from the live API or protected export), preserves it,
+  and passes `--proxy=none`; joined workers inspect the destination API and
+  make the same choice. It rejects a source that simultaneously enables
+  Cilium KPR and kube-proxy before cutover. The migration checkpoint now
+  requires exactly one Service proxy owner, or Cilium KPR alone. Focused unit
+  coverage and a migration run are pending; no runtime result is claimed yet.
+
+- **Migration workflow: the KPR option was dropped across `sudo`.** Although
+  the workflow step set `NODEMIGRATE_CILIUM_KPR`, its explicit
+  `sudo --preserve-env` list omitted that variable, so the root-run source
+  installer and integration assertions silently used the default `false`.
+  The preserved environment now includes the option. Workflow validation and
+  a runtime lane using both KPR settings are pending.
+
 - **Nodemigrate integration fixture / five-node preflight ignored its KPR
   input.** Run
   [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
