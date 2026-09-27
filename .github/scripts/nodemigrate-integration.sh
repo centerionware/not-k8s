@@ -1734,7 +1734,7 @@ record_fixture_storage_specs() {
 
 exercise_statefulset_scaling() {
     local stage="$1"
-    local claim_uid claim_uid_after ordinal_one_pv deadline original_min_ready_seconds
+    local claim_uid claim_uid_after ordinal_one_pv ordinal_one_claim_uid original_min_ready_seconds
     claim_uid="$(kubectl get pvc state-migration-stateful-0 -n migration-apps \
         -o jsonpath='{.metadata.uid}')"
     [[ -n "$claim_uid" ]] || {
@@ -1788,28 +1788,42 @@ exercise_statefulset_scaling() {
     }
     ordinal_one_pv="$(kubectl get pvc state-migration-stateful-1 -n migration-apps \
         -o jsonpath='{.spec.volumeName}')"
-    [[ -n "$ordinal_one_pv" ]] || {
-        echo "StatefulSet ordinal 1 PVC has no bound PV at stage=$stage" >&2
+    ordinal_one_claim_uid="$(kubectl get pvc state-migration-stateful-1 -n migration-apps \
+        -o jsonpath='{.metadata.uid}')"
+    [[ -n "$ordinal_one_pv" && -n "$ordinal_one_claim_uid" ]] || {
+        echo "StatefulSet ordinal 1 PVC has no stable bound PV identity at stage=$stage" >&2
         return 1
     }
-    kubectl get pv "$ordinal_one_pv" -o json | jq -e \
-        '.spec.persistentVolumeReclaimPolicy == "Delete"' >/dev/null || {
-            echo "StatefulSet scale fixture requires Delete reclaim for temporary ordinal 1 PV $ordinal_one_pv" >&2
-            return 1
-        }
 
+    # Scaling a StatefulSet down removes the Pod, but its claim-template PVC
+    # and PV are durable workload data. Keep both through migration; deleting
+    # this PVC would trigger the hostpath CSI PV's Delete reclaim policy.
     kubectl scale statefulset/migration-stateful -n migration-apps --replicas=1
     kubectl rollout status statefulset/migration-stateful -n migration-apps --timeout=5m
     kubectl wait -n migration-apps --for=delete pod/migration-stateful-1 --timeout=5m
-    kubectl delete pvc state-migration-stateful-1 -n migration-apps --wait=true
-    deadline=$((SECONDS + 300))
-    while kubectl get pv "$ordinal_one_pv" >/dev/null 2>&1; do
-        if (( SECONDS >= deadline )); then
-            echo "Temporary StatefulSet ordinal 1 PV was not reclaimed at stage=$stage: $ordinal_one_pv" >&2
-            return 1
-        fi
-        sleep 2
-    done
+    [[ "$(kubectl get pvc state-migration-stateful-1 -n migration-apps -o jsonpath='{.metadata.uid}')" == "$ordinal_one_claim_uid" ]] || {
+        echo "StatefulSet scale-down changed ordinal 1 PVC identity at stage=$stage" >&2
+        return 1
+    }
+    [[ "$(kubectl get pvc state-migration-stateful-1 -n migration-apps -o jsonpath='{.spec.volumeName}')" == "$ordinal_one_pv" ]] || {
+        echo "StatefulSet scale-down changed ordinal 1 PV binding at stage=$stage" >&2
+        return 1
+    }
+    kubectl get pv "$ordinal_one_pv" >/dev/null || {
+        echo "StatefulSet scale-down removed ordinal 1 PV $ordinal_one_pv at stage=$stage" >&2
+        return 1
+    }
+
+    kubectl scale statefulset/migration-stateful -n migration-apps --replicas=2
+    kubectl rollout status statefulset/migration-stateful -n migration-apps --timeout=5m
+    kubectl wait -n migration-apps --for=condition=Ready pod/migration-stateful-1 --timeout=5m
+    [[ "$(kubectl exec -n migration-apps migration-stateful-1 -- cat /state/marker)" == ordinal-one-transient-data ]] || {
+        echo "StatefulSet ordinal 1 data changed after scale-down/up at stage=$stage" >&2
+        return 1
+    }
+    kubectl scale statefulset/migration-stateful -n migration-apps --replicas=1
+    kubectl rollout status statefulset/migration-stateful -n migration-apps --timeout=5m
+    kubectl wait -n migration-apps --for=delete pod/migration-stateful-1 --timeout=5m
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-stateful-0 --timeout=5m
     claim_uid_after="$(kubectl get pvc state-migration-stateful-0 -n migration-apps \
         -o jsonpath='{.metadata.uid}')"
@@ -1821,7 +1835,7 @@ exercise_statefulset_scaling() {
         echo "StatefulSet ordinal 0 data changed during scale at stage=$stage" >&2
         return 1
     }
-    echo "PASS StatefulSet ordinal scale, claim-template provisioning and ordinal 0 data at stage=$stage"
+    echo "PASS StatefulSet scale preserves ordinal 0/1 PVCs, PV bindings and data at stage=$stage"
 }
 
 verify_stage() {

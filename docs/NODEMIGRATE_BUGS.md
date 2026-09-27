@@ -4,6 +4,19 @@ Last updated: 2026-09-27
 
 ## Current source-review finding
 
+- **Migration harness / storage safety: StatefulSet fixture deleted a PVC.** In
+  run [36304940296](https://github.com/centerionware/not-k8s/actions/runs/36304940296),
+  `exercise_statefulset_scaling` deleted ordinal 1's claim after scaling the
+  fixture down. The claim's hostPath CSI PV used reclaim policy `Delete`, and
+  the CSI provisioner log confirms it deleted that test volume. This happened
+  in fixture preparation before nodemigrate ran; the migration utility did not
+  delete the PV. Even as test cleanup, deleting a workload claim in the
+  migration checkpoint undermines the required data-preservation proof. The
+  fixture now retains the ordinal 1 PVC, PV binding, and payload through
+  scale-down and scale-up, and verifies the same claim UID, volume name, and
+  data. Shell syntax passes; runtime validation on the changed fixture is
+  pending.
+
 - **`nodemigrate` / `nodecontroller`: legacy ServiceAccount token Secrets are
   excluded.** `object_skip_reason` drops every Secret of type
   `kubernetes.io/service-account-token`, while the not-k8s

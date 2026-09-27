@@ -15,6 +15,28 @@ new fixes.
 
 ## Most recent evidence
 
+Run [36304940296](https://github.com/centerionware/not-k8s/actions/runs/36304940296)
+at SHA `9ded8f16246262817041197d6884708085cd8911` passed the focused
+`nodeapiserver` quick-check [36304738739](https://github.com/centerionware/not-k8s/actions/runs/36304738739)
+and the five-node Docker/kubeadm/Cilium preflight. Both migration utility and
+branch-runtime builds passed. Both migration lanes failed before completing a
+round trip. K3s reached the nodestore checkpoint, then reported that the
+source-discovered `kube-system/metrics-server-77dbbf84b` ReplicaSet was missing
+there. The upstream Kubernetes lane failed source-to-nodestore parity; reported
+differences include changing scheduler Lease fields, upstream bootstrap
+metadata on CoreDNS RBAC and PriorityClasses, `CSIDriver` scheduling behavior,
+and `CSINode` owner references. Runtime logs also show CSI socket connection
+refusals and restarted Cilium/cert-manager Pods, which need separate diagnosis.
+
+The run also exposed a destructive fixture action: its StatefulSet scale
+exercise deleted ordinal 1's PVC, causing the hostPath CSI provisioner to
+delete that claim's `Delete`-policy PV before nodemigrate started. Nodemigrate
+itself did not delete the PV. The harness change now keeps that claim, PV
+binding, and data through scale-down/up and asserts their identity and contents.
+The changed fixture still needs a dedicated runtime rerun; no K3s/upstream round
+trip has passed.
+
+
 Run [36299240279](https://github.com/centerionware/not-k8s/actions/runs/36299240279)
 at SHA `20648debff0f7f338c3e37303bbaf367ffa449a4` completed with a passed
 five-node Docker/kubeadm/Cilium preflight and both utility/runtime builds;
@@ -470,9 +492,9 @@ published.
 
 The fixture now scales the StatefulSet from one ordinal to two and back at
 every source, nodestore, and returned-source checkpoint. It checks both Pods
-and template-created claims, writes unique data to ordinal 1, removes its
-temporary claim/PV after scale-down, and verifies ordinal 0 retains its PVC UID
-and payload. It also changes `minReadySeconds`, waits for StatefulSet
+and template-created claims, writes unique data to ordinal 1, retains its PVC,
+PV binding, and payload through scale-down/up, and verifies both ordinals retain
+their data and PVC identities. It also changes `minReadySeconds`, waits for StatefulSet
 `observedGeneration`, and restores the original setting. Local shell syntax, API inventory/object-hash checks,
 snapshot-normalization, Helm-state checks, and `git diff --check` passed at
 `a936dc7e4b625ee67c49429f11a1c1778372d1c9`. PR validation and cluster runtime
