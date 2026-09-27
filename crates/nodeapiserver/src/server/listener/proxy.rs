@@ -379,15 +379,18 @@ fn proxy_suffix(info: &path::RequestInfo) -> String {
 async fn proxy_resource(
     req: Request<Incoming>,
     storage: Option<StorageClient>,
-    cache_registry: &crate::cacher::CacheRegistry,
-    info: &path::RequestInfo,
-    method: &str,
-    path_str: &str,
-    query: &str,
-    identity: &Option<crate::authn::x509::Identity>,
+    cache_registry: crate::cacher::CacheRegistry,
+    info: path::RequestInfo,
+    method: String,
+    path_str: String,
+    query: String,
+    identity: Option<crate::authn::x509::Identity>,
     enforce_rbac: bool,
     kubelet_tls: std::sync::Arc<rustls::ClientConfig>,
 ) -> Response<BoxedBody> {
+    let path_str = path_str.as_str();
+    let query = query.as_str();
+    let method = method.as_str();
     let Some(mut client) = storage else {
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -405,7 +408,7 @@ async fn proxy_resource(
             user_name,
             &user_groups,
             &info.namespace,
-            Some(cache_registry),
+            Some(&cache_registry),
         )
         .await;
         let subresource = if info.verb == "proxy" {
@@ -462,6 +465,7 @@ async fn proxy_resource(
             );
         }
         let (service_name, _) = proxy::service_proxy::split_name(&info.name);
+        let service_name = service_name.to_string();
         let service = match rest::get(
             &mut client,
             None,
@@ -469,7 +473,7 @@ async fn proxy_resource(
             "v1",
             "services",
             Some(&info.namespace),
-            service_name,
+            &service_name,
         )
         .await
         {

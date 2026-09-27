@@ -307,12 +307,12 @@ async fn handle(
         return Ok(proxy_resource(
             req,
             storage,
-            &cache_registry,
-            &info,
-            &method,
-            &path_str,
-            &query,
-            &identity,
+            cache_registry.clone(),
+            info.clone(),
+            method.clone(),
+            path_str.clone(),
+            query.clone(),
+            identity.clone(),
             enforce_rbac,
             kubelet_tls,
         )
