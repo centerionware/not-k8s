@@ -41,9 +41,22 @@ volume-claim-template scale checks. It failed in both lanes because the
 temporary ordinal-1 PV was not deleted after its PVC was removed. The cause is
 confirmed in `nodecontroller::pv_binder`, whose documented scope had no release
 or reclaim handling. A claim-release reconciler is now in the worktree; its
-focused quick-check and a migration rerun are pending. The eviction path still
+first revision passed focused `nodecontroller` quick-check
+[36288813455](https://github.com/centerionware/not-k8s/actions/runs/36288813455)
+but the migration rerun below exposed the need to mark a `Delete` PV Released
+before deletion. The eviction path still
 does not reserve allowance atomically across concurrent requests, so full PDB
 concurrency semantics remain unverified.
+
+Migration run [36288813404](https://github.com/centerionware/not-k8s/actions/runs/36288813404)
+at SHA `2ea1a793` passed preflight, builds, API readiness, and StatefulSet
+ordinal-0 data checks in both lanes. Both lanes still failed after deleting the
+temporary ordinal-1 PVC because its PV remained. CSI provisioner logs directly
+showed `shouldDelete is false: PersistentVolumePhase is not Released`. The
+worktree now patches `status.phase=Released` before the preconditioned PV
+delete. Focused quick-check and another branch-runtime migration are pending.
+No return migration or parity comparison passed. Full artifacts:
+`/tmp/nodemigrate-36288813404-artifacts/nodemigrate-{k3s,kubernetes}-36288813404/`.
 
 Release-backed migration run [36283329273](https://github.com/centerionware/not-k8s/actions/runs/36283329273)
 at SHA `786e95577686f1fd5ed08a94f76ade48861314b4` fetched the exact regular

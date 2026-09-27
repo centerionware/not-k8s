@@ -132,7 +132,7 @@ fn pv_has_live_claim(pv: &PersistentVolume, claims: &HashMap<(String, String), P
 
 async fn reconcile_released_pv(client: &Client, name: &str) -> bool {
     let pv_api: Api<PersistentVolume> = Api::all(client.clone());
-    let pv = match tokio::time::timeout(API_WRITE_TIMEOUT, pv_api.get_opt(name)).await {
+    let mut pv = match tokio::time::timeout(API_WRITE_TIMEOUT, pv_api.get_opt(name)).await {
         Ok(Ok(Some(pv))) => pv,
         Ok(Ok(None)) => return false,
         Ok(Err(error)) => {
@@ -188,6 +188,30 @@ async fn reconcile_released_pv(client: &Client, name: &str) -> bool {
         }
     }
 
+    // CSI external-provisioner only calls DeleteVolume after the PV controller
+    // has moved the volume to Released. Mark that transition before setting
+    // deletionTimestamp; otherwise the provisioner observes a terminating
+    // but still Bound PV and deliberately refuses to delete its backing data.
+    if pv.status.as_ref().and_then(|status| status.phase.as_deref()) != Some("Released") {
+        let patch = serde_json::json!({"status":{"phase":"Released"}});
+        match tokio::time::timeout(
+            API_WRITE_TIMEOUT,
+            pv_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)),
+        )
+        .await
+        {
+            Ok(Ok(updated)) => pv = updated,
+            Ok(Err(error)) => {
+                tracing::warn!(pv = %name, error = ?error, "failed to mark reclaimed PersistentVolume Released");
+                return true;
+            }
+            Err(_) => {
+                tracing::warn!(pv = %name, "timed out marking reclaimed PersistentVolume Released");
+                return true;
+            }
+        }
+    }
+
     match reclaim_action(&pv) {
         ReclaimAction::Delete => {
             let params = DeleteParams {
@@ -213,26 +237,7 @@ async fn reconcile_released_pv(client: &Client, name: &str) -> bool {
             }
         }
         ReclaimAction::Retain => {
-            if pv.status.as_ref().and_then(|status| status.phase.as_deref()) == Some("Released") {
-                return false;
-            }
-            let patch = serde_json::json!({"status":{"phase":"Released"}});
-            match tokio::time::timeout(
-                API_WRITE_TIMEOUT,
-                pv_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)),
-            )
-            .await
-            {
-                Ok(Ok(_)) => false,
-                Ok(Err(error)) => {
-                    tracing::warn!(pv = %name, error = ?error, "failed to mark retained PersistentVolume Released");
-                    true
-                }
-                Err(_) => {
-                    tracing::warn!(pv = %name, "timed out marking retained PersistentVolume Released");
-                    true
-                }
-            }
+            false
         }
     }
 }

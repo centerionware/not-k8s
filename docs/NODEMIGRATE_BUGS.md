@@ -33,11 +33,16 @@ Confirmed defect and branch work:
   nodestore checkpoints, deleting the temporary StatefulSet ordinal-1 PVC left
   its dynamically provisioned `Delete`-policy PV present for the full five
   minute fixture deadline. `pv_binder` explicitly documented that it did not
-  handle release/reclaim. The worktree now reconciles released claims by UID,
-  requests preconditioned PV deletion for `Delete`, and leaves payloads intact
-  while marking `Retain`/legacy `Recycle` volumes `Released`; CSI deletion
-  finalizers remain with the external provisioner. Focused tests and runtime
-  rerun are pending.
+  handle release/reclaim. A first implementation deleted the PV after checking
+  for stale claim UIDs, but run [36288813404](https://github.com/centerionware/not-k8s/actions/runs/36288813404)
+  still failed both lanes. The hostPath CSI external-provisioner log explains
+  why: it refused `DeleteVolume` while the terminating PV phase was still
+  `Bound` (`shouldDelete is false: PersistentVolumePhase is not Released`). The
+  current worktree now marks the PV `Released` before issuing a UID/resource
+  version-preconditioned delete. It leaves `Retain` and legacy `Recycle` PVs
+  released with payload intact. Focused CI and runtime verification of this
+  ordering fix are pending. Artifacts:
+  `/tmp/nodemigrate-36288813404-artifacts/nodemigrate-{k3s,kubernetes}-36288813404/`.
 
 ## Release-backed run 36279843865
 

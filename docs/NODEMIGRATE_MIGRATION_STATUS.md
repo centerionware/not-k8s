@@ -75,11 +75,17 @@ missing before PDB behavior could be checked. The new handler and
 NodeRestriction/PDB matching passed targeted quick-check
 [36287345872](https://github.com/centerionware/not-k8s/actions/runs/36287345872).
 Migration rerun [36287345921](https://github.com/centerionware/not-k8s/actions/runs/36287345921)
-advanced beyond the PDB 429 assertion in both lanes. It then failed because
-the temporary ordinal-1 PV remained after claim deletion. `pv_binder` had no
-reclaim handling; a UID-checked reclaim path is now in the worktree, awaiting
-focused quick-check and runtime revalidation. Concurrent PDB allowance
-reservation is not yet atomic.
+advanced beyond the PDB 429 assertion in both lanes. Run
+[36288813404](https://github.com/centerionware/not-k8s/actions/runs/36288813404)
+passed the source StatefulSet scale checks and target node readiness, but the
+temporary ordinal-1 PV remained after claim deletion in both target lanes.
+Focused `nodecontroller` quick-check
+[36288813455](https://github.com/centerionware/not-k8s/actions/runs/36288813455)
+passed for the first reclaim revision. CSI logs then confirmed its provisioner
+will not delete a PV until its phase is `Released`; the current worktree now
+sets that phase before deletion. This ordering revision is not yet verified.
+No return migration or parity comparison passed. Concurrent PDB allowance
+reservation is not atomic.
 
 The same checkpoint now exercises the Deployment `/scale` subresource by
 scaling nginx to two available replicas and back to one, waiting for each
