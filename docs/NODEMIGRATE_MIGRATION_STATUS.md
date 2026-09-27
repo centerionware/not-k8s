@@ -37,6 +37,14 @@ coverage and verify that kube-proxy and not-k8s `nodeproxy` do not compete with
 Cilium for Service routing. Cilium's Envoy L7 proxy remains a separate
 component. See the expanded requirement in [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md).
 
+The staged reverse control-plane export change is at `3f807ba8`. Its first
+crate run, [36340951765](https://github.com/centerionware/not-k8s/actions/runs/36340951765),
+found a fixture assertion still expecting one Node after the fixture gained a
+control-plane and worker entry. The assertion now verifies both entries and
+that only the control-plane node is selected. Nodemigrate crate tests passed
+at `ec6c02c1` in [36341187596](https://github.com/centerionware/not-k8s/actions/runs/36341187596);
+workflow validation passed at the same SHA. No local Cargo build/test was run.
+
 The nodemigrate quick-check passed at utility SHA `17281efb42343ae2f934f681f57f031a59bc6016`
 in [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874).
 The fixture failure at
