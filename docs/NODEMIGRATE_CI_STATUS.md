@@ -13,6 +13,23 @@ coordinated `v0.8.1` runtime and standalone utility; `v0.8.0` remains the
 release-backed regression baseline, not a claim that its runtime contains the
 new fixes.
 
+At SHA `42162ef20afca2e4b4f616cc1d83fbd05071a9ae`, focused `nodelet`
+quick-check [36311005893](https://github.com/centerionware/not-k8s/actions/runs/36311005893)
+passed. Migration run [36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956)
+passed its five-node Docker preflight; its upstream lane has started migration
+and its K3s lane is still building. Earlier branch-runtime run
+[36310603619](https://github.com/centerionware/not-k8s/actions/runs/36310603619)
+at SHA `1dc1c2db` failed both nodestore checkpoints because the registered
+hostPath driver had no CSINode owner reference to the current Node. That SHA
+predates the Nodelet owner-reference repair. Neither lane completed its
+nodestore storage checks or return migration.
+Latest-release run [36310054614](https://github.com/centerionware/not-k8s/actions/runs/36310054614)
+successfully fetched regular release `v0.8.0`; its K3s lane failed during
+Gateway API CRD CEL validation after source PVC/PV/data checks passed and
+restored the source with the protected export retained. The upstream lane is
+still running. No nodestore checkpoint or return migration has passed in these
+new runs.
+
 ## Most recent evidence
 
 Run [36307445772](https://github.com/centerionware/not-k8s/actions/runs/36307445772)
@@ -1823,6 +1840,9 @@ later green run.
 | `de2b9ed91210a4894bcdb0203bfd9320109335a4` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Both lanes passed source StatefulSet PVC/PV/data checks, reached nodestore verification, then failed because the newly registered hostpath `CSINode` had no Node owner reference. Neither lane completed nodestore storage checks or the return leg. This SHA predates the allOf pruning fix. | [Migration 36309717243](https://github.com/centerionware/not-k8s/actions/runs/36309717243); logs `/tmp/nodemigrate-36309717243/artifacts/` |
 | `de2b9ed91210a4894bcdb0203bfd9320109335a4` | Latest regular release (`v0.8.0`) K3s+Cilium and upstream+Cilium migration | Running against the exact latest regular runtime to check the current utility against the user's required 0.8.0 baseline. | [Migration 36310054614](https://github.com/centerionware/not-k8s/actions/runs/36310054614) |
 | `1dc1c2db1efec37bb1e5cab08f78414388e16d1a` | `nodeapiserver,nodescheduler` quick-check | Passed. The allOf pruning fix and CSIDriver schema/protobuf/scheduler regressions passed. | [Quick-check 36310603471](https://github.com/centerionware/not-k8s/actions/runs/36310603471) |
-| `1dc1c2db1efec37bb1e5cab08f78414388e16d1a` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Running; verifies the field and pruning changes. This SHA predates the Nodelet owner-reference fix. | [Migration 36310603619](https://github.com/centerionware/not-k8s/actions/runs/36310603619) |
+| `1dc1c2db1efec37bb1e5cab08f78414388e16d1a` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Both lanes reached nodestore and failed the CSINode owner-reference assertion: hostPath driver was registered but the CSINode had no owner reference. Neither lane ran nodestore PV/PVC/data assertions or return migration. No PV deletion was reported. Target diagnostics also logged the hostPath CSI provider returning `NotFound` for the StatefulSet's existing volume handle; this remains a separate storage issue to verify after the ownership fix. | [Migration 36310603619](https://github.com/centerionware/not-k8s/actions/runs/36310603619); artifacts `/tmp/nodemigrate-36310603619/artifacts/` |
+| `42162ef20afca2e4b4f616cc1d83fbd05071a9ae` | `nodelet` quick-check | Passed, including the CSINode current-Node owner-reference repair. | [Quick-check 36311005893](https://github.com/centerionware/not-k8s/actions/runs/36311005893) |
+| `42162ef20afca2e4b4f616cc1d83fbd05071a9ae` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Five-node Docker preflight passed; upstream lane has entered migration and K3s is still building. This is the first migration run containing the Nodelet repair. | [Migration 36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956) |
+| `de2b9ed91210a4894bcdb0203bfd9320109335a4` | Latest regular release (`v0.8.0`) K3s+Cilium and upstream+Cilium migration | K3s source fixture and PV/PVC/data checks passed; v0.8.0 rejected `gateways.gateway.networking.k8s.io` because CEL validation under `spec.infrastructure.annotations` and `labels` failed type/cost checks. Nodemigrate rolled back, restored K3s, and retained the protected export. The upstream lane is still running; no destination or return checkpoint has passed yet. | [Migration 36310054614](https://github.com/centerionware/not-k8s/actions/runs/36310054614); K3s log `/tmp/nodemigrate-36310054614/artifacts/nodemigrate-k3s.log` |
 | `7ba45556862d3ecd90cffe22cde4ac4d71a9f71b` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Both lanes passed source StatefulSet PVC/PV/data checks and reached nodestore verification, then failed because the hostpath `CSINode` lacked its Node owner reference. No nodestore storage checkpoint or return leg passed. | [Migration 36308845021](https://github.com/centerionware/not-k8s/actions/runs/36308845021); logs `/tmp/nodemigrate-36308845021/artifacts/` |
 | `f8ff6a93b719453df806ee366d5d6403829d6bb8` | APIService freshness quick-check and migration run | Focused `nodeapiserver` quick-check passed. Dedicated migration run failed both lanes after branch builds; five-node Docker preflight passed. K3s still omitted metrics resources even after APIService `Available=True`, disproving stale reflector state as the failure cause; both lanes also reproduced CSI NodeStageVolume volume-catalog misses. Neither lane completed a return migration. | [Quick-check 36301964871](https://github.com/centerionware/not-k8s/actions/runs/36301964871); [migration 36301989587](https://github.com/centerionware/not-k8s/actions/runs/36301989587); logs `/tmp/nodemigrate-36301989587/`. |

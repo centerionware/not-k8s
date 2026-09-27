@@ -46,9 +46,37 @@ Last updated: 2026-09-27
   path only patched `spec.drivers`; this also left a same-name replacement
   vulnerable to a stale owner UID. Nodelet now fetches the current Node UID
   during CSI registration and sets the CSINode owner reference on both create
-  and update. Focused nodelet quick-check and a fresh migration run are
-  pending. The previous run's source PVC/PV and payload checks passed; its
+  and update. Focused nodelet quick-check
+  [36311005893](https://github.com/centerionware/not-k8s/actions/runs/36311005893)
+  passed at SHA `42162ef2`. Fresh branch-runtime migration
+  [36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956)
+  is running. The earlier run's source PVC/PV and payload checks passed; its
   nodestore payload checks did not run after this earlier assertion failed.
+  Upstream run [36310603619](https://github.com/centerionware/not-k8s/actions/runs/36310603619)
+  at SHA `1dc1c2db` reproduced the failure: it reached the nodestore
+  checkpoint with the hostPath CSI driver registered, but the CSINode still
+  lacked the destination Node owner reference. The lane stopped before its
+  nodestore storage assertions; K3s failed the same assertion. No PV deletion
+  was reported. Target diagnostics also logged `NodeStageVolume` returning
+  `NotFound` for the StatefulSet's existing CSI volume handle. This is a
+  separate provider-state issue, not evidence that the PV or backing data was
+  deleted, and needs a full storage checkpoint after the owner-reference fix.
+  This SHA predates the fix.
+
+- **`nodeapiserver` in regular release `v0.8.0`: Gateway API CRD CEL rules are
+  rejected during import.** The latest-release migration run
+  [36310054614](https://github.com/centerionware/not-k8s/actions/runs/36310054614)
+  resolved `v0.8.0`; its K3s source fixture passed and nodemigrate retained
+  the protected export, but the release API rejected
+  `gateways.gateway.networking.k8s.io` rules under
+  `spec.infrastructure.annotations` and `labels` (including map-key
+  comprehensions and regex validation). The source PV/PVC/data checks passed;
+  no PV deletion was reported. Source rollback completed. The upstream lane is
+  still running; current branch-runtime acceptance is being checked by
+  [36310603619](https://github.com/centerionware/not-k8s/actions/runs/36310603619)
+  and [36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956).
+  This release-baseline failure does not yet establish whether the branch fix
+  covers the live Gateway API schema.
 
 Run [36307445772](https://github.com/centerionware/not-k8s/actions/runs/36307445772)
 at SHA `d92e814911416403bba8b9cf02940fc23be1d140` passed the five-node
