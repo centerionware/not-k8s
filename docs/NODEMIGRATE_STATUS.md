@@ -16,7 +16,7 @@ separate living documents below.
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Current release-backed run [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663) passed the five-node Docker preflight, built `nodemigrate`, fetched the latest runtime in both lanes, and is running both migrations against the regular release. Branch-runtime run [36321804254](https://github.com/centerionware/not-k8s/actions/runs/36321804254) failed upstream after the target Cilium agent could not update `/proc/sys/net/ipv6/conf/cilium_host/forwarding`; its K3s lane was still active at 16:15 UTC. Redacted CRI diagnostics and K3s containerd endpoint selection are included in the release-backed rerun. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Current release-backed run [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663) passed the five-node Docker preflight, built `nodemigrate`, fetched the latest runtime in both lanes, and is running both migrations. Branch-runtime run [36321804254](https://github.com/centerionware/not-k8s/actions/runs/36321804254) failed upstream after the target Cilium agent could not update `/proc/sys/net/ipv6/conf/cilium_host/forwarding`. Its K3s lane passed the source and nodestore checkpoints and started return migration, then timed out after 180 minutes before returned-source verification. Redacted CRI diagnostics and K3s containerd endpoint selection are included in the release-backed rerun. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory round-trip gates remain not passed: one-node K3s+Cilium and 3-control-plane + 2-worker upstream Kubernetes with Cilium and joined replacement. Run 36332106663 is exercising the single-node source lanes against regular `v0.8.0`; the five-node Docker preflight passed but is not the five-node migration gate. Neither round trip has passed all source/target/return parity and behavior checks. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Passed [36278826637](https://github.com/centerionware/not-k8s/actions/runs/36278826637) at SHA `becc80a1de8cbb6c1204e3d27d62c39cb332f4a3`: five isolated nodes, kubeadm 3-control-plane/2-worker membership, Cilium 1.20.2 ready, API continuity through one control-plane loss, and all Nodes recovered after restart. This is infrastructure evidence only; migration was skipped. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
@@ -288,10 +288,10 @@ separate living documents below.
    against the latest regular release (`v0.8.0`): capture its terminal lane
    results and inspect each completed artifact once, then fix any confirmed
    component defects and rerun the relevant migration check.
-2. Finish or time out branch-runtime run [36321804254](https://github.com/centerionware/not-k8s/actions/runs/36321804254).
-   Its upstream Cilium failure needs the captured CRI mount/security details;
-   do not infer an owning-component defect from the older run without those
-   diagnostics.
+2. Diagnose the return-migration timeout in run
+   [36321804254](https://github.com/centerionware/not-k8s/actions/runs/36321804254)
+   from its completed K3s artifact, and compare the upstream Cilium failure
+   with the redacted CRI diagnostics in the current release-backed run.
 3. Continue the source/target/return parity loop until both single-node lanes
    pass, preserving PVs, PVCs, backing data, and the source installation.
 4. Implement and run the distinct three-control-plane/two-worker migration

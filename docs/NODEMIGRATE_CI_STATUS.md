@@ -103,35 +103,33 @@ current-head run containing the redacted Cilium CRI diagnostics, including the
 endpoint selection fix for K3s source containerd. It is independent of
 branch-runtime run
 [36321804254](https://github.com/centerionware/not-k8s/actions/runs/36321804254):
-that run's upstream lane failed at 13:37 UTC before return migration, while its
-K3s migration lane remained active at 16:15 UTC.
+that run's upstream lane failed at 13:37 UTC before the nodestore checkpoint.
+The K3s lane later reached nodestore and started the return migration, but its
+job was cancelled at the 180-minute timeout at 16:16 UTC.
 
 Branch-runtime migration run
 [36321804254](https://github.com/centerionware/not-k8s/actions/runs/36321804254)
 tests SHA `4c319d08` with source CNI Cilium. Its Docker five-node topology
 preflight passed. The upstream Kubernetes source fixture passed its storage
-checkpoint: the four source PVCs and PVs (including the StatefulSet payload)
-were present and bound before migration. Forward export captured 574 API
-objects and the target accepted all 55 CRDs. The target Cilium agent then
-repeatedly exited because writes to
-`/proc/sys/net/ipv6/conf/cilium_host/forwarding` returned `EROFS`; Cilium never
-became ready and cert-manager webhook requests subsequently failed. The lane
-rolled the source back and retained the protected export; it did not reach a
-nodestore workload checkpoint or reverse migration. This is a target CNI
-startup failure; the nodelet CRI security context and isolation/mount setup
-remain under diagnosis, so no owning-component defect is asserted yet. This
-run predates SHA `ddc2cfdf`, which adds redacted source/target Cilium CRI
-security-context and relevant OCI mount diagnostics; do not attribute the
-failure to nodelet until those fields are compared. The completed upstream
-artifact is saved at
-`/tmp/nodemigrate-36321804254-upstream/nodemigrate-kubernetes.log`.
-The K3s lane in the same run is still active; update this entry with its
-terminal result before treating the run as complete. A follow-up inspection
-found the new probe only queried the nodelet containerd socket, so it would
-miss K3s source Cilium containers. SHA `c50a812d` now tries both nodelet and
-K3s containerd endpoints and selects the CRI record whose Pod UID matches the
-API Cilium agent; a mocked K3s-endpoint smoke check passed and confirmed that
-container environment data is not emitted. A live migration rerun is pending.
+checkpoint: the four PVCs and PVs (including the StatefulSet payload) were
+bound before migration. Forward export captured 574 API objects and the target
+accepted all 55 CRDs. The target Cilium agent repeatedly failed writes to
+`/proc/sys/net/ipv6/conf/cilium_host/forwarding` with `EROFS`; Cilium did not
+become ready, and cert-manager admission requests failed. The lane restored the
+source and retained its protected export without reaching nodestore. The K3s
+lane passed source and nodestore behavior, storage, and API parity checkpoints;
+then `nodestore -> k3s` started and wrote a second protected export, but its
+job was cancelled at the 180-minute timeout before returned-source checks
+completed. No PV deletion was reported. Neither lane completed the round trip,
+and these observations do not yet identify a root-caused component defect.
+This run predates SHA `ddc2cfdf`, which adds redacted Cilium CRI
+security-context and OCI mount diagnostics. Its completed upstream artifact is
+`/tmp/nodemigrate-36321804254-upstream/nodemigrate-kubernetes.log`; K3s
+artifact: `/tmp/nodemigrate-36321804254-k3s/nodemigrate-k3s.log`. SHA
+`c50a812d` makes the probe try both nodelet and K3s containerd endpoints and
+select the CRI record whose Pod UID matches the API Cilium agent; mocked
+endpoint-selection and no-environment-leak checks passed. The current-head
+release-backed run is exercising these diagnostics.
 
 Latest branch-runtime migration run
 [36320456287](https://github.com/centerionware/not-k8s/actions/runs/36320456287)
@@ -1992,6 +1990,7 @@ later green run.
 | `42162ef20afca2e4b4f616cc1d83fbd05071a9ae` | `nodelet` quick-check | Passed, including the CSINode current-Node owner-reference repair. | [Quick-check 36311005893](https://github.com/centerionware/not-k8s/actions/runs/36311005893) |
 | `42162ef20afca2e4b4f616cc1d83fbd05071a9ae` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Five-node Docker preflight passed; upstream lane has entered migration and K3s is still building. This is the first migration run containing the Nodelet repair. | [Migration 36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956) |
 | `de2b9ed91210a4894bcdb0203bfd9320109335a4` | Latest regular release (`v0.8.0`) K3s+Cilium and upstream+Cilium migration | Run is terminal failure. K3s rejected Gateway API CRDs due CEL rule-cost overflow; upstream import rejected Gateway CRDs and returned HTTP 500 for CertificateRequest and CSR. Neither lane completed nodestore semantic checks or return migration; source PV/PVC/data checks passed and no PV deletion was reported. | [Migration 36310054614](https://github.com/centerionware/not-k8s/actions/runs/36310054614); K3s log `/tmp/nodemigrate-36310054614/artifacts/nodemigrate-k3s.log`; upstream log `/tmp/nodemigrate-36310054614/upstream/nodemigrate-kubernetes.log` |
+| `4c319d08fccad2e506441802e929cd398e0bc764` | Branch-runtime K3s+Cilium and upstream+Cilium round trip | Preflight passed. Upstream failed forward Cilium readiness after `EROFS` on Cilium host sysctls and restored the source. K3s passed source and nodestore storage/parity checks and began return migration; job timed out at 180 minutes before returned-source verification. No PV deletion was reported. | [Migration 36321804254](https://github.com/centerionware/not-k8s/actions/runs/36321804254); logs `/tmp/nodemigrate-36321804254-upstream/nodemigrate-kubernetes.log` and `/tmp/nodemigrate-36321804254-k3s/nodemigrate-k3s.log` |
 | `012f1b7351da10cd78bec309e1efc6a2e9de439e` | Current-head release-backed migration | Five-node Docker preflight passed; `nodemigrate` built and latest-runtime fetch succeeded in both lanes; K3s and upstream migration steps are in progress. Exact fetched tag remains to be confirmed from completed job logs. | [Migration 36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663) |
 | `7ba45556862d3ecd90cffe22cde4ac4d71a9f71b` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Both lanes passed source StatefulSet PVC/PV/data checks and reached nodestore verification, then failed because the hostpath `CSINode` lacked its Node owner reference. No nodestore storage checkpoint or return leg passed. | [Migration 36308845021](https://github.com/centerionware/not-k8s/actions/runs/36308845021); logs `/tmp/nodemigrate-36308845021/artifacts/` |
 | `f8ff6a93b719453df806ee366d5d6403829d6bb8` | APIService freshness quick-check and migration run | Focused `nodeapiserver` quick-check passed. Dedicated migration run failed both lanes after branch builds; five-node Docker preflight passed. K3s still omitted metrics resources even after APIService `Available=True`, disproving stale reflector state as the failure cause; both lanes also reproduced CSI NodeStageVolume volume-catalog misses. Neither lane completed a return migration. | [Quick-check 36301964871](https://github.com/centerionware/not-k8s/actions/runs/36301964871); [migration 36301989587](https://github.com/centerionware/not-k8s/actions/runs/36301989587); logs `/tmp/nodemigrate-36301989587/`. |
