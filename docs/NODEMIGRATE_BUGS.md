@@ -1,6 +1,50 @@
 # nodemigrate bug and fix tracker
 
-Last updated: 2026-09-26
+Last updated: 2026-09-27
+
+## Release-backed run 36279843865
+
+Run [36279843865](https://github.com/centerionware/not-k8s/actions/runs/36279843865)
+used branch SHA `d609ec4d66dfce13283d0ee4c1d39a5ecce10d8d` and fetched the
+exact regular runtime asset `notk8s-0.8.0-linux-x86_64-release`. The five-node
+Docker/kubeadm/Cilium preflight passed and both targeted `nodemigrate` release
+builds passed. Neither migration lane reached parity or a completed round trip;
+both rolled back and retained their protected exports.
+
+Confirmed failures:
+
+- **`nodeapiserver`: CRD CEL map/object parity.** Both source lanes failed to
+  create the same three Gateway API CRDs: `gateways.gateway.networking.k8s.io`,
+  `listenersets.gateway.networking.k8s.io`, and
+  `tlsroutes.gateway.networking.k8s.io`. The server's CRD CEL type checker
+  rejected upstream rules with errors such as `comprehension requires list or
+  map range, got object` and `size requires string, bytes, list, or map, got
+  object`; map key cost estimation also saturated to `u64::MAX`. This is
+  a confirmed CEL compatibility defect in `nodeapiserver`, not a CRD migration
+  filtering issue. Fix must preserve upstream validation behavior while
+  correctly typing/evaluating Kubernetes map fields and estimating their
+  bounded costs. Regression evidence is still pending.
+- **`nodemigrate`: import dependency ordering.** The upstream lane tried
+  `Pod/migration-standalone` before its referenced cluster-scoped
+  `PriorityClass/migration-priority`; upstream admission returned 403. The
+  importer ranked CRDs and StorageClasses specially but left PriorityClasses
+  in API discovery order with workloads. The branch now ranks PriorityClass
+  before workloads and adds a focused test; quick-check and release-backed
+  runtime verification are pending.
+- **`nodeapiserver`: CertificateRequest webhook and CSR decoding failures.**
+  The upstream lane's cert-manager `CertificateRequest` apply failed because
+  invocation of `webhook.cert-manager.io` was unavailable. The CSR write
+  failed while decoding `io.k8s.api.certificates.v1.ExtraValue` as an object.
+  These are separate runtime defects: the first needs service reachability and
+  webhook readiness traced during import, and the second needs the API server's
+  CSR `ExtraValue` representation fixed. Focused regressions are pending.
+- The remaining transient Gateway objects were unavailable because the
+  corresponding Gateway API CRDs were rejected. These are downstream effects
+  of the CEL defect, not an independent importer retry failure.
+
+Artifacts: `/tmp/nodemigrate-36279843865-artifacts/nodemigrate-{k3s,kubernetes}-36279843865/`.
+The run did not pass the required K3s+Cilium and three-control-plane/two-worker
+round-trip gates.
 
 ## Latest diagnostic update
 

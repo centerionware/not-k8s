@@ -1,6 +1,6 @@
 # nodemigrate CI and integration status
 
-Last updated: 2026-09-26
+Last updated: 2026-09-27
 
 This is the living CI record for the scope in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). The user-specific testing policy
@@ -14,6 +14,24 @@ release-backed regression baseline, not a claim that its runtime contains the
 new fixes.
 
 ## Most recent evidence
+
+Release-backed migration run [36279843865](https://github.com/centerionware/not-k8s/actions/runs/36279843865)
+at SHA `d609ec4d66dfce13283d0ee4c1d39a5ecce10d8d` fetched the exact regular
+runtime asset `notk8s-0.8.0-linux-x86_64-release`. Docker's five-node
+kubeadm/Cilium preflight passed in 6m11s, and both targeted `nodemigrate`
+release builds passed. K3s migration failed after 14m26s; upstream Kubernetes
+migration failed after 45m47s. Both source checkpoints passed, then imports
+failed and rolled back while retaining the protected export. The K3s lane
+rejected three Gateway API CRDs due to `nodeapiserver` CEL map/object handling,
+then could not restore two Gateway objects. The upstream lane had the same CRD
+failures, a Pod admission 403 because PriorityClass import ordering was not
+dependency-aware, a CertificateRequest rejected when the cert-manager
+mutating webhook could not be reached, a CSR rejected while decoding its
+`ExtraValue`, and two unavailable Gateway objects. No semantic parity,
+return migration, or round-trip gate passed. The importer now ranks
+PriorityClasses before workloads; focused quick-check and a new release-backed
+run are pending. Full lane artifacts:
+`/tmp/nodemigrate-36279843865-artifacts/nodemigrate-{k3s,kubernetes}-36279843865/`.
 
 The Docker-only preflight [36278826637](https://github.com/centerionware/not-k8s/actions/runs/36278826637)
 passed at SHA `becc80a1de8cbb6c1204e3d27d62c39cb332f4a3` in 5m06s. It created

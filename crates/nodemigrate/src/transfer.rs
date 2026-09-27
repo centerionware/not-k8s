@@ -2186,7 +2186,9 @@ fn object_rank(object: &Value) -> u8 {
     {
         "Namespace" => 0,
         "CustomResourceDefinition" => 1,
-        "StorageClass" => 2,
+        // These cluster-scoped references must exist before Pods are
+        // admitted. Source API discovery order is not a dependency order.
+        "PriorityClass" | "StorageClass" => 2,
         _ => 3,
     }
 }
@@ -2232,7 +2234,8 @@ mod tests {
     use super::{
         custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
         namespace_ca_bundle_matches, node_scheduling_patch, object_skip_reason, object_type_label,
-        persistent_host_paths, preserve_discovered_type_meta, restore_cni_path_backups,
+        object_rank, persistent_host_paths, preserve_discovered_type_meta,
+        restore_cni_path_backups,
         retryable_import_error, same_group_kind, sanitize, skip_kind_reason, skip_object,
         snapshot_k3s_cni_paths, summarize_import_failures, write_export_manifest, ApiResource,
         Export, ExportedObject, KubeApi, NodeSchedulingState, SkipReason,
@@ -2259,6 +2262,16 @@ mod tests {
         ));
         configmap.data = None;
         assert!(!namespace_ca_bundle_matches(&configmap, "current"));
+    }
+
+    #[test]
+    fn cluster_scoped_pod_dependencies_are_imported_before_workloads() {
+        let priority_class = serde_json::json!({"kind": "PriorityClass"});
+        let storage_class = serde_json::json!({"kind": "StorageClass"});
+        let pod = serde_json::json!({"kind": "Pod"});
+
+        assert!(object_rank(&priority_class) < object_rank(&pod));
+        assert!(object_rank(&storage_class) < object_rank(&pod));
     }
 
     #[test]

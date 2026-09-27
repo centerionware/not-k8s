@@ -195,6 +195,10 @@ impl Checker {
                             | CelType::Bytes
                             | CelType::List(_)
                             | CelType::Map(_)
+                            | CelType::Object {
+                                additional: Some(_),
+                                ..
+                            }
                     ) {
                         self.errors.push(TypeError::InvalidOperand {
                             operation: "size".to_string(),
@@ -724,26 +728,36 @@ impl Checker {
 
     fn comprehension(&mut self, comprehension: &cel::common::ast::ComprehensionExpr) -> CelType {
         let range = self.expression(&comprehension.iter_range);
-        let element = match range {
-            CelType::List(element) => *element,
-            CelType::Map(value) => *value,
-            CelType::Dyn => CelType::Dyn,
+        let (element, second) = match range {
+            CelType::List(element) => (*element, None),
+            CelType::Map(value) => (CelType::String, Some(*value)),
+            CelType::Object {
+                additional: Some(value),
+                ..
+            } => (CelType::String, Some(*value)),
+            CelType::Dyn => (
+                CelType::Dyn,
+                comprehension.iter_var2.as_ref().map(|_| CelType::Dyn),
+            ),
             other => {
                 self.errors.push(TypeError::InvalidOperand {
                     operation: "comprehension".to_string(),
                     expected: "list or map range".to_string(),
                     actual: other,
                 });
-                CelType::Dyn
+                (
+                    CelType::Dyn,
+                    comprehension.iter_var2.as_ref().map(|_| CelType::Dyn),
+                )
             }
         };
         let previous_iter = self
             .variables
             .insert(comprehension.iter_var.clone(), element.clone());
-        let previous_iter2 = comprehension
-            .iter_var2
-            .as_ref()
-            .map(|name| self.variables.insert(name.clone(), CelType::String));
+        let previous_iter2 = comprehension.iter_var2.as_ref().map(|name| {
+            self.variables
+                .insert(name.clone(), second.unwrap_or(CelType::Dyn))
+        });
         let accumulator = self.expression(&comprehension.accu_init);
         let previous_accumulator = self
             .variables
