@@ -3683,7 +3683,23 @@ current-context: test
             path: source_object.clone(),
             source_uid: Some("source-object-uid".to_string()),
         }];
-        write_export_manifest(&source_dir, &source_objects, &BTreeMap::new()).unwrap();
+        let source_nodes = BTreeMap::from([(
+            "node-a".to_string(),
+            NodeSchedulingState {
+                uid: Some("source-node-uid".to_string()),
+                labels: HashMap::from([(
+                    "node-role.kubernetes.io/control-plane".to_string(),
+                    String::new(),
+                )]),
+                annotations: HashMap::from([(
+                    "operator.example/zone".to_string(),
+                    "west".to_string(),
+                )]),
+                taints: Vec::new(),
+                unschedulable: Some(false),
+            },
+        )]);
+        write_export_manifest(&source_dir, &source_objects, &source_nodes).unwrap();
         let source = Export::load(&source_dir).unwrap();
 
         let first = source.copy_to_directory(first_node_dir).unwrap();
@@ -3698,6 +3714,18 @@ current-context: test
             second.objects[0].source_uid.as_deref(),
             Some("source-object-uid")
         );
+        for export in [&first, &second] {
+            assert_eq!(export.node_state_count(), 1);
+            assert_eq!(
+                export.node_state("node-a").unwrap().uid.as_deref(),
+                Some("source-node-uid")
+            );
+            assert_eq!(
+                export.node_state("node-a").unwrap().annotations["operator.example/zone"],
+                "west"
+            );
+            assert_eq!(export.control_plane_node_names(), ["node-a"]);
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
