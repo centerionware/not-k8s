@@ -330,6 +330,13 @@ run_migration cp-1 /etc/nodebootstrap/admin.kubeconfig /etc/kubernetes/admin.con
     NO_EXTRA_ENV to=kubernetes from=nodestore "import-export=$RETURN_EXPORT" >/dev/null
 
 echo "Completing fresh Node registration for retained control planes and workers"
+# Kubeadm workers do not receive /etc/kubernetes/admin.conf from kubeadm join.
+# Give each worker the recovered cluster admin config so nodemigrate can watch
+# the retained API while verifying that its replacement Node registered.
+for host in worker-1 worker-2; do
+    copy_file cp-1 /etc/kubernetes/admin.conf "$host" /etc/kubernetes/admin.conf
+    node "$host" chmod 0600 /etc/kubernetes/admin.conf
+done
 for host in cp-2 cp-3 worker-1 worker-2; do
     run_migration "$host" /etc/nodebootstrap/admin.kubeconfig /etc/kubernetes/admin.conf \
         NO_EXTRA_ENV to=kubernetes from=nodestore skip-api-export=true >/dev/null
