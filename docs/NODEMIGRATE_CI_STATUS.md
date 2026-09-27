@@ -15,6 +15,22 @@ new fixes.
 
 ## Most recent evidence
 
+The destination aggregated-API trust fix at SHA
+`d2eebede56084347cbc8eeba03fb12336bed7e6e` passed the targeted
+`quick-check` for `nodebootstrap,nodemigrate` in
+[36297802743](https://github.com/centerionware/not-k8s/actions/runs/36297802743)
+and the standalone nodemigrate crate tests and packaging check in
+[36297839984](https://github.com/centerionware/not-k8s/actions/runs/36297839984).
+A follow-up PV/PVC export regression test passed nodemigrate crate tests at
+SHA `a2214765e134fbd7dc72d113f36dcc99b41c1530` in
+[36298232980](https://github.com/centerionware/not-k8s/actions/runs/36298232980).
+These checks prove crate-level behavior, not migration data-path safety.
+The authorized branch-runtime migration run
+[36297966919](https://github.com/centerionware/not-k8s/actions/runs/36297966919)
+is in progress at SHA `d2eebede`; its five-node Docker preflight passed and
+both single-node lanes built the branch runtime. The per-stage migration result
+is pending; do not count preflight or builds as a migration pass.
+
 Migration run
 [36294950798](https://github.com/centerionware/not-k8s/actions/runs/36294950798)
 at SHA `acf583bf` passed five-node preflight and both utility/runtime builds.
