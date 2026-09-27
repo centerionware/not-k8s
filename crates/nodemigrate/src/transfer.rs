@@ -35,7 +35,9 @@ use crate::{
 // are re-registered from the protected scheduling snapshot, and
 // VolumeAttachments must be recreated by the destination CSI attacher.
 // Leases and endpoint objects need object-level checks because users and
-// add-ons can own durable instances of those kinds.
+// add-ons can own durable instances of those kinds. CiliumEndpoint and
+// CiliumNode records are Cilium-managed datapath/IPAM state, not workload
+// configuration; Cilium rebuilds them from the destination Pods and Nodes.
 const SKIP_KINDS: &[&str] = &[
     "ComponentStatus",
     "Event",
@@ -58,6 +60,8 @@ enum SkipReason {
     NodeHeartbeatLease,
     StaticPodMirror,
     ControllerOwnedPod,
+    CiliumEndpointReconciliation,
+    CiliumNodeReconciliation,
 }
 
 impl SkipReason {
@@ -88,6 +92,12 @@ impl SkipReason {
             }
             Self::StaticPodMirror => "the retained static pod manifest recreates its API mirror",
             Self::ControllerOwnedPod => "the durable workload controller recreates this pod",
+            Self::CiliumEndpointReconciliation => {
+                "Cilium regenerates this pod's datapath identity and endpoint from the destination runtime"
+            }
+            Self::CiliumNodeReconciliation => {
+                "Cilium reconciles node addressing and IPAM state for the destination cluster"
+            }
         }
     }
 }
@@ -2694,6 +2704,17 @@ fn object_skip_reason(object: &Value) -> Option<SkipReason> {
     if let Some(reason) = regenerated_endpoint_skip_reason(object, kind) {
         return Some(reason);
     }
+    let api_group = object
+        .get("apiVersion")
+        .and_then(Value::as_str)
+        .and_then(|version| version.split_once('/').map(|(group, _)| group));
+    if api_group == Some("cilium.io") {
+        match kind {
+            "CiliumEndpoint" => return Some(SkipReason::CiliumEndpointReconciliation),
+            "CiliumNode" => return Some(SkipReason::CiliumNodeReconciliation),
+            _ => {}
+        }
+    }
     // These ConfigMaps contain control-plane trust material. Carrying source
     // certificates into the destination would make aggregated API servers
     // reject the destination front-proxy identity. The destination apiserver
@@ -3591,6 +3612,42 @@ current-context: test
                 "user-managed endpoint or application Lease was omitted"
             );
         }
+    }
+
+    #[test]
+    fn migration_export_rebuilds_cilium_runtime_state_but_preserves_policies() {
+        for (object, expected_reason) in [
+            (
+                serde_json::json!({
+                    "apiVersion": "cilium.io/v2",
+                    "kind": "CiliumEndpoint",
+                    "metadata": {"name": "web-abc", "namespace": "apps"},
+                    "status": {"id": 1234, "identity": {"id": 1234}}
+                }),
+                SkipReason::CiliumEndpointReconciliation,
+            ),
+            (
+                serde_json::json!({
+                    "apiVersion": "cilium.io/v2",
+                    "kind": "CiliumNode",
+                    "metadata": {"name": "worker-1"},
+                    "spec": {"ipam": {"podCIDRs": ["10.42.0.0/24"]}}
+                }),
+                SkipReason::CiliumNodeReconciliation,
+            ),
+        ] {
+            assert_eq!(object_skip_reason(&object), Some(expected_reason));
+            assert!(sanitize(object).is_none());
+        }
+
+        let policy = serde_json::json!({
+            "apiVersion": "cilium.io/v2",
+            "kind": "CiliumNetworkPolicy",
+            "metadata": {"name": "allow-web", "namespace": "apps"},
+            "spec": {"endpointSelector": {"matchLabels": {"app": "web"}}}
+        });
+        assert_eq!(object_skip_reason(&policy), None);
+        assert!(sanitize(policy).is_some());
     }
 
     #[test]

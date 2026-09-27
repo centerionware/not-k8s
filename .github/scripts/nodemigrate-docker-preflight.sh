@@ -91,11 +91,6 @@ for node in "${NODES[@]}"; do
         "${WORKSPACE_MOUNT[@]}" \
         "$IMAGE" >/dev/null
 done
-if [[ "$FIVE_NODE_MIGRATION" == true ]]; then
-    docker cp "$NODEMIGRATE_HOSTPATH_SETUP" \
-        "cp-1-${SUFFIX}:/tmp/nodemigrate-hostpath-setup.sh" >/dev/null
-fi
-
 wait_systemd() {
     local container="$1" state=""
     for _ in $(seq 1 60); do
@@ -468,6 +463,8 @@ echo "PASS: five Docker nodes ran a kubeadm 3-control-plane/2-worker cluster wit
 echo "PASS: Docker isolation checks confirmed distinct namespaces, CRI/BPF support, separate storage, and inter-node reachability"
 if [[ "$FIVE_NODE_MIGRATION" == true ]]; then
     echo "Running the full nodemigrate five-node source, target, and return checkpoints"
+    docker cp "$NODEMIGRATE_HOSTPATH_SETUP" \
+        "cp-1-${SUFFIX}:/tmp/nodemigrate-hostpath-setup.sh" >/dev/null
     NODEMIGRATE_DOCKER_SUFFIX="$SUFFIX" \
         NODEMIGRATE_NODE_IMAGE="$IMAGE" \
         NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" \

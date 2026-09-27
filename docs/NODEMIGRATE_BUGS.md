@@ -4,24 +4,32 @@ Last updated: 2026-09-27
 
 ## Current fixture finding
 
-- **Branch runtime run 36352851628 exposed three unresolved return-path defects.**
-  Its K3s lane migrated forward and passed the nodestore object/CRD checkpoint,
-  but return readiness failed after K3s restarted with Cilium KPR enabled. The
-  log shows Cilium health binding `10.1.0.85:4240` failed with `address
-  already in use`, while Service and Pod IP traffic failed with `no route to
-  host`; both `kube-proxy` and `nodeproxy` were inactive as intended for Cilium
-  KPR. The likely cause is live nodestore CRI pods surviving service shutdown.
-  The branch now stops nodestore pod sandboxes and exact-identity leftover
-  Cilium processes before starting the retained cluster; runtime confirmation
-  is pending. The upstream lane passed retained API readiness but import then
-  failed because `migration-apps/migration-legacy-token` was missing. The
-  branch now recreates a missing legacy token Secret using destination-bound
-  credentials while preserving other data; runtime confirmation is pending.
-  Docker preflight failed before migration because its `node` wrapper passed
-  the host selector to `docker exec` as the command (`cp-1: executable file
-  not found`). The wrapper now consumes the selector before invoking Docker;
-  a passing five-node runtime run remains pending. Artifacts are saved under
-  `/tmp/nodemigrate-36352851628/`.
+- **Branch runtime runs 36352851628 and 36355485146 exposed return-path defects.**
+  Both passed forward migration and the nodestore object/CRD checkpoint. In
+  the first K3s return, Cilium health binding failed with `address already in
+  use` and Service/Pod IP traffic failed with `no route to host`; KPR was
+  enabled and `kube-proxy` and `nodeproxy` were inactive. The branch now stops
+  nodestore pod sandboxes and exact-identity Cilium processes before starting
+  the retained cluster. Run 36355485146 confirms no source Cilium process
+  remained and the duplicate health bind is gone, but Service traffic still
+  fails and the node does not recover. The return export selected 30
+  `CiliumEndpoint` objects and one `CiliumNode`; the branch now omits those
+  Cilium-managed runtime records for destination reconciliation while
+  preserving declarative Cilium policies. Focused quick-check passed in
+  [36355485143](https://github.com/centerionware/not-k8s/actions/runs/36355485143);
+  live confirmation is pending. The upstream return successfully recreated
+  `migration-apps/migration-legacy-token` with destination credentials and
+  completed API import, but the returned node was not Ready; its Cilium/runtime
+  cause remains under investigation.
+
+  The original five-node `node()` wrapper failure (`cp-1: executable file not
+  found`) is fixed: run 36355485146 reached and passed the five-node Cilium
+  preflight. The migration fixture then failed because its hostpath setup
+  script was missing from `cp-1` after that node was restarted during
+  preflight. The preflight now copies the script again after the restart,
+  immediately before the five-node fixture. The multi-node migration path
+  remains unverified. Artifacts are saved under
+  `/tmp/nodemigrate-36355485146/`.
 
 - **Five-node return fixture: kubeadm workers had no API admin kubeconfig.**
   The return coordinator supplied `/etc/kubernetes/admin.conf` to worker

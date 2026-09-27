@@ -59,11 +59,29 @@ because `migration-apps/migration-legacy-token` was missing. The branch now
 recreates the missing Secret with destination-bound token credentials while
 preserving its other data; runtime verification is pending.
 
-The five-node preflight reached five Ready Kubeadm/Cilium nodes but failed
-before migration because the Docker `node` helper treated `cp-1` as the command
-to execute. The helper now shifts past its node selector; a passing five-node
-runtime round trip remains pending. The separate recovered admin kubeconfig
-fix at `1bcd76e3` was not exercised by run 36352851628.
+Run [36355485146](https://github.com/centerionware/not-k8s/actions/runs/36355485146)
+at SHA `26f81b53` passed all component builds and the five-node Kubeadm/Cilium
+preflight, but the full run ended in failure for all three migration jobs. The
+K3s return stopped nodestore CRI sandboxes and confirmed there were no leftover
+source Cilium processes. This removed the earlier duplicate Cilium health
+listener bind error, but retained K3s still failed Service-IP traffic and API
+readiness; its return export included 30 generated CiliumEndpoints and one
+CiliumNode. The branch now omits those generated Cilium runtime records while
+preserving Cilium policies, then lets the target agent reconcile them. Runtime
+confirmation remains pending.
+
+The upstream lane recreated the missing legacy ServiceAccount token Secret
+with destination credentials and completed API import. The returned Node then
+remained NotReady with Cilium/Pod runtime readiness failures; the cause is not
+confirmed. The five-node preflight reached five Ready nodes and recovered the
+cluster after control-plane loss, but its full migration fixture could not find
+the hostpath setup script in `cp-1` after the preflight had restarted that
+container. The script is now copied again after restart and before the fixture.
+Run logs are saved under `/tmp/nodemigrate-36355485146/`.
+
+Run 36352851628's Docker wrapper failure was fixed: run 36355485146 confirms
+the probe reached the five-node migration fixture. The worker admin kubeconfig
+fix at `1bcd76e3` remains untested by a successful five-node migration.
 
 The five-node return coordinator fix at SHA `1bcd76e3` copies kubeadm's
 recovered `/etc/kubernetes/admin.conf` to both workers before their return
