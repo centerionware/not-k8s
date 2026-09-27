@@ -104,12 +104,27 @@ source API could not reach `cert-manager-webhook` at `10.106.197.148:443`; the
 utility restored nodestore and retained its protected export. Rollback-stage
 fixture verification then failed its non-root `emptyDir` marker check after a
 listed Pod disappeared before `kubectl exec`; investigate this separately from
-the webhook failure. The upstream log contains 226 `jq` parse errors from the
-target-state watcher merging `kubectl` stderr into `jq`; this SHA predates the
-fix now pushed at `deaed970`. Log:
-`/tmp/nodemigrate-36335580680-upstream/nodemigrate-kubernetes.log`. The K3s
-lane is still active. A new branch-runtime run at the fix SHA is required after
-this run finishes.
+the webhook failure. The upstream target log shows a kube-proxy Pod and
+`nodeproxy` both active with Cilium KPR disabled, confirming the competing
+Service-proxy bug now fixed in `7bad3b91`; that fix has not yet had a migration
+runtime run. Cilium agent/Envoy were unready and CoreDNS/cert-manager containers
+terminated with exit 137, but their startup failure cause is unresolved. The
+upstream log contains exactly 226 `jq` parse errors from the target-state
+watcher merging `kubectl` stderr into `jq`; this SHA predates the fix at
+`deaed970`. Log:
+`/tmp/nodemigrate-36335580680-artifacts/nodemigrate-kubernetes-36335580680/nodemigrate-kubernetes.log`.
+The K3s lane was cancelled at the workflow timeout; the workflow is terminal
+failure. The post-fix full migration rerun remains pending.
+
+At PR head `7bad3b9145dd5a6b0612d8eeeca2ef0fd06bbdcf`, nodemigrate now
+selects the upstream kube-proxy DaemonSet or Cilium KPR as the Service router
+and disables nodeproxy when either is active. It rejects simultaneous Cilium
+KPR and kube-proxy before cutover. Targeted crate tests passed in
+[36347140648](https://github.com/centerionware/not-k8s/actions/runs/36347140648);
+migration workflow validation passed in
+[36347140725](https://github.com/centerionware/not-k8s/actions/runs/36347140725).
+These do not prove runtime proxy behavior. Workflow KPR is now retained through
+`sudo`; runtime validation with KPR on and off remains pending.
 
 At SHA `bb32d6c86dfe614b87fa66edf26d313b3b1fa5ad`, the target-state watcher
 adds kube-proxy DaemonSet and Pod readiness to its Cilium and webhook
@@ -119,13 +134,13 @@ workflow validation passed in
 and the targeted nodemigrate crate checks passed in
 [36339547796](https://github.com/centerionware/not-k8s/actions/runs/36339547796).
 These checks do not exercise the watcher against a live target. Run
-36335580680 remains active in its K3s lane and predates this instrumentation;
-no duplicate migration run has been dispatched.
+36335580680 is terminal and predates this instrumentation; its artifacts were
+retrieved once for review. The post-fix migration run remains pending.
 
 Cilium kube-proxy replacement run
 [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
 was dispatched at `7f1c53f1531383e6ef3b9b73fe36f1fe3301216c` with
-`cilium_kpr=true` and `runtime_source=branch`. As of 2026-09-27 19:51 UTC,
+`cilium_kpr=true` and `runtime_source=branch`. As of 2026-09-27 20:15 UTC,
 the five-node Docker preflight and both utility/combined-runtime builds had
 passed; the upstream `Run migration` step failed after 43m18s, while the K3s
 step remained active.
@@ -133,11 +148,13 @@ The run remains active, so the terminal upstream artifact has not been
 retrieved yet; its failure cause is not established. The K3s lane must reach a
 terminal state before run-level artifact review and post-fix dispatch.
 The preflight script at this SHA always installed kube-proxy, so its five-node
-setup used KPR disabled despite the workflow input; only the two single-node
-source fixtures requested KPR enabled. The run also predates the initial
-control-plane `--proxy=none` fix and nodeproxy-inactive assertion. Do not claim
-five-node KPR, target proxy selection, or post-fix behavior from it. The current
-preflight now honors the KPR input. Five-node preflight run
+setup used KPR disabled despite the workflow input. The single-node source
+step also lost the input across its explicit `sudo --preserve-env` allowlist,
+so this run did not exercise KPR=true at either source. The allowlist is fixed
+at `7bad3b91`; the run also predates initial-control-plane `--proxy=none` and
+the nodeproxy-inactive assertion. Do not claim KPR-enabled source/target proxy
+selection or post-fix behavior from this run. The current preflight honors the
+KPR input. Five-node preflight run
 [36345278305](https://github.com/centerionware/not-k8s/actions/runs/36345278305)
 passed at `74068255` with `docker_only=true`, `cilium_kpr=true`, and
 `runtime_source=branch`. Its uploaded log confirms five isolated kubeadm nodes,

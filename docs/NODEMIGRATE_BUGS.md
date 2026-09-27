@@ -5,23 +5,31 @@ Last updated: 2026-09-27
 ## Current fixture finding
 
 - **`nodemigrate`: kube-proxy and nodeproxy could both own Service
-  routing when Cilium KPR is disabled.** Code review found that upstream
-  a source cluster may export its kube-proxy DaemonSet, while nodemigrate
-  selected nodeproxy solely from Cilium's KPR setting. That could start two
-  Service datapaths on the target. Forward migration now detects the source
+  routing when Cilium KPR is disabled.** The upstream lane in run
+  [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)
+  used Cilium KPR=false; its target logs show a running kube-proxy Pod and
+  active nodeproxy at the same time. The source kube-proxy DaemonSet was
+  imported while nodemigrate selected nodeproxy solely from Cilium's KPR
+  setting. Forward migration now detects the source
   kube-proxy DaemonSet (from the live API or protected export), preserves it,
   and passes `--proxy=none`; joined workers inspect the destination API and
   make the same choice. It rejects a source that simultaneously enables
   Cilium KPR and kube-proxy before cutover. The migration checkpoint now
-  requires exactly one Service proxy owner, or Cilium KPR alone. Focused unit
-  coverage and a migration run are pending; no runtime result is claimed yet.
+  requires exactly one Service proxy owner, or Cilium KPR alone. The focused
+  nodemigrate crate tests passed in
+  [36347140648](https://github.com/centerionware/not-k8s/actions/runs/36347140648)
+  and migration workflow validation passed in
+  [36347140725](https://github.com/centerionware/not-k8s/actions/runs/36347140725),
+  both at `7bad3b91`. Runtime verification remains pending; run 36335580680
+  confirms the pre-fix conflict.
 
 - **Migration workflow: the KPR option was dropped across `sudo`.** Although
   the workflow step set `NODEMIGRATE_CILIUM_KPR`, its explicit
   `sudo --preserve-env` list omitted that variable, so the root-run source
   installer and integration assertions silently used the default `false`.
-  The preserved environment now includes the option. Workflow validation and
-  a runtime lane using both KPR settings are pending.
+  The preserved environment now includes the option. Workflow validation
+  passed at `7bad3b91` in run 36347140725; a runtime lane using both KPR
+  settings remains pending.
 
 - **Nodemigrate integration fixture / five-node preflight ignored its KPR
   input.** Run
@@ -57,10 +65,13 @@ Last updated: 2026-09-27
   readiness evidence.** Upstream lane of run
   [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)
   failed while importing three cert-manager resources: the retained API timed
-  out reaching the webhook Service ClusterIP. The captured snapshot recorded
-  `nodeproxy` as inactive but did not record kube-proxy DaemonSet or Pod
-  readiness, so this does not establish which Service-routing component was
-  missing or unhealthy. At `bb32d6c8`, the migration watcher now captures the
+  out reaching the webhook Service ClusterIP. Its early snapshot did not
+  include kube-proxy DaemonSet or Pod readiness; later rollback logs show
+  kube-proxy and nodeproxy both active while Cilium KPR was disabled. This
+  confirms the competing-proxy bug above. The target snapshot also showed
+  Cilium agent and Envoy unready and CoreDNS/cert-manager containers terminated
+  with exit 137; the cause of Cilium startup failure remains unconfirmed. At
+  `bb32d6c8`, the migration watcher now captures the
   kube-proxy DaemonSet desired/current/ready/available counts and Pod
   conditions alongside its existing Cilium and webhook probes. `bash -n`,
   `git diff --check`, the migration-watcher JSON diagnostic check, and commit

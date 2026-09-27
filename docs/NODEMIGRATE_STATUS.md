@@ -12,16 +12,25 @@ separate living documents below.
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Failed reverse cutovers now stop the partial retained target, restore local PV payloads, and restart the prior nodestore stack. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The required fixture extends existing coverage with ConfigMaps, CRDs/custom resources, Deployments, StatefulSets, DaemonSets, Jobs/CronJobs, Helm chart releases and managed objects, Ingress/Gateway API, RBAC, networking, storage, admission, and every listable discovered resource. Normalized source object content remains a strict equality gate; destination-only runtime identities are now reported separately and do not mask missing or changed source objects. The latest upstream lane still has unresolved source-identity changes including CoreDNS, system RBAC, and system PriorityClasses. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | PDB-aware eviction and PV reclaim fixes remain tracked; migration must preserve source PVs, PVCs, backing storage, and data. New nodelet emptyDir mode fix passed targeted quick-check [36293700468](https://github.com/centerionware/not-k8s/actions/runs/36293700468) and the migration write probe at source/nodestore in both lanes [36293700293](https://github.com/centerionware/not-k8s/actions/runs/36293700293). The nodeapiserver aggregate-discovery 403 fix passed quick-check [36294951013](https://github.com/centerionware/not-k8s/actions/runs/36294951013) and K3s APIService discovery passed in [36294950798](https://github.com/centerionware/not-k8s/actions/runs/36294950798). | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | PDB-aware eviction and PV reclaim fixes remain tracked; migration must preserve source PVs, PVCs, backing storage, and data. Run 36335580680 confirmed an imported kube-proxy Pod and nodeproxy active together with Cilium KPR disabled. Fix `7bad3b91` selects one Service router and passed focused nodemigrate tests [36347140648](https://github.com/centerionware/not-k8s/actions/runs/36347140648); runtime verification remains pending. The nodelet emptyDir and nodeapiserver aggregate-discovery fixes and their existing evidence remain tracked below. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest release-backed run [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663) failed both lanes on v0.8.0 Gateway API CRD compatibility, before nodestore checkpoints. Latest branch-runtime run [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680) passed source and nodestore storage checkpoints in both lanes; upstream failed return import when the cert-manager webhook ClusterIP timed out, while K3s remains in progress. The current branch adds kube-proxy readiness capture at `bb32d6c8`; PR static checks are in progress. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Release-backed run [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663) failed both lanes on v0.8.0 Gateway API CRD compatibility, before nodestore checkpoints. Branch run [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680) passed upstream source/nodestore storage checks but failed return import on the cert-manager webhook ClusterIP; its K3s lane was cancelled at timeout. Its logs also confirm kube-proxy and nodeproxy ran together with Cilium KPR disabled. Fix `7bad3b91` chooses one Service router; focused tests are pending. KPR-enabled run [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296) failed upstream before the latest bootstrap fix; K3s is still active. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory round-trip gates remain not passed: one-node K3s+Cilium and 3-control-plane + 2-worker upstream Kubernetes with Cilium and joined replacement. The five-node Docker preflight in run 36335580680 passed, but it did not migrate the five-node cluster. Neither round trip has passed all source/target/return parity and behavior checks. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Passed [36278826637](https://github.com/centerionware/not-k8s/actions/runs/36278826637) at SHA `becc80a1de8cbb6c1204e3d27d62c39cb332f4a3`: five isolated nodes, kubeadm 3-control-plane/2-worker membership, Cilium 1.20.2 ready, API continuity through one control-plane loss, and all Nodes recovered after restart. This is infrastructure evidence only; migration was skipped. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
+
+- At PR head `7bad3b9145dd5a6b0612d8eeeca2ef0fd06bbdcf`, the proxy ownership
+  fix and KPR `sudo` environment forwarding passed targeted nodemigrate crate
+  tests in [36347140648](https://github.com/centerionware/not-k8s/actions/runs/36347140648)
+  and migration workflow validation in
+  [36347140725](https://github.com/centerionware/not-k8s/actions/runs/36347140725).
+  Run [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)
+  confirms the pre-fix dual-proxy runtime bug. The current ownership fix has
+  not yet run against a live migration target.
 
 - At branch SHA `bb32d6c86dfe614b87fa66edf26d313b3b1fa5ad`, the migration
   watcher now records kube-proxy DaemonSet and Pod readiness during target
@@ -30,9 +39,12 @@ separate living documents below.
   [36339547744](https://github.com/centerionware/not-k8s/actions/runs/36339547744)
   and targeted `nodemigrate` crate checks
   [36339547796](https://github.com/centerionware/not-k8s/actions/runs/36339547796).
-  No runtime result is claimed for this instrumentation. The prior migration
-  run [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)
-  is still active in K3s, so no duplicate migration run has been dispatched.
+  No runtime result is claimed for this instrumentation. Run
+  [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)
+  is terminal failure (upstream failed, K3s was cancelled at timeout); its
+  artifacts were retrieved once for review. The newer KPR-enabled run
+  [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
+  remains active in K3s, so another long migration run has not been started.
 
 - Branch-runtime migration [36260417450](https://github.com/centerionware/not-k8s/actions/runs/36260417450)
   at SHA `8c79470de60f288fc113db7b7b8c45da048b6ad7` passed the upstream source
