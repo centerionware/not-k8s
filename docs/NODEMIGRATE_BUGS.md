@@ -39,9 +39,12 @@ Confirmed defect and branch work:
   why: it refused `DeleteVolume` while the terminating PV phase was still
   `Bound` (`shouldDelete is false: PersistentVolumePhase is not Released`). The
   current worktree now marks the PV `Released` before issuing a UID/resource
-  version-preconditioned delete. It leaves `Retain` and legacy `Recycle` PVs
-  released with payload intact. Focused CI and runtime verification of this
-  ordering fix are pending. Artifacts:
+  version-preconditioned delete. This path is ordinary reclaim behavior after
+  an explicit PVC deletion in the fixture; it is not part of migration. The
+  migration path must preserve source PVs, PVCs, backing storage, and data.
+  The first quick-check of this ordering fix failed compilation because the
+  claimRef borrow crossed the PV update; its identity fields are now copied
+  before mutation. Targeted CI and runtime verification are pending. Artifacts:
   `/tmp/nodemigrate-36288813404-artifacts/nodemigrate-{k3s,kubernetes}-36288813404/`.
 
 ## Release-backed run 36279843865

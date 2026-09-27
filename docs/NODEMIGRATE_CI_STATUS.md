@@ -54,8 +54,13 @@ ordinal-0 data checks in both lanes. Both lanes still failed after deleting the
 temporary ordinal-1 PVC because its PV remained. CSI provisioner logs directly
 showed `shouldDelete is false: PersistentVolumePhase is not Released`. The
 worktree now patches `status.phase=Released` before the preconditioned PV
-delete. Focused quick-check and another branch-runtime migration are pending.
-No return migration or parity comparison passed. Full artifacts:
+delete. This reclaim case is only the test's explicit deletion of its temporary
+ordinal-1 PVC; migration itself must preserve source PVs, PVCs, backing storage,
+and data. The first quick-check of this ordering change failed to compile
+because a claimRef borrow remained live across the PV status update. The
+namespace/name/UID are now copied before the update; targeted quick-check and
+another branch-runtime migration are pending. No return migration or parity
+comparison passed. Full artifacts:
 `/tmp/nodemigrate-36288813404-artifacts/nodemigrate-{k3s,kubernetes}-36288813404/`.
 
 Release-backed migration run [36283329273](https://github.com/centerionware/not-k8s/actions/runs/36283329273)

@@ -147,13 +147,17 @@ async fn reconcile_released_pv(client: &Client, name: &str) -> bool {
     let Some(claim_ref) = pv.spec.as_ref().and_then(|spec| spec.claim_ref.as_ref()) else {
         return false;
     };
-    let (Some(namespace), Some(claim_name)) = (claim_ref.namespace.as_deref(), claim_ref.name.as_deref()) else {
+    let (Some(namespace), Some(claim_name)) =
+        (claim_ref.namespace.as_deref(), claim_ref.name.as_deref())
+    else {
         tracing::warn!(pv = %name, "cannot reclaim PersistentVolume with incomplete claimRef");
         return false;
     };
-    let pvc_api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
-    match tokio::time::timeout(API_WRITE_TIMEOUT, pvc_api.get_opt(claim_name)).await {
-        Ok(Ok(Some(pvc))) if claim_ref.uid.as_deref().is_none_or(|uid| pvc.uid().as_deref() == Some(uid)) => {
+    let (namespace, claim_name, claim_uid) =
+        (namespace.to_owned(), claim_name.to_owned(), claim_ref.uid.clone());
+    let pvc_api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), &namespace);
+    match tokio::time::timeout(API_WRITE_TIMEOUT, pvc_api.get_opt(&claim_name)).await {
+        Ok(Ok(Some(pvc))) if claim_uid.as_deref().is_none_or(|uid| pvc.uid().as_deref() == Some(uid)) => {
             return false;
         }
         Ok(Ok(Some(_))) | Ok(Ok(None)) => {}
