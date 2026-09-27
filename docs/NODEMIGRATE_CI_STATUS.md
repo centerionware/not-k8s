@@ -23,9 +23,11 @@ both lanes reached `PASS stage=nodestore`. K3s then failed strict semantic
 parity on controller-owned Lease fields, default `PriorityClass.globalDefault`,
 and generated CSINode ownership. Upstream failed on those too, plus CoreDNS
 bootstrap RBAC metadata and `CSIDriver.spec.preventPodSchedulingIfMissing`.
-The last field is present in the Kubernetes 1.37.1 source API but missing from
-the target's release-1.34 schema, so it must remain a hard parity failure until
-API and scheduler support are added. Logs are saved at
+The last field was present in the Kubernetes 1.37.1 source API but missing
+from the target's release-1.34 schema. The branch now preserves the field and
+enforces its CSI registration policy; the initial API test exposed pruning's
+failure to merge OpenAPI `allOf` properties, which is also fixed. Verification
+on the updated SHA is pending. Logs are saved at
 `/tmp/nodemigrate-36307445772/`.
 
 The harness now lifecycle-normalizes the known controller leases and
@@ -1817,8 +1819,10 @@ later green run.
 
 | SHA | Workflow | Result | Evidence |
 | --- | --- | --- | --- |
-| `de2b9ed91210a4894bcdb0203bfd9320109335a4` | `nodeapiserver,nodescheduler` quick-check | Failed in the unit-test step with exit code 101. Root cause awaits the job log; log retrieval is temporarily failing to connect to api.github.com. | [Quick-check 36309717348](https://github.com/centerionware/not-k8s/actions/runs/36309717348) |
-| `de2b9ed91210a4894bcdb0203bfd9320109335a4` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Running; intended to verify field preservation and return migration with the new CSI scheduling behavior. | [Migration 36309717243](https://github.com/centerionware/not-k8s/actions/runs/36309717243) |
+| `de2b9ed91210a4894bcdb0203bfd9320109335a4` | `nodeapiserver,nodescheduler` quick-check | Failed one new API pruning test; 1,423 tests passed. The test found that pruning ignored properties nested under OpenAPI `allOf`. This regression is fixed in `1dc1c2db`. | [Quick-check 36309717348](https://github.com/centerionware/not-k8s/actions/runs/36309717348); saved log `/tmp/nodemigrate-36309717348/quick-check.log` |
+| `de2b9ed91210a4894bcdb0203bfd9320109335a4` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Both lanes passed source StatefulSet PVC/PV/data checks, reached nodestore verification, then failed because the newly registered hostpath `CSINode` had no Node owner reference. Neither lane completed nodestore storage checks or the return leg. This SHA predates the allOf pruning fix. | [Migration 36309717243](https://github.com/centerionware/not-k8s/actions/runs/36309717243); logs `/tmp/nodemigrate-36309717243/artifacts/` |
 | `de2b9ed91210a4894bcdb0203bfd9320109335a4` | Latest regular release (`v0.8.0`) K3s+Cilium and upstream+Cilium migration | Running against the exact latest regular runtime to check the current utility against the user's required 0.8.0 baseline. | [Migration 36310054614](https://github.com/centerionware/not-k8s/actions/runs/36310054614) |
-| `7ba45556862d3ecd90cffe22cde4ac4d71a9f71b` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Both migration lanes failed after their migration steps. This run predates the CSI compatibility change; logs await recovery of api.github.com access. | [Migration 36308845021](https://github.com/centerionware/not-k8s/actions/runs/36308845021) |
+| `1dc1c2db1efec37bb1e5cab08f78414388e16d1a` | `nodeapiserver,nodescheduler` quick-check | Passed. The allOf pruning fix and CSIDriver schema/protobuf/scheduler regressions passed. | [Quick-check 36310603471](https://github.com/centerionware/not-k8s/actions/runs/36310603471) |
+| `1dc1c2db1efec37bb1e5cab08f78414388e16d1a` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Running; verifies the field and pruning changes. This SHA predates the Nodelet owner-reference fix. | [Migration 36310603619](https://github.com/centerionware/not-k8s/actions/runs/36310603619) |
+| `7ba45556862d3ecd90cffe22cde4ac4d71a9f71b` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Both lanes passed source StatefulSet PVC/PV/data checks and reached nodestore verification, then failed because the hostpath `CSINode` lacked its Node owner reference. No nodestore storage checkpoint or return leg passed. | [Migration 36308845021](https://github.com/centerionware/not-k8s/actions/runs/36308845021); logs `/tmp/nodemigrate-36308845021/artifacts/` |
 | `f8ff6a93b719453df806ee366d5d6403829d6bb8` | APIService freshness quick-check and migration run | Focused `nodeapiserver` quick-check passed. Dedicated migration run failed both lanes after branch builds; five-node Docker preflight passed. K3s still omitted metrics resources even after APIService `Available=True`, disproving stale reflector state as the failure cause; both lanes also reproduced CSI NodeStageVolume volume-catalog misses. Neither lane completed a return migration. | [Quick-check 36301964871](https://github.com/centerionware/not-k8s/actions/runs/36301964871); [migration 36301989587](https://github.com/centerionware/not-k8s/actions/runs/36301989587); logs `/tmp/nodemigrate-36301989587/`. |

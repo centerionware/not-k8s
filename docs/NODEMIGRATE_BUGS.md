@@ -36,6 +36,20 @@ Last updated: 2026-09-27
 
 ## Latest runtime findings
 
+- **`nodelet`: CSINode registration omits and does not repair its Node owner
+  reference.** The first branch-runtime run with strict target CSINode
+  registration checks, [36308845021](https://github.com/centerionware/not-k8s/actions/runs/36308845021),
+  passed source checks and reached the nodestore stage in both lanes, then
+  failed because the hostpath `CSINode` had a registered driver but no
+  `metadata.ownerReferences` entry for the destination Node. The existing
+  nodelet create path explicitly skipped the Node UID lookup, and its update
+  path only patched `spec.drivers`; this also left a same-name replacement
+  vulnerable to a stale owner UID. Nodelet now fetches the current Node UID
+  during CSI registration and sets the CSINode owner reference on both create
+  and update. Focused nodelet quick-check and a fresh migration run are
+  pending. The previous run's source PVC/PV and payload checks passed; its
+  nodestore payload checks did not run after this earlier assertion failed.
+
 Run [36307445772](https://github.com/centerionware/not-k8s/actions/runs/36307445772)
 at SHA `d92e814911416403bba8b9cf02940fc23be1d140` passed the five-node
 preflight and both utility/runtime builds. All StatefulSet PVC/PV/data checks
