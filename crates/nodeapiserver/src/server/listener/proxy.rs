@@ -433,7 +433,7 @@ async fn proxy_resource(
         }
     }
 
-    let suffix = proxy_suffix(info);
+    let suffix = proxy_suffix(&info);
     let target = if info.resource == "nodes" {
         let node = match rest::get(&mut client, None, "", "v1", "nodes", None, &info.name).await {
             Ok(rest::GetOutcome::Found(node)) => node,
