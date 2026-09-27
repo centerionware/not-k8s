@@ -16,14 +16,14 @@ separate living documents below.
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Release-backed run [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663) failed both lanes on v0.8.0 Gateway API CRD compatibility, before nodestore checkpoints. Branch run [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680) passed upstream source/nodestore storage checks but failed return import on the cert-manager webhook ClusterIP; its K3s lane was cancelled at timeout. Its logs also confirm kube-proxy and nodeproxy ran together with Cilium KPR disabled. Fix `7bad3b91` chooses one Service router; focused tests are pending. KPR-enabled run [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296) failed upstream before the latest bootstrap fix; K3s is still active. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Release-backed run [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663) failed both lanes on v0.8.0 Gateway API CRD compatibility, before nodestore checkpoints. Branch run [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680) passed upstream source/nodestore storage checks but failed return import on the cert-manager webhook ClusterIP; its K3s lane was cancelled at timeout. Its logs also confirm kube-proxy and nodeproxy ran together with Cilium KPR disabled. Fix `7bad3b91` chooses one Service router; targeted tests and workflow validation passed [36347140648](https://github.com/centerionware/not-k8s/actions/runs/36347140648) and [36347140725](https://github.com/centerionware/not-k8s/actions/runs/36347140725). KPR-enabled run [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296) failed upstream before the latest bootstrap fix; its K3s lane remains active. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory round-trip gates remain not passed: one-node K3s+Cilium and 3-control-plane + 2-worker upstream Kubernetes with Cilium and joined replacement. The five-node Docker preflight in run 36335580680 passed, but it did not migrate the five-node cluster. Neither round trip has passed all source/target/return parity and behavior checks. | [CI status](NODEMIGRATE_CI_STATUS.md) |
-| Docker five-node isolation preflight | Passed [36278826637](https://github.com/centerionware/not-k8s/actions/runs/36278826637) at SHA `becc80a1de8cbb6c1204e3d27d62c39cb332f4a3`: five isolated nodes, kubeadm 3-control-plane/2-worker membership, Cilium 1.20.2 ready, API continuity through one control-plane loss, and all Nodes recovered after restart. This is infrastructure evidence only; migration was skipped. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| Docker five-node isolation preflight | Passed [36345278305](https://github.com/centerionware/not-k8s/actions/runs/36345278305) at SHA `74068255` with Cilium KPR enabled: five isolated kubeadm nodes, Cilium ready without kube-proxy, and recovery after a control-plane loss. This is infrastructure evidence only; migration was skipped. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
 
-- At PR head `7bad3b9145dd5a6b0612d8eeeca2ef0fd06bbdcf`, the proxy ownership
+- At PR code SHA `7bad3b9145dd5a6b0612d8eeeca2ef0fd06bbdcf`, the proxy ownership
   fix and KPR `sudo` environment forwarding passed targeted nodemigrate crate
   tests in [36347140648](https://github.com/centerionware/not-k8s/actions/runs/36347140648)
   and migration workflow validation in
@@ -31,6 +31,16 @@ separate living documents below.
   Run [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)
   confirms the pre-fix dual-proxy runtime bug. The current ownership fix has
   not yet run against a live migration target.
+
+- At current PR head `3cb608ab7276a1cfcd1dd012f5f17c3f2d584711`, targeted
+  nodemigrate crate checks passed in
+  [36347577818](https://github.com/centerionware/not-k8s/actions/runs/36347577818)
+  and migration workflow validation passed in
+  [36347577796](https://github.com/centerionware/not-k8s/actions/runs/36347577796).
+  These are code/static checks, not runtime migration evidence. Run
+  [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
+  remains active in its K3s migration lane; its upstream lane failed. No new
+  long migration run has been started while that lane is active.
 
 - At branch SHA `bb32d6c86dfe614b87fa66edf26d313b3b1fa5ad`, the migration
   watcher now records kube-proxy DaemonSet and Pod readiness during target

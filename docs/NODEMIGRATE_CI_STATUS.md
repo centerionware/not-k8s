@@ -140,13 +140,12 @@ retrieved once for review. The post-fix migration run remains pending.
 Cilium kube-proxy replacement run
 [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
 was dispatched at `7f1c53f1531383e6ef3b9b73fe36f1fe3301216c` with
-`cilium_kpr=true` and `runtime_source=branch`. As of 2026-09-27 20:15 UTC,
-the five-node Docker preflight and both utility/combined-runtime builds had
-passed; the upstream `Run migration` step failed after 43m18s, while the K3s
-step remained active.
-The run remains active, so the terminal upstream artifact has not been
-retrieved yet; its failure cause is not established. The K3s lane must reach a
-terminal state before run-level artifact review and post-fix dispatch.
+`cilium_kpr=true` and `runtime_source=branch`. As of the latest GitHub Actions
+query on 2026-09-27, its upstream `Run migration` step failed after 43m18s and
+the K3s `Run migration` step is still active. The terminal upstream artifact
+has not been retrieved because run-level artifact review is deferred until
+both lanes are terminal; the failure cause remains unestablished. Do not start
+another long migration run while the K3s lane is active.
 The preflight script at this SHA always installed kube-proxy, so its five-node
 setup used KPR disabled despite the workflow input. The single-node source
 step also lost the input across its explicit `sudo --preserve-env` allowlist,
