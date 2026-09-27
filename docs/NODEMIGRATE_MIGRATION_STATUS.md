@@ -11,8 +11,9 @@ compile or unit test does not mark a real migration path as verified.
 
 At SHA `f9356dad16a549fdaf07c2a79e135a8cbfc836e9`, targeted nodemigrate
 quick-check [36313588814](https://github.com/centerionware/not-k8s/actions/runs/36313588814)
-and branch-runtime migration [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064)
-are running. The branch now replaces same-name destination objects with an
+passed in 1m28s. Branch-runtime migration
+[36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064)
+is running. The branch now replaces same-name destination objects with an
 optimistic full update so omitted source fields do not survive as hybrid
 objects, and repairs Node-owned references after target Node registration.
 The checkpoint normalizer now treats only documented controller/default/API

@@ -35,15 +35,15 @@ migration has passed in this release-baseline run.
 
 At SHA `f9356dad16a549fdaf07c2a79e135a8cbfc836e9`, nodemigrate quick-check
 [36313588814](https://github.com/centerionware/not-k8s/actions/runs/36313588814)
-and branch-runtime migration run
+passed in 1m28s. Branch-runtime migration run
 [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064)
-are in progress. This commit changes existing-object imports from SSA to
+is in progress. This commit changes existing-object imports from SSA to
 resource-version-checked replacement and repairs Node-owned object references
 after the replacement Node is Ready. It also adds narrowly scoped lifecycle
 normalization for controller-owned ReplicaSet scale, default/type metadata,
 CiliumNode runtime labels, and ClusterTrustBundle served-version differences.
-The snapshot-filter script passes locally; Rust verification and runtime
-acceptance are pending.
+The snapshot-filter script passes locally and the Rust quick-check passed;
+runtime acceptance is pending.
 
 ## Most recent evidence
 

@@ -48,10 +48,11 @@ Last updated: 2026-09-27
   imports now use resource-version-checked full replacement; missing objects
   use create. After the replacement Node becomes Ready, nodemigrate restores
   owner references using the source and destination Node UIDs from the protected
-  export. The focused helper and lifecycle-normalization checks pass locally;
-  nodemigrate quick-check [36313588814](https://github.com/centerionware/not-k8s/actions/runs/36313588814)
-  and migration [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064)
-  at SHA `f9356dad` are pending. This change has not yet passed a live
+  export. The lifecycle-normalization check passed locally, and nodemigrate
+  quick-check [36313588814](https://github.com/centerionware/not-k8s/actions/runs/36313588814)
+  passed at SHA `f9356dad`. Migration
+  [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064)
+  at that SHA remains in progress. This change has not yet passed a live
   migration.
 
 - **`nodelet`: CSINode registration omits and does not repair its Node owner
