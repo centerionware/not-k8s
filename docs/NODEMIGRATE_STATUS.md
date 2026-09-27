@@ -16,8 +16,8 @@ separate living documents below.
 | Existing nodestore member replacement | Replacement ordering and Raft learner catch-up guard implemented; focused nodemigrate, nodebootstrap, and nodestore checks passed at `c468627045cae98360bed8a93397407ff934ed86`; runtime scenario unverified | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Run [36294950798](https://github.com/centerionware/not-k8s/actions/runs/36294950798) passed preflight and builds and confirmed K3s metrics API discovery works, then both lanes stopped before migration due to a harness `jq` argument-size failure. The harness fix streams object fingerprints and summarizes semantic snapshots. Upstream's earlier same-identity object changes remain unresolved; no return migration or parity gate has passed. | [CI status](NODEMIGRATE_CI_STATUS.md) |
-| Nodemigrate merge gates | Both mandatory round-trip gates remain not passed: one-node K3s+Cilium and 3-control-plane + 2-worker upstream Kubernetes with Cilium and joined replacement. Run 36285968999 passed Docker preflight, both branch builds, migration cutover, and API readiness but stopped at the missing target eviction endpoint. No return migration or parity is verified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Current release-backed run [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663) passed the five-node Docker preflight, built `nodemigrate`, fetched the latest runtime in both lanes, and is running both migrations against the regular release. Branch-runtime run [36321804254](https://github.com/centerionware/not-k8s/actions/runs/36321804254) failed upstream after the target Cilium agent could not update `/proc/sys/net/ipv6/conf/cilium_host/forwarding`; its K3s lane was still active at 16:15 UTC. Redacted CRI diagnostics and K3s containerd endpoint selection are included in the release-backed rerun. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| Nodemigrate merge gates | Both mandatory round-trip gates remain not passed: one-node K3s+Cilium and 3-control-plane + 2-worker upstream Kubernetes with Cilium and joined replacement. Run 36332106663 is exercising the single-node source lanes against regular `v0.8.0`; the five-node Docker preflight passed but is not the five-node migration gate. Neither round trip has passed all source/target/return parity and behavior checks. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Passed [36278826637](https://github.com/centerionware/not-k8s/actions/runs/36278826637) at SHA `becc80a1de8cbb6c1204e3d27d62c39cb332f4a3`: five isolated nodes, kubeadm 3-control-plane/2-worker membership, Cilium 1.20.2 ready, API continuity through one control-plane loss, and all Nodes recovered after restart. This is infrastructure evidence only; migration was skipped. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
@@ -284,16 +284,19 @@ separate living documents below.
 
 ## Next actions
 
-1. Verify the updated five-node kubeadm/Cilium preflight with the explicit
-   containerd native-snapshotter unpack mapping; investigate the next failing
-   setup stage from its captured logs.
-2. Run the dedicated migration workflow at the rollback/diagnostic branch head,
-   then use its return watcher and rollback assertions to resolve the webhook
-   path, PV request path, and source recovery behavior.
-3. Build the actual isolated five-node kubeadm migration and staged
-   control-plane coordinator. The Docker-only preflight does not exercise
-   Kubernetes membership or migration parity.
-4. Keep both merge gates and the existing-cluster join/replacement case
-   unverified until their authorized runtime checks pass. Track release
-   readiness separately and do not bump shared `VERSION` for standalone
-   nodemigrate publication.
+1. Finish release-backed run [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663)
+   against the latest regular release (`v0.8.0`): capture its terminal lane
+   results and inspect each completed artifact once, then fix any confirmed
+   component defects and rerun the relevant migration check.
+2. Finish or time out branch-runtime run [36321804254](https://github.com/centerionware/not-k8s/actions/runs/36321804254).
+   Its upstream Cilium failure needs the captured CRI mount/security details;
+   do not infer an owning-component defect from the older run without those
+   diagnostics.
+3. Continue the source/target/return parity loop until both single-node lanes
+   pass, preserving PVs, PVCs, backing data, and the source installation.
+4. Implement and run the distinct three-control-plane/two-worker migration
+   with existing-cluster join/replacement. Docker preflight alone does not
+   exercise migration membership or state parity.
+5. Keep both migration merge gates and publication readiness open until their
+   complete runtime evidence passes; do not bump shared `VERSION` for a
+   standalone nodemigrate publication.
