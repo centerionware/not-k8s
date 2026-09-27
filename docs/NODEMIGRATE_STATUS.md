@@ -23,6 +23,16 @@ separate living documents below.
 
 ## Current verification
 
+- At code SHA `2d98e05edc709b7aeec145d652b29aa1fe0137a9`, focused
+  `nodemigrate` and `nodebootstrap` tests passed in
+  [36350477684](https://github.com/centerionware/not-k8s/actions/runs/36350477684).
+  The fix bounds each API readiness probe to ten seconds and promotes a newly
+  joined control-plane member after Node readiness. Run
+  [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
+  is terminal cancelled after its K3s return leg stalled at retained API
+  readiness; the artifact contains no underlying API error, so runtime behavior
+  remains unverified. No general build or e2e gate was run.
+
 - At code SHA `f5bcadbbff5029c6128544a771ca2bd1ba1114ca`, focused nodemigrate
   tests passed in
   [36349107771](https://github.com/centerionware/not-k8s/actions/runs/36349107771).

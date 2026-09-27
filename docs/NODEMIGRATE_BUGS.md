@@ -11,15 +11,20 @@ Last updated: 2026-09-27
   therefore be Ready in Kubernetes while never voting in the datastore
   quorum. The migration now promotes the joined member after its Kubernetes
   Node becomes Ready; the existing replacement path still promotes before
-  removing the old member. Focused tests and runtime evidence are pending.
+  removing the old member. Focused `nodebootstrap` and `nodemigrate` tests
+  passed at code SHA `2d98e05e` in
+  [run 36350477684](https://github.com/centerionware/not-k8s/actions/runs/36350477684);
+  the five-node runtime scenario remains pending.
 
 - **`nodemigrate`: retained-API readiness could hang inside one client call.**
   Run [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
   remained at the return-migration readiness message for over an hour. The
   retry loop was five minutes, but a Kubernetes discovery/list call had no
   deadline, so it could block past that loop. Each API probe now has a
-  ten-second deadline and each failed attempt logs its error. A new focused
-  check and a live migration run are pending.
+  ten-second deadline and each failed attempt logs its error. Focused
+  `nodemigrate` and `nodebootstrap` tests passed at code SHA `2d98e05e` in
+  [run 36350477684](https://github.com/centerionware/not-k8s/actions/runs/36350477684).
+  A live migration run is pending.
 
 - **`nodemigrate`: later cluster nodes reused the first node's protected
   export.** Forward and staged reverse control-plane paths loaded
