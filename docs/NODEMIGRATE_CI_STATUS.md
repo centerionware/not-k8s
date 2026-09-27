@@ -125,9 +125,13 @@ no duplicate migration run has been dispatched.
 Cilium kube-proxy replacement run
 [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
 was dispatched at `7f1c53f1531383e6ef3b9b73fe36f1fe3301216c` with
-`cilium_kpr=true` and `runtime_source=branch`. As of 2026-09-27 19:25 UTC,
+`cilium_kpr=true` and `runtime_source=branch`. As of 2026-09-27 19:51 UTC,
 the five-node Docker preflight and both utility/combined-runtime builds had
-passed; the K3s and upstream `Run migration` steps were still in progress.
+passed; the upstream `Run migration` step failed after 43m18s, while the K3s
+step remained active.
+The run remains active, so the terminal upstream artifact has not been
+retrieved yet; its failure cause is not established. The K3s lane must reach a
+terminal state before run-level artifact review and post-fix dispatch.
 The preflight script at this SHA always installed kube-proxy, so its five-node
 setup used KPR disabled despite the workflow input; only the two single-node
 source fixtures requested KPR enabled. The run also predates the initial

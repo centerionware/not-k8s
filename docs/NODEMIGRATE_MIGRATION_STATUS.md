@@ -36,8 +36,11 @@ for a Cilium KPR cluster. At `7c1c0b1b`, joined-worker bootstrap reads
 enabled; otherwise nodeproxy remains the Service proxy. Plan output and logs
 report that choice. The focused nodemigrate quick-check
 [36342042535](https://github.com/centerionware/not-k8s/actions/runs/36342042535)
-passed. The current Cilium migration lanes still exercise only KPR disabled;
-runtime coverage for KPR enabled and per-node Cilium overrides remains open.
+passed. KPR-enabled single-node migration run
+[36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
+is in progress: its upstream lane failed after 43m18s and its K3s lane remains
+active. The run predates the initial-bootstrap proxy fix; no post-fix KPR
+round trip is verified. Per-node Cilium overrides remain open.
 Cilium's Envoy L7 proxy remains a separate component. PR crate tests and
 workflow validation passed for branch head `71dd6c87` in
 [36342224121](https://github.com/centerionware/not-k8s/actions/runs/36342224121)
@@ -60,8 +63,10 @@ Workflow validation passed at `027ee68d` in
 [36342627911](https://github.com/centerionware/not-k8s/actions/runs/36342627911);
 nodemigrate crate tests passed in
 [36342627913](https://github.com/centerionware/not-k8s/actions/runs/36342627913).
-The KPR-enabled live migration is running at `7f1c53f1` in
+The KPR-enabled live migration was dispatched at `7f1c53f1` in run
 [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296).
+Its upstream lane failed after 43m18s, the K3s lane remains active, and the
+failure cause is pending artifact review after the entire run is terminal.
 While it runs, code review found that the first control-plane bootstrap also
 needs to disable nodeproxy when the imported Cilium config enables KPR; the
 existing change covered joined workers only. The initial-bootstrap path now
