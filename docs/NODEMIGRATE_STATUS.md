@@ -23,6 +23,13 @@ separate living documents below.
 
 ## Current verification
 
+- Branch-runtime run
+  [36352851628](https://github.com/centerionware/not-k8s/actions/runs/36352851628)
+  was dispatched at SHA `655ba83c` with `runtime_source=branch`,
+  `cilium_kpr=true`, and `five_node_migration=true`. It targets the branch-built
+  runtime and includes the isolated three-control-plane/two-worker round trip.
+  All results are pending.
+
 - Release-backed run
   [36351022258](https://github.com/centerionware/not-k8s/actions/runs/36351022258)
   at SHA `55978b86` against released `v0.8.0` and Cilium KPR enabled is

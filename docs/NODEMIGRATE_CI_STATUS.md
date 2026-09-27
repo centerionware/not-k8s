@@ -39,6 +39,14 @@ owning component, branch fix, and focused test evidence. The intended
 runtime tests are the primary migration target; `v0.8.0` can remain an optional
 published-runtime regression baseline, but is not required or exclusive.
 
+Branch-runtime migration run
+[36352851628](https://github.com/centerionware/not-k8s/actions/runs/36352851628)
+was dispatched at SHA `655ba83c` with `runtime_source=branch`,
+`cilium_kpr=true`, and `five_node_migration=true`. It builds the changed runtime
+components for the migration test and exercises both single-node lanes plus the
+isolated upstream 3-control-plane/2-worker round trip. Results are pending; no
+gate is claimed from dispatch alone.
+
 At SHA `42162ef20afca2e4b4f616cc1d83fbd05071a9ae`, focused `nodelet`
 quick-check [36311005893](https://github.com/centerionware/not-k8s/actions/runs/36311005893)
 passed. Migration run [36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956)
