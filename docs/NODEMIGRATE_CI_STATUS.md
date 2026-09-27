@@ -96,10 +96,20 @@ Branch-runtime migration run
 [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)
 was dispatched at SHA `f186930d7333a0b1c96967f2418b9be18b1155d6` with both
 source lanes enabled. The five-node Docker preflight and both utility/runtime
-builds passed. Both migration jobs remain active; this SHA predates the
-target-state watcher JSON-diagnostic fix now under review. The completed job
-logs must be checked for the reported `jq` parse errors, and a run at the fix
-SHA is required to verify their removal.
+builds passed. The upstream job finished with failure in 42m27s after source
+and nodestore checkpoints passed. Source and nodestore StatefulSet PVC/PV/data
+assertions passed; no PV deletion was reported. Forward migration completed.
+The return import failed on three cert-manager resources because the retained
+source API could not reach `cert-manager-webhook` at `10.106.197.148:443`; the
+utility restored nodestore and retained its protected export. Rollback-stage
+fixture verification then failed its non-root `emptyDir` marker check after a
+listed Pod disappeared before `kubectl exec`; investigate this separately from
+the webhook failure. The upstream log contains 226 `jq` parse errors from the
+target-state watcher merging `kubectl` stderr into `jq`; this SHA predates the
+fix now pushed at `deaed970`. Log:
+`/tmp/nodemigrate-36335580680-upstream/nodemigrate-kubernetes.log`. The K3s
+lane is still active. A new branch-runtime run at the fix SHA is required after
+this run finishes.
 
 Release-backed migration run
 [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663)
