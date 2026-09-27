@@ -107,7 +107,12 @@ failure to nodelet until those fields are compared. The completed upstream
 artifact is saved at
 `/tmp/nodemigrate-36321804254-upstream/nodemigrate-kubernetes.log`.
 The K3s lane in the same run is still active; update this entry with its
-terminal result before treating the run as complete.
+terminal result before treating the run as complete. A follow-up inspection
+found the new probe only queried the nodelet containerd socket, so it would
+miss K3s source Cilium containers. SHA `c50a812d` now tries both nodelet and
+K3s containerd endpoints and selects the CRI record whose Pod UID matches the
+API Cilium agent; a mocked K3s-endpoint smoke check passed and confirmed that
+container environment data is not emitted. A live migration rerun is pending.
 
 Latest branch-runtime migration run
 [36320456287](https://github.com/centerionware/not-k8s/actions/runs/36320456287)
