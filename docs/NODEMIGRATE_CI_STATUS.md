@@ -15,6 +15,27 @@ new fixes.
 
 ## Most recent evidence
 
+Release-backed migration run [36283329273](https://github.com/centerionware/not-k8s/actions/runs/36283329273)
+at SHA `786e95577686f1fd5ed08a94f76ade48861314b4` fetched the exact regular
+v0.8.0 runtime. The five-node Docker/kubeadm/Cilium preflight passed in 7m32s.
+Both migration utility builds and release fetches passed. The K3s lane failed
+after 18m02s; the upstream lane failed after 48m23s. In both lanes, the
+released nodeapiserver rejected the same three Gateway API CRDs due to CEL
+map/object typing and cost estimation; dependent Gateway objects could not be
+restored. Upstream also had a CertificateRequest webhook call failure and a CSR
+HTTP 500; these need branch-runtime diagnosis. PriorityClass import ordering
+is fixed: the prior Pod admission 403 did not recur. Both sources recovered
+after rollback and both protected exports were retained. No semantic parity or
+return migration passed. The targeted
+[quick-check 36283329275](https://github.com/centerionware/not-k8s/actions/runs/36283329275)
+passed for `nodeapiserver` and `nodemigrate`. Migration artifacts:
+`/tmp/nodemigrate-36283329273-k3s/` and `/tmp/nodemigrate-36283329273-k8s/`;
+preflight artifact: `/tmp/nodemigrate-36283329273-docker/`.
+
+The release test confirms v0.8.0 behavior. Test the branch runtime next to
+exercise the CEL checker fix and verify the priority-ordering repair with all
+current component fixes.
+
 Release-backed migration run [36279843865](https://github.com/centerionware/not-k8s/actions/runs/36279843865)
 at SHA `d609ec4d66dfce13283d0ee4c1d39a5ecce10d8d` fetched the exact regular
 runtime asset `notk8s-0.8.0-linux-x86_64-release`. Docker's five-node

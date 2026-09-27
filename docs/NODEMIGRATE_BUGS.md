@@ -23,21 +23,25 @@ Confirmed failures:
   a confirmed CEL compatibility defect in `nodeapiserver`, not a CRD migration
   filtering issue. Fix must preserve upstream validation behavior while
   correctly typing/evaluating Kubernetes map fields and estimating their
-  bounded costs. Regression evidence is still pending.
+  bounded costs. The branch now covers map-shaped `additionalProperties` in
+  CEL type checking and passes its focused quick-check; release-backed runs
+  still fail because their target is v0.8.0. Branch-runtime migration evidence
+  is pending.
 - **`nodemigrate`: import dependency ordering.** The upstream lane tried
   `Pod/migration-standalone` before its referenced cluster-scoped
   `PriorityClass/migration-priority`; upstream admission returned 403. The
   importer ranked CRDs and StorageClasses specially but left PriorityClasses
   in API discovery order with workloads. The branch now ranks PriorityClass
-  before workloads and adds a focused test; quick-check and release-backed
-  runtime verification are pending.
+  before workloads and adds a focused test. Quick-check passed, and the
+  release-backed rerun no longer reports this 403.
 - **`nodeapiserver`: CertificateRequest webhook and CSR decoding failures.**
   The upstream lane's cert-manager `CertificateRequest` apply failed because
   invocation of `webhook.cert-manager.io` was unavailable. The CSR write
   failed while decoding `io.k8s.api.certificates.v1.ExtraValue` as an object.
-  These are separate runtime defects: the first needs service reachability and
-  webhook readiness traced during import, and the second needs the API server's
-  CSR `ExtraValue` representation fixed. Focused regressions are pending.
+  These need branch-runtime diagnosis: the first needs service reachability and
+  webhook readiness traced during import, and the second must confirm whether
+  the API server's existing CSR `ExtraValue` protobuf handling fixes the 0.8.0
+  failure. The decoder-focused unit test passes in quick-check.
 - The remaining transient Gateway objects were unavailable because the
   corresponding Gateway API CRDs were rejected. These are downstream effects
   of the CEL defect, not an independent importer retry failure.
@@ -45,6 +49,34 @@ Confirmed failures:
 Artifacts: `/tmp/nodemigrate-36279843865-artifacts/nodemigrate-{k3s,kubernetes}-36279843865/`.
 The run did not pass the required K3s+Cilium and three-control-plane/two-worker
 round-trip gates.
+
+## Release-backed rerun 36283329273
+
+Run [36283329273](https://github.com/centerionware/not-k8s/actions/runs/36283329273)
+used fix SHA `786e95577686f1fd5ed08a94f76ade48861314b4` and the exact regular
+`v0.8.0` runtime. The Docker five-node kubeadm/Cilium preflight passed in
+7m32s. Targeted Rust quick-check
+[36283329275](https://github.com/centerionware/not-k8s/actions/runs/36283329275)
+passed for `nodeapiserver` and `nodemigrate`. The import-order fix is reflected
+in the run: the earlier `Pod/migration-standalone` PriorityClass 403 no longer
+appears. Both lanes still failed against the released runtime on the known
+Gateway API CRD CEL gap. Each lane rolled back, verified the source service/API
+recovered, and retained the protected export. No semantic parity or return
+migration passed.
+
+Upstream lane additional failures: one cert-manager CertificateRequest received
+an internal error because invocation of `webhook.cert-manager.io` could not
+send to its service URL; one CSR write also returned HTTP 500. This run's CSR
+response did not preserve the internal decoder cause, so the `ExtraValue`
+decode diagnosis from run 36279843865 remains a working hypothesis pending a
+branch-runtime reproduction. Two Gateway objects remained unavailable as a
+consequence of the rejected CRDs. Full logs:
+`/tmp/nodemigrate-36283329273-k3s/nodemigrate-k3s.log` and
+`/tmp/nodemigrate-36283329273-k8s/nodemigrate-kubernetes.log`.
+
+The release-backed run confirms the v0.8.0 baseline, not the branch's
+`nodeapiserver` CEL fix. Next runtime validation must use the branch runtime to
+exercise that fix and then continue to semantic parity.
 
 ## Latest diagnostic update
 
