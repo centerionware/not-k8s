@@ -71,14 +71,20 @@ capture_cilium_agent_logs() {
 # contain environment values and other credentials unrelated to this probe.
 capture_cilium_agent_cri_security() {
     local kubeconfig="${1:-${KUBECONFIG:-${CURRENT_KUBECONFIG:-$SOURCE_KUBECONFIG}}}"
-    local container_json pod_records pod_record pod_uid pod_name agent_ids container_id
-    container_json="$(crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps -a -o json 2>/dev/null)" || {
-        echo "Unable to list CRI containers for Cilium agent security diagnostics"
-        return 0
-    }
+    local container_json="" pod_records pod_record pod_uid pod_name agent_ids container_id
+    local runtime_endpoint candidate_json
+    local -a runtime_endpoints=()
+    if [[ -n "${NODEMIGRATE_CRI_ENDPOINT:-}" ]]; then
+        runtime_endpoints=("$NODEMIGRATE_CRI_ENDPOINT")
+    else
+        runtime_endpoints=(
+            unix:///run/containerd/containerd.sock
+            unix:///run/k3s/containerd/containerd.sock
+        )
+    fi
     pod_records="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
         -l k8s-app=cilium -o json 2>/dev/null | jq -c '
-          .items[]? | {
+          [.items[]? | {
             uid: .metadata.uid,
             name: .metadata.name,
             hostNetwork: (.spec.hostNetwork // false),
@@ -91,7 +97,26 @@ capture_cilium_agent_cri_security() {
                 capabilities: .securityContext.capabilities
               }
             }][0] // null)
-          }')" || return 0
+          }]')" || return 0
+    for runtime_endpoint in "${runtime_endpoints[@]}"; do
+        candidate_json="$(crictl --runtime-endpoint "$runtime_endpoint" \
+            ps -a -o json 2>/dev/null)" || continue
+        if jq -e --argjson pods "$pod_records" '
+          . as $cri
+          | any($pods[]?;
+              .uid as $uid
+              | any($cri.containers[]?;
+                  (.labels["nodelet.dev/pod-uid"] // .labels["io.kubernetes.pod.uid"]) == $uid
+                  and (.labels["nodelet.dev/container-name"] // .labels["io.kubernetes.container.name"]) == "cilium-agent"))
+        ' <<< "$candidate_json" >/dev/null; then
+            container_json="$candidate_json"
+            break
+        fi
+    done
+    if [[ -z "$container_json" ]]; then
+        echo "Unable to find Cilium agent containers through CRI endpoints: ${runtime_endpoints[*]}"
+        return 0
+    fi
     while IFS= read -r pod_record; do
         [[ -n "$pod_record" ]] || continue
         pod_uid="$(jq -r '.uid' <<< "$pod_record")"
@@ -101,17 +126,17 @@ capture_cilium_agent_cri_security() {
             | select((.labels["nodelet.dev/pod-uid"] // .labels["io.kubernetes.pod.uid"]) == $uid)
             | select((.labels["nodelet.dev/container-name"] // .labels["io.kubernetes.container.name"]) == "cilium-agent")
             | .id // empty
-          ' <<< "$container_json")"
+        ' <<< "$container_json")"
         if [[ -z "$agent_ids" ]]; then
-            printf 'Cilium agent CRI security pod=%s api=%s runtime=container-not-found\n' \
-                "$pod_name" "$(jq -cS . <<< "$pod_record")"
+            printf 'Cilium agent CRI security pod=%s api=%s runtime=container-not-found endpoints=%s\n' \
+                "$pod_name" "$(jq -cS . <<< "$pod_record")" "${runtime_endpoints[*]}"
             continue
         fi
         while IFS= read -r container_id; do
             [[ -n "$container_id" ]] || continue
-            printf 'Cilium agent CRI security pod=%s api=%s runtime=' \
-                "$pod_name" "$(jq -cS . <<< "$pod_record")"
-            crictl --runtime-endpoint unix:///run/containerd/containerd.sock \
+            printf 'Cilium agent CRI security pod=%s api=%s endpoint=%s runtime=' \
+                "$pod_name" "$(jq -cS . <<< "$pod_record")" "$runtime_endpoint"
+            crictl --runtime-endpoint "$runtime_endpoint" \
                 inspect "$container_id" 2>/dev/null | jq -cS '
                   .info.runtimeSpec as $spec
                   | {
@@ -131,7 +156,7 @@ capture_cilium_agent_cri_security() {
                     }
                 ' || echo '{"error":"CRI inspect did not expose the expected runtime fields"}'
         done <<< "$agent_ids"
-    done <<< "$pod_records"
+    done < <(jq -c '.[]' <<< "$pod_records")
 }
 
 capture_cilium_init_container_diagnostics() {
