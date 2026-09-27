@@ -690,10 +690,13 @@ fn migrate_to_existing(
                 .map(|snapshot| snapshot.recovery_directory().display().to_string())
         })
         .unwrap_or_else(|| "no new export was created".to_string());
+    eprintln!("nodemigrate: stopping the nodestore service stack for return migration");
     let previous_service = service::disable(source).with_context(|| {
         format!("disabling nodestore failed; recovery data is at {recovery_location}")
     })?;
+    eprintln!("nodemigrate: nodestore service stack is stopped");
     if let Some(export) = &mut export {
+        eprintln!("nodemigrate: snapshotting local persistent-volume payloads");
         if let Err(error) = export.snapshot_host_paths() {
             if let Err(restore_error) = service::restore(source, previous_service) {
                 bail!("snapshotting local persistent volumes failed ({error:#}); restoring nodestore also failed ({restore_error:#}); recovery data is at {recovery_location}");
@@ -702,7 +705,9 @@ fn migrate_to_existing(
                 "local persistent volume snapshot failed; nodestore was restored; recovery data is at {recovery_location}"
             ));
         }
+        eprintln!("nodemigrate: local persistent-volume snapshot completed");
     }
+    eprintln!("nodemigrate: starting retained {} service", target.service_name);
     if let Err(error) = service::activate(target) {
         return Err(rollback_reverse_migration(
             source,
@@ -714,6 +719,7 @@ fn migrate_to_existing(
             &recovery_location,
         ));
     }
+    eprintln!("nodemigrate: retained {} start command returned", target.service_name);
     if request.stage_target {
         let recovery = export
             .as_ref()
@@ -722,6 +728,7 @@ fn migrate_to_existing(
         println!("Retained control plane staged: source nodestore services are disabled and '{}' is running. The destination API may remain unavailable until another retained control plane is started. API export retained at {recovery}", target.service_name);
         return Ok(());
     }
+    eprintln!("nodemigrate: waiting for retained destination API readiness");
     if let Err(error) = wait_for_api(&target_api) {
         return Err(rollback_reverse_migration(
             source,
@@ -733,7 +740,9 @@ fn migrate_to_existing(
             &recovery_location,
         ));
     }
+    eprintln!("nodemigrate: retained destination API is ready");
     if let Some(export) = &export {
+        eprintln!("nodemigrate: importing protected Kubernetes API export");
         if let Err(error) = target_api.import(export) {
             return Err(rollback_reverse_migration(
                 source,
@@ -745,6 +754,7 @@ fn migrate_to_existing(
                 &recovery_location,
             ));
         }
+        eprintln!("nodemigrate: protected Kubernetes API import completed");
     }
     let observed_replacement_state = if destination_node_exists || replace_existing_node {
         match remove_replaced_node(
@@ -773,6 +783,7 @@ fn migrate_to_existing(
         observed_replacement_state,
         source_node_state,
     );
+    eprintln!("nodemigrate: waiting for returned node {returning_node_name} to become Ready");
     if let Err(error) = wait_for_node(&target_api, &returning_node_name) {
         return Err(rollback_reverse_migration(
             source,
@@ -784,6 +795,7 @@ fn migrate_to_existing(
             &recovery_location,
         ));
     }
+    eprintln!("nodemigrate: returned node {returning_node_name} is Ready");
     if let Err(error) = restore_node_scheduling_state(
         &target_api,
         &returning_node_name,
