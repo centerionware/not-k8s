@@ -14,11 +14,17 @@ Last updated: 2026-09-27
   PV/PVC identities, bindings, and StatefulSet payload checks passed. Both
   lanes failed strict source-object parity before return migration. The
   migration exporter sanitizes metadata/status but does not filter StatefulSet
-  volumes. The focused schema-pruning regression passed in nodeapiserver
-  quick-check [36319639827](https://github.com/centerionware/not-k8s/actions/runs/36319639827),
-  so built-in OpenAPI pruning is not the cause. A protobuf storage round-trip
-  regression is now being added to isolate the next step; the root cause is
-  not yet confirmed. Keep the comparison strict. No PV, PVC,
+  volumes. Focused nodeapiserver tests passed: built-in schema pruning at
+  [36319639827](https://github.com/centerionware/not-k8s/actions/runs/36319639827)
+  and protobuf StatefulSet storage round-trip at
+  [36319953565](https://github.com/centerionware/not-k8s/actions/runs/36319953565).
+  Both preserve the valid `/dev` volume, so neither isolated path reproduces
+  the loss; the full HTTP read/write path remains unverified. The harness
+  reinstalls the CSI driver after migration and only then captures strict
+  parity. The current script now asserts the source volume immediately after
+  each migration and before reinstallation, then restores that exact fixture
+  volume if the driver setup changes it. This distinguishes utility loss from
+  fixture reinstallation while keeping parity strict. No PV, PVC,
   or backing-volume deletion was reported. The five-node kubeadm/Cilium
   preflight passed but did not execute nodemigrate. Artifacts are at
   `/tmp/nodemigrate-36318123614-artifacts/`.

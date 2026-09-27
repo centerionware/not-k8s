@@ -104,15 +104,20 @@ The focused `nodeapiserver` quick-check
 [36319639827](https://github.com/centerionware/not-k8s/actions/runs/36319639827)
 passed at SHA `e37f4c0f`, including the StatefulSet hostPath schema-pruning
 regression. This proves the built-in schema-pruning step retains the `/dev`
-volume, but does not isolate protobuf storage encoding or API write/read
-behavior. A protobuf storage round-trip regression is pending at the current
-SHA.
+volume. A second nodeapiserver quick-check
+[36319953565](https://github.com/centerionware/not-k8s/actions/runs/36319953565)
+passed at SHA `e8502d46`, including the protobuf StatefulSet storage
+round-trip regression; both isolated paths preserve the volume, while full
+HTTP read/write behavior remains unverified. The current migration script
+checks the volume immediately after each migration and before CSI fixture
+reinstallation, then restores the source volume if that setup changes it.
+`bash -n` and `git diff --check` pass; the dedicated migration rerun is pending.
 
 The preceding focused Rust check is
 [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
 for nodemigrate SHA `17281efb42343ae2f934f681f57f031a59bc6016`. A focused
-nodeapiserver protobuf round-trip regression for the same volume is added in
-the current worktree; its targeted quick-check is pending.
+nodeapiserver protobuf regression is now covered by run `36319953565`. The
+latest migration fixture changes have not yet been run.
 
 Run [36307445772](https://github.com/centerionware/not-k8s/actions/runs/36307445772)
 at SHA `d92e814911416403bba8b9cf02940fc23be1d140` passed the five-node

@@ -2701,6 +2701,69 @@ PY
     echo "PASS: normalized source API object data is unchanged between stages $source_stage and $target_stage"
 }
 
+capture_source_csi_device_volume() {
+    local source_file="$CHECKPOINT_DIR/source/csi-hostpath-dev-volume.json"
+    local volume
+    volume="$(KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get statefulset csi-hostpathplugin \
+        -n default -o json | jq -ce '
+            [.spec.template.spec.volumes[] | select(.name == "dev-dir")] as $matches
+            | if ($matches | length) == 1 and $matches[0].hostPath.path == "/dev" then
+                $matches[0]
+              else error("source CSI StatefulSet must have exactly one dev-dir /dev hostPath volume")
+              end
+        ')"
+    printf '%s\n' "$volume" > "$source_file"
+    chmod 0600 "$source_file"
+}
+
+assert_csi_device_volume_matches_source() {
+    local kubeconfig="$1"
+    local stage="$2"
+    local expected actual
+    expected="$(jq -cS . "$CHECKPOINT_DIR/source/csi-hostpath-dev-volume.json")"
+    actual="$(KUBECONFIG="$kubeconfig" kubectl get statefulset csi-hostpathplugin \
+        -n default -o json | jq -cS '
+            [.spec.template.spec.volumes[] | select(.name == "dev-dir")][0] // null
+        ')"
+    if [[ "$actual" != "$expected" ]]; then
+        echo "CSI driver dev-dir volume differs from the source at stage=$stage" >&2
+        echo "source: $expected" >&2
+        echo "target: $actual" >&2
+        return 1
+    fi
+    echo "PASS: source CSI dev-dir volume is preserved at stage=$stage"
+}
+
+restore_csi_device_volume_after_fixture_reinstall() {
+    local kubeconfig="$1"
+    local stage="$2"
+    local source_volume plugin_json index patch current_volume
+    source_volume="$(cat "$CHECKPOINT_DIR/source/csi-hostpath-dev-volume.json")"
+    plugin_json="$(KUBECONFIG="$kubeconfig" kubectl get statefulset csi-hostpathplugin \
+        -n default -o json)"
+    index="$(jq -r --arg name "$(jq -r '.name' <<<"$source_volume")" '
+        [.spec.template.spec.volumes | to_entries[] | select(.value.name == $name) | .key][0] // empty
+    ' <<<"$plugin_json")"
+    if [[ "$index" =~ ^[0-9]+$ ]]; then
+        current_volume="$(jq -cS --argjson index "$index" \
+            '.spec.template.spec.volumes[$index]' <<<"$plugin_json")"
+        [[ "$current_volume" == "$(jq -cS . <<<"$source_volume")" ]] || {
+            patch="$(jq -cn --argjson index "$index" --argjson volume "$source_volume" \
+                '[{op:"replace",path:("/spec/template/spec/volumes/" + ($index|tostring)),value:$volume}]')"
+            KUBECONFIG="$kubeconfig" kubectl patch statefulset csi-hostpathplugin \
+                -n default --type=json -p "$patch"
+        }
+    else
+        patch="$(jq -cn --argjson volume "$source_volume" \
+            '[{op:"add",path:"/spec/template/spec/volumes/-",value:$volume}]')"
+        KUBECONFIG="$kubeconfig" kubectl patch statefulset csi-hostpathplugin \
+            -n default --type=json -p "$patch"
+    fi
+    KUBECONFIG="$kubeconfig" kubectl rollout status statefulset/csi-hostpathplugin \
+        -n default --timeout=5m
+    assert_csi_device_volume_matches_source "$kubeconfig" "$stage"
+}
+
 canonicalize_api_list() {
     jq -S '[.items[] | {
       apiVersion, kind, name: .metadata.name,
@@ -2795,6 +2858,7 @@ main() {
     KUBECONFIG="$SOURCE_KUBECONFIG" install_hostpath_driver /var/lib/kubelet
     install_workloads
     verify_stage source "$SOURCE_KUBECONFIG"
+    capture_source_csi_device_volume
 
     export NOTK8S_COMBINED_PREBUILT="$NK"
     export NODEBOOTSTRAP_COMBINED_SELF="$NK"
@@ -2855,7 +2919,9 @@ main() {
     fi
     CURRENT_KUBECONFIG="$nodestore_kubeconfig"
     export KUBECONFIG="$nodestore_kubeconfig"
+    assert_csi_device_volume_matches_source "$nodestore_kubeconfig" after-forward-migration
     KUBECONFIG="$nodestore_kubeconfig" install_hostpath_driver /var/lib/nodelet true
+    restore_csi_device_volume_after_fixture_reinstall "$nodestore_kubeconfig" nodestore
     verify_stage nodestore "$nodestore_kubeconfig"
     assert_migratable_api_objects_retained source nodestore
 
@@ -2913,7 +2979,9 @@ main() {
     fi
     CURRENT_KUBECONFIG="$SOURCE_KUBECONFIG"
     export KUBECONFIG="$SOURCE_KUBECONFIG"
+    assert_csi_device_volume_matches_source "$SOURCE_KUBECONFIG" after-return-migration
     KUBECONFIG="$SOURCE_KUBECONFIG" install_hostpath_driver /var/lib/kubelet true
+    restore_csi_device_volume_after_fixture_reinstall "$SOURCE_KUBECONFIG" returned
     verify_stage returned "$SOURCE_KUBECONFIG"
     assert_round_trip_unchanged
 }

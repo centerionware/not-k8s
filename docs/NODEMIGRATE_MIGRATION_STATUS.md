@@ -31,9 +31,15 @@ and `/tmp/nodemigrate-36318123614-artifacts/nodemigrate-kubernetes-36318123614/n
 The five-node job was a preflight only and did not migrate the cluster. The
 nodeapiserver quick-check
 [36319639827](https://github.com/centerionware/not-k8s/actions/runs/36319639827)
-passed the focused built-in schema-pruning regression; protobuf storage
-encoding and full API write/read behavior remain under investigation. Return
-migration remains unverified.
+passed the focused built-in schema-pruning regression; follow-up quick-check
+[36319953565](https://github.com/centerionware/not-k8s/actions/runs/36319953565)
+also passed the protobuf StatefulSet storage round-trip regression. These
+isolated paths preserve `/dev`; full HTTP read/write behavior remains
+unverified. The integration fixture now checks the volume immediately after
+each migration, before re-installing CSI, and restores its exact source value
+if test setup changes it. `bash -n` and `git diff --check` pass, but this
+fixture correction still needs a migration run. Return migration remains
+unverified.
 
 The preceding run at SHA `f9356dad16a549fdaf07c2a79e135a8cbfc836e9`,
 [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064),
