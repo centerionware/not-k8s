@@ -20,40 +20,39 @@ Last updated: 2026-09-27
   all four storage assertions passed. The migration lanes later failed on
   unrelated object-preservation/parity checks, before completing round trips.
 
-- **`nodemigrate` / `nodecontroller`: legacy ServiceAccount token Secrets are
-  excluded.** `object_skip_reason` drops every Secret of type
-  `kubernetes.io/service-account-token`, while the not-k8s
-  `service-account-controller` only ensures a namespace's `default`
-  ServiceAccount and does not recreate token Secrets. Existing service-account
-  JWT issuance/validation does not migrate that Secret or guarantee that a
-  source token remains valid against the target issuer, signing key, and
-  ServiceAccount UID. This contradicts the full migration requirement for every
-  Secret and usable credentials. The fix must preserve the Secret's namespace
-  and name, carry compatible issuer/signing trust or issue a target-valid
-  credential into that same Secret, and verify authentication with it at
-  source, nodestore, and returned-source checkpoints. Source review confirms
-  the gap; no runtime token-Secret round trip currently verifies a fix.
+- **`nodemigrate`: legacy ServiceAccount token Secrets were skipped and their
+  source JWTs cannot authenticate against a different cluster.** The importer
+  now carries these Secrets, requests a destination-bound token for the
+  imported ServiceAccount, and updates the token, target CA, namespace, and
+  ServiceAccount UID annotation in the same Secret while preserving other
+  Secret data. The integration fixture now checks token-authenticated allowed
+  and denied API requests at source, nodestore, and returned-source stages.
+  Focused export/patch tests and snapshot normalization checks are added; the
+  Rust quick-check and live migration verification are pending. No passing
+  token-Secret round trip is claimed yet.
 
 ## Latest runtime findings
 
 - **`nodemigrate`: destination collisions retained fields outside the source
-  object, and Node-owned references were lost.** The latest completed branch
-  runtime run, [36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956)
-  at `42162ef2`, passed PV/PVC bindings and data in both lanes, then failed
-  source-object parity. The upstream CoreDNS deployment retained or changed
-  same-name fields, which follows from the importer's server-side apply
-  semantics: apply only relinquishes fields owned by its own manager. The K3s
-  lane also showed a Node-owned Secret whose source owner reference could not
-  be mapped because Nodes are regenerated rather than imported. Existing-object
+  object, and Node-owned references were lost.** Run
+  [36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956)
+  at `42162ef2` passed PV/PVC bindings and data in both lanes, then found
+  same-name differences in CoreDNS and a Node-owned Secret. Existing-object
   imports now use resource-version-checked full replacement; missing objects
   use create. After the replacement Node becomes Ready, nodemigrate restores
-  owner references using the source and destination Node UIDs from the protected
-  export. The lifecycle-normalization check passed locally, and nodemigrate
-  quick-check [36313588814](https://github.com/centerionware/not-k8s/actions/runs/36313588814)
-  passed at SHA `f9356dad`. Migration
+  Node owner references from the protected export using the source and
+  destination Node UIDs. At `f9356dad`, nodemigrate quick-check
+  [36313588814](https://github.com/centerionware/not-k8s/actions/runs/36313588814)
+  passed; branch-runtime run
   [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064)
-  at that SHA remains in progress. This change has not yet passed a live
-  migration.
+  passed source and nodestore stages in both lanes, including PV/PVC/data and
+  all 119 source-discovered APIs. The prior CoreDNS/owner-reference mismatches
+  were not reported. Strict parity then failed on fixture hostPath CSI paths
+  changed when the target driver was reinstalled under `/var/lib/nodelet`, its
+  extra source-stage mount, and regenerated `CiliumNode.spec.health.ipv4`.
+  Neither lane reached return migration. Logs:
+  `/tmp/nodemigrate-36313589064-k3s.log` and
+  `/tmp/nodemigrate-36313589064-kubernetes.log`.
 
 - **`nodelet`: CSINode registration omits and does not repair its Node owner
   reference.** The first branch-runtime run with strict target CSINode

@@ -13,12 +13,25 @@ At SHA `f9356dad16a549fdaf07c2a79e135a8cbfc836e9`, targeted nodemigrate
 quick-check [36313588814](https://github.com/centerionware/not-k8s/actions/runs/36313588814)
 passed in 1m28s. Branch-runtime migration
 [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064)
-is running. The branch now replaces same-name destination objects with an
+completed with both migration jobs failing after Docker preflight and the
+utility/runtime builds passed. GitHub's job-log endpoint is returning a
+connection error, so logs were retrieved through the authorized GitHub CLI.
+Both lanes passed source and nodestore stages, including PV/PVC binding, data,
+and all 119 source-discovered API resources. Strict object comparison failed
+on the test driver's nodelet-root CSI paths/source-stage mount and the
+regenerated `CiliumNode.spec.health.ipv4`; neither lane reached return
+migration. No PV deletion was reported. Logs are at
+`/tmp/nodemigrate-36313589064-k3s.log` and
+`/tmp/nodemigrate-36313589064-kubernetes.log`.
+
+The branch now replaces same-name destination objects with an
 optimistic full update so omitted source fields do not survive as hybrid
 objects, and repairs Node-owned references after target Node registration.
 The checkpoint normalizer now treats only documented controller/default/API
 version fields as lifecycle differences; source object specs and user rollout
-history remain checked. No new runtime result is available yet.
+history remain checked. The current worktree also preserves and reissues
+legacy ServiceAccount token Secrets and exercises their RBAC at each
+checkpoint; its targeted validation is pending.
 
 Run [36299240279](https://github.com/centerionware/not-k8s/actions/runs/36299240279)
 at SHA `20648debff0f7f338c3e37303bbaf367ffa449a4` passed the five-node
@@ -224,17 +237,15 @@ fixture-helper checks pass at
 `a936dc7e4b625ee67c49429f11a1c1778372d1c9`; PR validation and real-cluster
 verification are pending. The older live K3s lane does not include this test.
 
-Source export now logs every listable API resource, the number of objects
-selected for migration, and the counts/reasons for lifecycle-excluded objects
-or kinds. The skip reasons explain read-only status, destination
-re-registration or regeneration, refreshed metrics, CSI reattachment,
-destination CA bundles, controller-managed endpoints/Pods, heartbeat Leases,
-and service-account tokens. Tests cover the classifications, but source review
-found that not-k8s only creates the default ServiceAccount and does not
-regenerate legacy `kubernetes.io/service-account-token` Secrets. This exclusion
-therefore violates the full credential-migration requirement until the token is
-reissued into the same Secret or compatible signing trust is preserved and a
-token-only authentication round trip passes. See the
+Source export logs every listable API resource, the number of objects selected
+for migration, and the counts/reasons for lifecycle-excluded objects or kinds.
+The older skip list included legacy ServiceAccount token Secrets, which meant
+their source JWTs could not authenticate after a cluster transition. The
+current worktree now preserves each token Secret and obtains a destination
+TokenRequest for its ServiceAccount, updating the token and cluster CA while
+retaining the Secret name and other data. The integration fixture verifies its
+allowed and denied API requests at source, nodestore, and returned-source
+checkpoints. Focused crate and live migration verification are pending; see the
 [bug tracker](NODEMIGRATE_BUGS.md). At SHA
 `39890702faf4815b022bd9419472e509b6f1076e`, the focused crate tests
 [36268585399](https://github.com/centerionware/not-k8s/actions/runs/36268585399)

@@ -9,8 +9,11 @@
       kind,
       name: .metadata.name,
       namespace: (.metadata.namespace // ""),
+      type: (.type // ""),
       labels: (.metadata.labels // {}),
-      annotations: (.metadata.annotations // {}),
+      annotations: (if .kind == "Secret" and .type == "kubernetes.io/service-account-token" then
+        ((.metadata.annotations // {}) | del(."kubernetes.io/service-account.uid"))
+      else (.metadata.annotations // {}) end),
       ownerReferences: [(.metadata.ownerReferences // [])[] | {apiVersion, kind, name, controller}],
       spec: ((.spec // {}) | if has("volumeClaimTemplates") then
         .volumeClaimTemplates |= map(del(.apiVersion, .kind))

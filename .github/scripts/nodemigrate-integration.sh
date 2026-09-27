@@ -1619,6 +1619,30 @@ YAML
     kubectl wait --for=condition=Established crd/clusterissuers.cert-manager.io --timeout=2m
     kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
     kubectl delete pod -n migration-apps migration-seed --wait=true
+
+    # Exercise a legacy Secret-backed ServiceAccount credential. Kubernetes
+    # binds its JWT to the issuing cluster and current ServiceAccount UID, so
+    # nodemigrate must reissue its token data at each destination checkpoint.
+    kubectl create serviceaccount migration-token-user -n migration-apps
+    kubectl create rolebinding migration-token-user-config-reader -n migration-apps \
+        --role=migration-config-reader --serviceaccount=migration-apps:migration-token-user
+    local legacy_token legacy_ca legacy_account_uid
+    legacy_token="$(kubectl create token migration-token-user -n migration-apps --duration=8760h)"
+    legacy_ca="$(kubectl get configmap kube-root-ca.crt -n migration-apps -o jsonpath='{.data.ca\.crt}')"
+    legacy_account_uid="$(kubectl get serviceaccount migration-token-user -n migration-apps -o jsonpath='{.metadata.uid}')"
+    [[ -n "$legacy_token" && -n "$legacy_ca" && -n "$legacy_account_uid" ]] || {
+        echo "could not prepare the legacy ServiceAccount token fixture" >&2
+        return 1
+    }
+    kubectl create secret generic migration-legacy-token -n migration-apps \
+        --type=kubernetes.io/service-account-token \
+        --from-literal=token="$legacy_token" \
+        --from-literal=namespace=migration-apps \
+        --from-literal=fixture=legacy-secret-data-preserved \
+        --from-literal=ca.crt="$legacy_ca"
+    kubectl annotate secret migration-legacy-token -n migration-apps \
+        kubernetes.io/service-account.name=migration-token-user \
+        kubernetes.io/service-account.uid="$legacy_account_uid"
 }
 
 wait_for_httproute_condition() {
@@ -1868,6 +1892,48 @@ exercise_statefulset_scaling() {
         return 1
     }
     echo "PASS StatefulSet scale preserves ordinal 0/1 PVCs, PV bindings and data at stage=$stage"
+}
+
+verify_legacy_service_account_token() {
+    local stage="$1"
+    local stage_dir="$CHECKPOINT_DIR/$stage"
+    local secret token account_uid secret_uid kubeconfig_path error
+    secret="$(kubectl get secret migration-legacy-token -n migration-apps -o json)"
+    token="$(jq -r '.data.token | @base64d' <<<"$secret")"
+    local fixture_data
+    fixture_data="$(jq -r '.data.fixture | @base64d' <<<"$secret")"
+    account_uid="$(kubectl get serviceaccount migration-token-user -n migration-apps -o jsonpath='{.metadata.uid}')"
+    secret_uid="$(jq -r '.metadata.annotations["kubernetes.io/service-account.uid"] // empty' <<<"$secret")"
+    [[ -n "$token" && "$fixture_data" == legacy-secret-data-preserved \
+        && -n "$account_uid" && "$secret_uid" == "$account_uid" ]] || {
+        echo "legacy ServiceAccount token Secret identity is stale at stage $stage" >&2
+        return 1
+    }
+    kubeconfig_path="$stage_dir/legacy-token.kubeconfig"
+    trap 'rm -f "$kubeconfig_path"' RETURN
+    kubectl config view --raw --flatten --minify -o json \
+        | jq --arg token "$token" '
+            .users = [{name: "migration-token-user", user: {token: $token}}]
+            | .contexts[0].context.user = "migration-token-user"
+          ' > "$kubeconfig_path"
+    chmod 0600 "$kubeconfig_path"
+    if ! KUBECONFIG="$kubeconfig_path" kubectl get configmap migration-user-metadata \
+        -n migration-apps -o name >/dev/null; then
+        echo "legacy ServiceAccount token could not read its authorized ConfigMap at stage $stage" >&2
+        return 1
+    fi
+    if error="$(KUBECONFIG="$kubeconfig_path" kubectl get secret migration-user-secret \
+        -n migration-apps -o name 2>&1)"; then
+        echo "legacy ServiceAccount token unexpectedly read a forbidden Secret at stage $stage" >&2
+        return 1
+    fi
+    trap - RETURN
+    rm -f "$kubeconfig_path"
+    grep -q 'Forbidden' <<<"$error" || {
+        echo "legacy ServiceAccount token denial was not an RBAC Forbidden at stage $stage: $error" >&2
+        return 1
+    }
+    echo "PASS legacy ServiceAccount token identity and RBAC at stage=$stage"
 }
 
 verify_stage() {
@@ -2210,6 +2276,7 @@ YAML
         return 1
     }
     kubectl delete job -n migration-apps "$rbac_allow_job" "$rbac_node_job" "$rbac_deny_job" --wait=true
+    verify_legacy_service_account_token "$stage"
     kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-static-pvc --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-csi-pvc --timeout=5m

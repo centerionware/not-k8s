@@ -32,6 +32,15 @@ def deployment_owned_replicaset:
     .controller == true and .kind == "Deployment"
   );
 
+def migration_fixture_hostpath_csi_statefulset:
+  .kind == "StatefulSet" and .metadata.namespace == "default" and
+  (.metadata.name == "csi-hostpathplugin" or .metadata.name == "csi-hostpath-socat");
+
+def normalize_fixture_csi_runtime_string:
+  if type == "string" then
+    gsub("/var/lib/nodelet"; "/var/lib/kubelet") | gsub("nodelet"; "kubelet")
+  else . end;
+
 def default_kubernetes_service_endpoint:
   .metadata.namespace == "default" and (
     .metadata.name == "kubernetes" or
@@ -68,7 +77,6 @@ select(
 | select(regenerated_system_addon_replica_set | not)
 | select(regenerated_system_lease | not)
 | select(.kind != "CSINode")
-| select((.kind != "Secret") or (.type != "kubernetes.io/service-account-token"))
 | del(.status, .metadata.uid, .metadata.creationTimestamp,
       .metadata.deletionTimestamp, .metadata.deletionGracePeriodSeconds,
       .metadata.generation, .metadata.managedFields,
@@ -88,6 +96,33 @@ select(
 | if .kind == "CiliumNode" then
     .metadata.labels = ((.metadata.labels // {})
       | del(."node.kubernetes.io/instance-type", ."nodelet.dev/managed"))
+    | if .spec.health then .spec.health |= del(.ipv4) else . end
+  else . end
+| if .kind == "Secret" and .type == "kubernetes.io/service-account-token" then
+    .metadata.annotations |= del(."kubernetes.io/service-account.uid")
+    | .data |= del(.token, .namespace, ."ca.crt")
+  else . end
+| if migration_fixture_hostpath_csi_statefulset then
+    # The integration harness reinstalls this test-only CSI driver after each
+    # runtime cutover: its socket/plugin roots move from kubelet to nodelet,
+    # and a dedicated bind exposes the preserved source CSI global stage. The
+    # installer checks those exact runtime paths and stage visibility; keep all
+    # other driver fields strict, including its persistent volume catalog.
+    .metadata.annotations |= del(."kubectl.kubernetes.io/last-applied-configuration")
+    | .spec.template.spec.volumes |= map(
+        select(.name != "nodemigrate-source-csi-stage")
+        | walk(normalize_fixture_csi_runtime_string)
+        | if ((.hostPath.path // "") | startswith("/var/lib/kubelet")) then
+            .hostPath |= del(.type)
+          else . end
+      )
+    | .spec.template.spec.containers |= map(
+        .volumeMounts |= map(
+          select(.name != "nodemigrate-source-csi-stage")
+          | walk(normalize_fixture_csi_runtime_string)
+        )
+        | walk(normalize_fixture_csi_runtime_string)
+      )
   else . end
 | if .kind == "ClusterTrustBundle" then
     # Kubernetes 1.37 serves certificates.k8s.io/v1 while the current target

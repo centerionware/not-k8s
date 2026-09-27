@@ -58,7 +58,6 @@ enum SkipReason {
     NodeHeartbeatLease,
     StaticPodMirror,
     ControllerOwnedPod,
-    ServiceAccountToken,
 }
 
 impl SkipReason {
@@ -89,9 +88,6 @@ impl SkipReason {
             }
             Self::StaticPodMirror => "the retained static pod manifest recreates its API mirror",
             Self::ControllerOwnedPod => "the durable workload controller recreates this pod",
-            Self::ServiceAccountToken => {
-                "the destination token controller generates a new token secret"
-            }
         }
     }
 }
@@ -1070,9 +1066,189 @@ impl KubeApi {
                         .with_context(|| format!("repairing references in {}", object.path.display()))?;
                 }
             }
+            refresh_service_account_token_secrets(
+                &client,
+                &discovery,
+                export,
+                &destination_ca,
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "refreshing migrated ServiceAccount token Secrets; export retained at {}",
+                    export.dir.display()
+                )
+            })?;
             Ok(())
         })
     }
+}
+
+const LEGACY_TOKEN_EXPIRATION_SECONDS: i64 = 31_536_000;
+
+/// Reissue legacy Secret-backed credentials against the destination cluster.
+/// The source JWT is bound to a different issuer, signing key, and
+/// ServiceAccount UID, so copying it verbatim would preserve a Secret that can
+/// no longer authenticate. Keep the Secret's name and other data while
+/// replacing Kubernetes-managed token fields with a destination TokenRequest.
+async fn refresh_service_account_token_secrets(
+    client: &Client,
+    discovery: &Discovery,
+    export: &Export,
+    destination_ca: &str,
+) -> Result<usize> {
+    let (secret_resource, secret_capabilities) =
+        find_resource(discovery, "Secret", "v1").context("destination does not expose Secret")?;
+    ensure!(
+        secret_capabilities.supports_operation(verbs::GET)
+            && secret_capabilities.supports_operation(verbs::PATCH),
+        "destination cannot update migrated ServiceAccount token Secrets"
+    );
+    let (account_resource, account_capabilities) = find_resource(discovery, "ServiceAccount", "v1")
+        .context("destination does not expose ServiceAccount")?;
+    ensure!(
+        account_capabilities.supports_operation(verbs::GET)
+            && account_capabilities.supports_operation(verbs::CREATE),
+        "destination cannot issue ServiceAccount tokens"
+    );
+
+    let mut refreshed = 0;
+    for object in &export.objects {
+        let value: Value = serde_json::from_slice(
+            &fs::read(&object.path)
+                .with_context(|| format!("reading exported object {}", object.path.display()))?,
+        )
+        .context("decoding exported object while refreshing ServiceAccount tokens")?;
+        if value.get("kind").and_then(Value::as_str) != Some("Secret")
+            || value.pointer("/type").and_then(Value::as_str)
+                != Some("kubernetes.io/service-account-token")
+        {
+            continue;
+        }
+        let name = value
+            .pointer("/metadata/name")
+            .and_then(Value::as_str)
+            .context("ServiceAccount token Secret has no name")?;
+        let namespace = value
+            .pointer("/metadata/namespace")
+            .and_then(Value::as_str)
+            .context("ServiceAccount token Secret has no namespace")?;
+        let account_name = value
+            .pointer("/metadata/annotations/kubernetes.io~1service-account.name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .with_context(|| {
+                format!(
+                    "ServiceAccount token Secret {namespace}/{name} has no service-account.name annotation"
+                )
+            })?;
+
+        let secrets: Api<DynamicObject> =
+            Api::namespaced_with(client.clone(), namespace, &secret_resource);
+        let secret = secrets
+            .get_opt(name)
+            .await
+            .with_context(|| {
+                format!("reading migrated ServiceAccount token Secret {namespace}/{name}")
+            })?
+            .with_context(|| {
+                format!("migrated ServiceAccount token Secret {namespace}/{name} is missing")
+            })?;
+        let service_accounts: Api<DynamicObject> =
+            Api::namespaced_with(client.clone(), namespace, &account_resource);
+        let account = service_accounts
+            .get_opt(account_name)
+            .await
+            .with_context(|| {
+                format!("reading destination ServiceAccount {namespace}/{account_name}")
+            })?
+            .with_context(|| {
+                format!("destination ServiceAccount {namespace}/{account_name} is missing")
+            })?;
+        let account_uid = account
+            .metadata
+            .uid
+            .context("destination ServiceAccount has no UID")?;
+
+        let request = serde_json::json!({
+            "apiVersion": "authentication.k8s.io/v1",
+            "kind": "TokenRequest",
+            "spec": {
+                "audiences": [],
+                "expirationSeconds": LEGACY_TOKEN_EXPIRATION_SECONDS
+            }
+        });
+        let response: Value = service_accounts
+            .create_subresource("token", account_name, &PostParams::default(), &request)
+            .await
+            .with_context(|| {
+                format!(
+                    "requesting destination token for ServiceAccount {namespace}/{account_name}"
+                )
+            })?;
+        let token = response
+            .pointer("/status/token")
+            .and_then(Value::as_str)
+            .filter(|token| !token.is_empty())
+            .with_context(|| {
+                format!(
+                    "TokenRequest for ServiceAccount {namespace}/{account_name} returned no token"
+                )
+            })?;
+
+        let patch = service_account_token_secret_patch(
+            &secret,
+            namespace,
+            &account_uid,
+            token,
+            destination_ca,
+        )?;
+        let name = secret
+            .metadata
+            .name
+            .as_deref()
+            .context("migrated Secret has no metadata.name")?;
+        secrets
+            .patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await
+            .with_context(|| {
+                format!("writing refreshed token data to Secret {namespace}/{name}")
+            })?;
+        refreshed += 1;
+    }
+    if refreshed > 0 {
+        eprintln!(
+            "nodemigrate: refreshed {refreshed} ServiceAccount token Secret(s) for the destination cluster"
+        );
+    }
+    Ok(refreshed)
+}
+
+fn service_account_token_secret_patch(
+    secret: &DynamicObject,
+    namespace: &str,
+    service_account_uid: &str,
+    token: &str,
+    destination_ca: &str,
+) -> Result<Value> {
+    let resource_version = secret
+        .metadata
+        .resource_version
+        .as_deref()
+        .context("migrated ServiceAccount token Secret has no resourceVersion")?;
+    Ok(serde_json::json!({
+        "metadata": {
+            "resourceVersion": resource_version,
+            "annotations": {
+                "kubernetes.io/service-account.uid": service_account_uid
+            }
+        },
+        "data": {
+            "token": base64::engine::general_purpose::STANDARD.encode(token),
+            "namespace": base64::engine::general_purpose::STANDARD.encode(namespace),
+            "ca.crt": base64::engine::general_purpose::STANDARD.encode(destination_ca)
+        }
+    }))
 }
 
 fn kubeconfig_root_ca(kubeconfig_path: &Path) -> Result<String> {
@@ -2297,12 +2473,6 @@ fn object_skip_reason(object: &Value) -> Option<SkipReason> {
             });
         }
     }
-    if kind == "Secret"
-        && object.pointer("/type").and_then(Value::as_str)
-            == Some("kubernetes.io/service-account-token")
-    {
-        return Some(SkipReason::ServiceAccountToken);
-    }
     None
 }
 
@@ -2400,7 +2570,9 @@ fn object_rank(object: &Value) -> u8 {
         // These cluster-scoped references must exist before Pods are
         // admitted. Source API discovery order is not a dependency order.
         "PriorityClass" | "StorageClass" => 2,
-        _ => 3,
+        "ServiceAccount" => 3,
+        "Secret" => 4,
+        _ => 5,
     }
 }
 
@@ -2443,13 +2615,13 @@ fn export_directory() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
+        ApiResource, DynamicObject, Export, ExportedObject, KubeApi, NodeSchedulingState,
+        SkipReason, custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
         namespace_ca_bundle_matches, node_scheduling_patch, object_rank, object_skip_reason,
         object_type_label, persistent_host_paths, preserve_discovered_type_meta,
         remapped_node_owner_references, restore_cni_path_backups, retryable_import_error,
-        same_group_kind, sanitize, skip_kind_reason, skip_object, snapshot_k3s_cni_paths,
-        summarize_import_failures, write_export_manifest, ApiResource, Export, ExportedObject,
-        KubeApi, NodeSchedulingState, SkipReason,
+        same_group_kind, sanitize, service_account_token_secret_patch, skip_kind_reason,
+        skip_object, snapshot_k3s_cni_paths, summarize_import_failures, write_export_manifest,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
@@ -2909,18 +3081,65 @@ current-context: test
     }
 
     #[test]
-    fn migration_export_logs_service_account_token_lifecycle_exclusion() {
+    fn migration_export_preserves_service_account_token_secret() {
         let token = serde_json::json!({
             "apiVersion": "v1",
             "kind": "Secret",
             "type": "kubernetes.io/service-account-token",
-            "metadata": {"name": "builder-token", "namespace": "apps"}
+            "metadata": {
+                "name": "builder-token",
+                "namespace": "apps",
+                "annotations": {"kubernetes.io/service-account.name": "builder"}
+            },
+            "data": {"token": "c291cmNlLXRva2Vu", "custom": "cHJlc2VydmVk"}
         });
+        let sanitized = sanitize(token).expect("ServiceAccount token Secret should be exported");
+        assert_eq!(sanitized.value["data"]["token"], "c291cmNlLXRva2Vu");
+        assert_eq!(sanitized.value["data"]["custom"], "cHJlc2VydmVk");
         assert_eq!(
-            object_skip_reason(&token),
-            Some(SkipReason::ServiceAccountToken)
+            sanitized.value["metadata"]["annotations"]["kubernetes.io/service-account.name"],
+            "builder"
         );
-        assert!(sanitize(token).is_none());
+        assert!(
+            object_rank(&serde_json::json!({"kind": "ServiceAccount"}))
+                < object_rank(&serde_json::json!({"kind": "Secret"}))
+        );
+    }
+
+    #[test]
+    fn migrated_service_account_token_secret_uses_destination_identity_and_trust() {
+        use base64::Engine;
+
+        let secret: DynamicObject = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": "builder-token", "resourceVersion": "17"}
+        }))
+        .unwrap();
+        let destination_ca = "-----BEGIN CERTIFICATE-----\ntarget-ca\n-----END CERTIFICATE-----\n";
+
+        let patch = service_account_token_secret_patch(
+            &secret,
+            "apps",
+            "destination-account-uid",
+            "target-signed-jwt",
+            destination_ca,
+        )
+        .unwrap();
+
+        let decode = |key: &str| {
+            base64::engine::general_purpose::STANDARD
+                .decode(patch["data"][key].as_str().unwrap())
+                .unwrap()
+        };
+        assert_eq!(patch["metadata"]["resourceVersion"], "17");
+        assert_eq!(
+            patch["metadata"]["annotations"]["kubernetes.io/service-account.uid"],
+            "destination-account-uid"
+        );
+        assert_eq!(decode("token"), b"target-signed-jwt");
+        assert_eq!(decode("namespace"), b"apps");
+        assert_eq!(decode("ca.crt"), destination_ca.as_bytes());
     }
 
     #[test]

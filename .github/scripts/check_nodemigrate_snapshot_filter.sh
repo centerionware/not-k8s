@@ -24,6 +24,29 @@ target_application="$(jq -cn '{items:[
 jq -e 'all(.[]; .kind != "ConfigMap" or .name != "kube-root-ca.crt") and .[0].spec.volumeClaimTemplates[0].spec.resources.requests.storage == "1Gi"' \
     <<< "$(jq -cS -f "$APPLICATION_FILTER" <<< "$target_application")" >/dev/null
 
+legacy_token_source='{"items":[{"apiVersion":"v1","kind":"Secret","type":"kubernetes.io/service-account-token","metadata":{"name":"legacy-token","namespace":"apps","annotations":{"kubernetes.io/service-account.name":"builder","kubernetes.io/service-account.uid":"source-uid","custom.example/preserve":"yes"}}}]}'
+legacy_token_target="${legacy_token_source/source-uid/target-uid}"
+[[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$legacy_token_source")" == "$(jq -cS -f "$APPLICATION_FILTER" <<< "$legacy_token_target")" ]] || {
+    echo "destination ServiceAccount UID reissuance changed legacy token Secret identity" >&2
+    exit 1
+}
+jq -e '.[0].annotations["kubernetes.io/service-account.name"] == "builder" and .[0].annotations["custom.example/preserve"] == "yes"' \
+    <<< "$(jq -cS -f "$APPLICATION_FILTER" <<< "$legacy_token_target")" >/dev/null || {
+    echo "legacy token snapshot normalization hid user annotations" >&2
+    exit 1
+}
+legacy_token_api_source='{"apiVersion":"v1","kind":"Secret","type":"kubernetes.io/service-account-token","metadata":{"name":"legacy-token","namespace":"apps","annotations":{"kubernetes.io/service-account.name":"builder","kubernetes.io/service-account.uid":"source-uid","custom.example/preserve":"yes"}},"data":{"token":"c291cmNlLXRva2Vu","namespace":"YXBwcw==","ca.crt":"c291cmNlLWNh","fixture":"cHJlc2VydmVk"}}'
+legacy_token_api_target='{"apiVersion":"v1","kind":"Secret","type":"kubernetes.io/service-account-token","metadata":{"name":"legacy-token","namespace":"apps","annotations":{"kubernetes.io/service-account.name":"builder","kubernetes.io/service-account.uid":"target-uid","custom.example/preserve":"yes"}},"data":{"token":"dGFyZ2V0LXRva2Vu","namespace":"YXBwcw==","ca.crt":"dGFyZ2V0LWNh","fixture":"cHJlc2VydmVk"}}'
+[[ "$(jq -cS -f "$FILTER" <<< "$legacy_token_api_source")" == "$(jq -cS -f "$FILTER" <<< "$legacy_token_api_target")" ]] || {
+    echo "destination-bound token fields changed legacy Secret semantics" >&2
+    exit 1
+}
+legacy_token_api_changed="$(jq -c '.data.fixture = "Y2hhbmdlZA=="' <<< "$legacy_token_api_target")"
+[[ "$(jq -cS -f "$FILTER" <<< "$legacy_token_api_source")" != "$(jq -cS -f "$FILTER" <<< "$legacy_token_api_changed")" ]] || {
+    echo "legacy ServiceAccount Secret's unrelated data was normalized away" >&2
+    exit 1
+}
+
 before="$(jq -cn '{apiVersion:"v1",kind:"ConfigMap",metadata:{name:"settings",namespace:"apps",uid:"source-uid",resourceVersion:"4",generation:1,creationTimestamp:"2026-01-01T00:00:00Z",annotations:{"nodemigrate.io/source-uid":"user-value"},ownerReferences:[{apiVersion:"v1",kind:"ConfigMap",name:"parent",uid:"parent-source-uid"}]},data:{marker:"preserved"},status:{ignored:true}}')"
 after="$(jq -cn '{apiVersion:"v1",kind:"ConfigMap",metadata:{name:"settings",namespace:"apps",uid:"target-uid",resourceVersion:"19",generation:3,creationTimestamp:"2026-01-02T00:00:00Z",annotations:{"nodemigrate.io/source-uid":"user-value"},ownerReferences:[{apiVersion:"v1",kind:"ConfigMap",name:"parent",uid:"parent-target-uid"}]},data:{marker:"preserved"},status:{ignored:false}}')"
 before_normalized="$(jq -cS -f "$FILTER" <<< "$before")"
@@ -94,8 +117,7 @@ for transient in \
     '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"local-path-provisioner-69879d7dd7","namespace":"kube-system","ownerReferences":[{"kind":"Deployment","name":"local-path-provisioner","controller":true}]}}' \
     '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"metrics-server-77dbbf84b","namespace":"kube-system","ownerReferences":[{"kind":"Deployment","name":"metrics-server","controller":true}]}}' \
     '{"apiVersion":"coordination.k8s.io/v1","kind":"Lease","metadata":{"name":"cilium-operator-resource-lock","namespace":"kube-system"},"spec":{"holderIdentity":"source","renewTime":"2026-09-27T00:00:00Z"}}' \
-    '{"apiVersion":"storage.k8s.io/v1","kind":"CSINode","metadata":{"name":"node-a","ownerReferences":[{"apiVersion":"v1","kind":"Node","name":"node-a","uid":"source-node-uid"}]},"spec":{"drivers":[{"name":"hostpath.csi.k8s.io","nodeID":"node-a"}]}}' \
-    '{"apiVersion":"v1","kind":"Secret","type":"kubernetes.io/service-account-token","metadata":{"name":"token","namespace":"apps"}}'; do
+    '{"apiVersion":"storage.k8s.io/v1","kind":"CSINode","metadata":{"name":"node-a","ownerReferences":[{"apiVersion":"v1","kind":"Node","name":"node-a","uid":"source-node-uid"}]},"spec":{"drivers":[{"name":"hostpath.csi.k8s.io","nodeID":"node-a"}]}}'; do
     [[ -z "$(jq -cS -f "$FILTER" <<< "$transient")" ]] || {
         echo "transient object was included in the migratable snapshot" >&2
         exit 1
@@ -162,16 +184,34 @@ standalone_rs_target="${standalone_rs_source/\"replicas\":2/\"replicas\":0}"
     exit 1
 }
 
-cilium_node_source='{"apiVersion":"cilium.io/v2","kind":"CiliumNode","metadata":{"name":"node-a","labels":{"node.kubernetes.io/instance-type":"k3s","nodelet.dev/managed":"true","operator.example/pool":"blue"}},"spec":{"addresses":[{"ip":"192.0.2.10","type":"InternalIP"}]}}'
+cilium_node_source='{"apiVersion":"cilium.io/v2","kind":"CiliumNode","metadata":{"name":"node-a","labels":{"node.kubernetes.io/instance-type":"k3s","nodelet.dev/managed":"true","operator.example/pool":"blue"}},"spec":{"addresses":[{"ip":"192.0.2.10","type":"InternalIP"}],"health":{"ipv4":"10.0.0.10"}}}'
 cilium_node_target="${cilium_node_source/k3s/nodelet}"
 cilium_node_target="${cilium_node_target/true/false}"
+cilium_node_target="${cilium_node_target/10.0.0.10/10.0.0.11}"
 [[ "$(jq -cS -f "$FILTER" <<< "$cilium_node_source")" == "$(jq -cS -f "$FILTER" <<< "$cilium_node_target")" ]] || {
-    echo "nodelet-generated CiliumNode labels changed normalized state" >&2
+    echo "nodelet-generated CiliumNode labels or regenerated health IP changed normalized state" >&2
     exit 1
 }
 cilium_node_target="${cilium_node_target/192.0.2.10/192.0.2.11}"
 [[ "$(jq -cS -f "$FILTER" <<< "$cilium_node_source")" != "$(jq -cS -f "$FILTER" <<< "$cilium_node_target")" ]] || {
     echo "CiliumNode spec was normalized away with runtime labels" >&2
+    exit 1
+}
+
+hostpath_csi_source='{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"csi-hostpathplugin","namespace":"default","annotations":{"kubectl.kubernetes.io/last-applied-configuration":"source"}},"spec":{"template":{"spec":{"containers":[{"name":"hostpath","image":"hostpath:v1","args":["--kubelet-registration-path=/var/lib/kubelet/plugins/registry"],"volumeMounts":[{"name":"socket","mountPath":"/var/lib/kubelet/plugins"}]}],"volumes":[{"name":"socket","hostPath":{"path":"/var/lib/kubelet/plugins","type":"Directory"}},{"name":"csi-data","hostPath":{"path":"/var/lib/nodemigrate-csi-hostpath-data","type":"DirectoryOrCreate"}}]}}}}'
+hostpath_csi_target='{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"csi-hostpathplugin","namespace":"default","annotations":{"kubectl.kubernetes.io/last-applied-configuration":"target"}},"spec":{"template":{"spec":{"containers":[{"name":"hostpath","image":"hostpath:v1","args":["--kubelet-registration-path=/var/lib/nodelet/plugins/registry"],"volumeMounts":[{"name":"socket","mountPath":"/var/lib/nodelet/plugins"},{"name":"nodemigrate-source-csi-stage","mountPath":"/var/lib/kubelet/plugins/kubernetes.io/csi","mountPropagation":"Bidirectional"}]}],"volumes":[{"name":"socket","hostPath":{"path":"/var/lib/nodelet/plugins","type":"DirectoryOrCreate"}},{"name":"csi-data","hostPath":{"path":"/var/lib/nodemigrate-csi-hostpath-data","type":"DirectoryOrCreate"}},{"name":"nodemigrate-source-csi-stage","hostPath":{"path":"/var/lib/kubelet/plugins/kubernetes.io/csi","type":"DirectoryOrCreate"}}]}}}}'
+[[ "$(jq -cS -f "$FILTER" <<< "$hostpath_csi_source")" == "$(jq -cS -f "$FILTER" <<< "$hostpath_csi_target")" ]] || {
+    echo "fixture CSI runtime root and verified source-stage mount were not normalized narrowly" >&2
+    exit 1
+}
+hostpath_csi_changed="$(jq -c '.spec.template.spec.containers[0].image = "hostpath:v2"' <<< "$hostpath_csi_target")"
+[[ "$(jq -cS -f "$FILTER" <<< "$hostpath_csi_source")" != "$(jq -cS -f "$FILTER" <<< "$hostpath_csi_changed")" ]] || {
+    echo "fixture CSI image changes were normalized away with runtime root adaptation" >&2
+    exit 1
+}
+hostpath_csi_changed="$(jq -c '.spec.template.spec.volumes[1].hostPath.path = "/var/lib/changed-csi-data"' <<< "$hostpath_csi_target")"
+[[ "$(jq -cS -f "$FILTER" <<< "$hostpath_csi_source")" != "$(jq -cS -f "$FILTER" <<< "$hostpath_csi_changed")" ]] || {
+    echo "fixture CSI catalog/data path changes were normalized away" >&2
     exit 1
 }
 

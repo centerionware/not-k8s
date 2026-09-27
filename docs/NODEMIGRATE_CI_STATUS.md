@@ -41,13 +41,25 @@ At SHA `f9356dad16a549fdaf07c2a79e135a8cbfc836e9`, nodemigrate quick-check
 [36313588814](https://github.com/centerionware/not-k8s/actions/runs/36313588814)
 passed in 1m28s. Branch-runtime migration run
 [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064)
-is in progress. This commit changes existing-object imports from SSA to
-resource-version-checked replacement and repairs Node-owned object references
-after the replacement Node is Ready. It also adds narrowly scoped lifecycle
-normalization for controller-owned ReplicaSet scale, default/type metadata,
-CiliumNode runtime labels, and ClusterTrustBundle served-version differences.
-The snapshot-filter script passes locally and the Rust quick-check passed;
-runtime acceptance is pending.
+completed with both migration jobs failing after the five-node preflight and
+both utility/runtime builds passed. The latest-runtime-fetch step was skipped
+because branch runtime binaries were built; this run did not test the separate
+v0.8.0 release baseline. Both lanes passed `stage=source` and `stage=nodestore`,
+including PV/PVC bindings, StatefulSet data, and the 119-resource source API
+inventory. No PV deletion was reported. Strict object comparison then failed:
+the migration fixture reinstalled its hostPath CSI driver for the nodelet data
+root (changing its volume paths and adding the explicitly checked source-stage
+mount), and Cilium regenerated `CiliumNode.spec.health.ipv4`. Neither lane
+reached return migration. Job logs are saved at
+`/tmp/nodemigrate-36313589064-k3s.log` and
+`/tmp/nodemigrate-36313589064-kubernetes.log`.
+
+This SHA changes existing-object imports from SSA to resource-version-checked
+replacement and repairs Node-owned object references after replacement Node
+registration. Its focused Rust quick-check passed; live round-trip acceptance
+did not. The current worktree adds destination-bound legacy ServiceAccount
+token Secret preservation and a source/nodestore/return authentication check;
+that change is not yet pushed or verified.
 
 ## Most recent evidence
 
