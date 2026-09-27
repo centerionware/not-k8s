@@ -38,8 +38,11 @@ report that choice. The focused nodemigrate quick-check
 [36342042535](https://github.com/centerionware/not-k8s/actions/runs/36342042535)
 passed. The current Cilium migration lanes still exercise only KPR disabled;
 runtime coverage for KPR enabled and per-node Cilium overrides remains open.
-Cilium's Envoy L7 proxy remains a separate component. See the expanded
-requirement in [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md).
+Cilium's Envoy L7 proxy remains a separate component. PR crate tests and
+workflow validation passed for branch head `71dd6c87` in
+[36342224121](https://github.com/centerionware/not-k8s/actions/runs/36342224121)
+and [36342224306](https://github.com/centerionware/not-k8s/actions/runs/36342224306).
+See the expanded requirement in [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md).
 
 The staged reverse control-plane export change is at `3f807ba8`. Its first
 crate run, [36340951765](https://github.com/centerionware/not-k8s/actions/runs/36340951765),
