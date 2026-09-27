@@ -15,7 +15,7 @@ impl PodRuntime for CriRuntime {
         let _ensure_guard = lock.lock().await;
         tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
             operation = "ensure", stage = "find sandbox", "pod runtime operation");
-        let found = self.find_sandbox_with_uid(&id.namespace, &id.name).await?;
+        let found = self.find_sandbox_with_uid(&id.namespace, &id.name, &id.uid).await?;
         let uid_matches = found.as_ref().is_some_and(|(_, _, found_uid)| *found_uid == id.uid);
         let ready_state = v1::PodSandboxState::SandboxReady as i32;
         let dns = dns_config_for(pod, &self.cluster_dns, &self.cluster_domain, read_host_resolv_conf().as_deref());
@@ -336,7 +336,9 @@ impl PodRuntime for CriRuntime {
         let _remove_guard = lock.lock().await;
         tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
             operation = "remove", stage = "find sandbox", "pod runtime operation");
-        if let Some((sandbox_id, _state, sandbox_uid)) = self.find_sandbox_with_uid(&id.namespace, &id.name).await? {
+        if let Some((sandbox_id, _state, sandbox_uid)) =
+            self.find_sandbox_with_uid(&id.namespace, &id.name, &id.uid).await?
+        {
             if sandbox_uid.is_empty() || sandbox_uid == id.uid {
                 let grace = remaining_termination_grace(termination_grace_seconds(pod), removal_started.elapsed());
                 tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,

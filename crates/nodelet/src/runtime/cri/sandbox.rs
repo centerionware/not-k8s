@@ -309,7 +309,7 @@ impl CriRuntime {
             .list_pod_sandbox(ListPodSandboxRequest { filter: Some(filter) })
             .await?
             .into_inner();
-        Ok(resp.items.into_iter().next().map(|s| (s.id, s.state)))
+        Ok(select_pod_sandbox(resp.items, None).map(|(id, state, _)| (id, state)))
     }
 
     /// Same lookup as `find_sandbox()`, but also returns the sandbox's own
@@ -329,7 +329,12 @@ impl CriRuntime {
     /// can't clean this up either — its own orphan check is keyed by the
     /// same namespace+name, and a live pod with that key still exists (just
     /// a different UID), so the stale sandbox never looks orphaned.
-    pub(crate) async fn find_sandbox_with_uid(&self, namespace: &str, name: &str) -> Result<Option<(String, i32, String)>> {
+    pub(crate) async fn find_sandbox_with_uid(
+        &self,
+        namespace: &str,
+        name: &str,
+        expected_uid: &str,
+    ) -> Result<Option<(String, i32, String)>> {
         let mut rt = self.rt.clone();
         let filter = PodSandboxFilter {
             label_selector: HashMap::from([
@@ -342,10 +347,7 @@ impl CriRuntime {
             .list_pod_sandbox(ListPodSandboxRequest { filter: Some(filter) })
             .await?
             .into_inner();
-        Ok(resp.items.into_iter().next().map(|s| {
-            let uid = s.metadata.map(|m| m.uid).unwrap_or_default();
-            (s.id, s.state, uid)
-        }))
+        Ok(select_pod_sandbox(resp.items, Some(expected_uid)))
     }
 
     pub(crate) async fn run_sandbox(
@@ -414,4 +416,31 @@ impl CriRuntime {
         }
     }
 
+}
+
+/// CRI can retain multiple sandbox records for a reused pod name. Prefer a
+/// sandbox matching the current Pod UID when one exists; otherwise return a
+/// stale candidate for ensure_pod() to replace. Name-only status and exec
+/// operations prefer a ready, newer sandbox.
+fn select_pod_sandbox(
+    sandboxes: Vec<v1::PodSandbox>,
+    expected_uid: Option<&str>,
+) -> Option<(String, i32, String)> {
+    let ready = v1::PodSandboxState::SandboxReady as i32;
+    let mut matching: Vec<_> = sandboxes
+        .into_iter()
+        .map(|sandbox| {
+            let uid = sandbox.metadata.as_ref().map(|metadata| metadata.uid.as_str()).unwrap_or_default();
+            (sandbox, uid.to_string())
+        })
+        .collect();
+    if let Some(expected) = expected_uid {
+        if matching.iter().any(|(_, uid)| uid == expected) {
+            matching.retain(|(_, uid)| uid == expected);
+        }
+    }
+    matching
+        .drain(..)
+        .max_by_key(|(sandbox, _)| (sandbox.state == ready, sandbox.created_at))
+        .map(|(sandbox, uid)| (sandbox.id, sandbox.state, uid))
 }

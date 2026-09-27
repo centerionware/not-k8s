@@ -39,6 +39,19 @@ owning component, branch fix, and focused test evidence. The intended
 runtime tests are the primary migration target; `v0.8.0` can remain an optional
 published-runtime regression baseline, but is not required or exclusive.
 
+Run [36357521280](https://github.com/centerionware/not-k8s/actions/runs/36357521280)
+at branch SHA `22848696` built `nodemigrate` and the branch combined runtime
+successfully. The Docker preflight passed five-node kubeadm/Cilium setup and
+control-plane-loss recovery, then failed copying the hostpath helper because
+the source and destination collided at `/tmp`; the copy now uses `/var/tmp`.
+Both single-node migration lanes reached the nodestore fixture and failed its
+non-root `emptyDir` exec check. Code inspection points to CRI lookups choosing
+stale sandboxes or container attempts. Nodelet now selects by current Pod UID
+when available and prefers ready sandboxes and running container attempts;
+focused regressions are added, while nodelet quick-check and live migration
+verification are pending. Artifacts are in
+`/tmp/nodemigrate-36357521280/`.
+
 Branch-runtime migration run
 [36352851628](https://github.com/centerionware/not-k8s/actions/runs/36352851628)
 ran at SHA `655ba83c` with `runtime_source=branch`, `cilium_kpr=true`, and

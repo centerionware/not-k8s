@@ -2,6 +2,30 @@
 
 Last updated: 2026-09-27
 
+## Latest branch-run findings
+
+- **`nodelet`: stale CRI records can make Pod exec/status select the wrong runtime object.**
+  Branch run [36357521280](https://github.com/centerionware/not-k8s/actions/runs/36357521280)
+  passed both migration utility and combined-runtime builds, but both
+  single-node lanes failed their `stage=nodestore` non-root `emptyDir` marker
+  check. One got `container is in CONTAINER_EXITED state`; the other reported
+  `container write-test not found in pod`. Code inspection found two lookups
+  that trusted the first CRI list entry even though CRI can retain prior
+  sandboxes and exited container attempts. The branch now selects a sandbox
+  matching the current Pod UID when available, otherwise prefers a ready/newer
+  sandbox; container lookup prefers a running attempt, then the newest
+  attempt. Focused regressions cover stale sandbox UIDs, readiness/order,
+  exited attempts, and wrong-name filtering. This is the leading explanation
+  for the fixture failures; branch quick-check and live migration confirmation
+  are pending.
+
+- **Five-node CI: setup-script copy collided with its `/tmp` source.** The same
+  run passed Docker's five-node kubeadm/Cilium setup and control-plane-loss
+  recovery, then `docker cp` failed because source and destination resolved to
+  `/tmp/nodemigrate-hostpath-setup.sh`. The post-restart copy now targets
+  `/var/tmp` and passes that path into the fixture. Shell validation passed;
+  the next five-node run must verify the full fixture.
+
 ## Current fixture finding
 
 - **Branch runtime runs 36352851628 and 36355485146 exposed return-path defects.**

@@ -12,7 +12,7 @@ separate living documents below.
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Failed reverse cutovers now stop the partial retained target, restore local PV payloads, and restart the prior nodestore stack. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The required fixture extends existing coverage with ConfigMaps, CRDs/custom resources, Deployments, StatefulSets, DaemonSets, Jobs/CronJobs, Helm chart releases and managed objects, Ingress/Gateway API, RBAC, networking, storage, admission, and every listable discovered resource. Normalized source object content remains a strict equality gate; destination-only runtime identities are now reported separately and do not mask missing or changed source objects. The latest upstream lane still has unresolved source-identity changes including CoreDNS, system RBAC, and system PriorityClasses. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | PDB-aware eviction and PV reclaim fixes remain tracked; migration must preserve source PVs, PVCs, backing storage, and data. Proxy ownership and export-copy fixes have focused test evidence. Run 36355485146 confirms missing legacy token Secret recreation and zero leftover nodestore Cilium processes at return, but K3s Service datapath and upstream Node readiness still fail. The fix now skips generated CiliumEndpoint/CiliumNode runtime state and retains Cilium policies; validation pending. Five-node preflight reaches five Ready Cilium nodes, but the migration fixture's hostpath setup copy needs a post-restart repair. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | PDB-aware eviction and PV reclaim fixes remain tracked; migration must preserve source PVs, PVCs, backing storage, and data. Proxy ownership and export-copy fixes have focused test evidence. Cilium runtime-state filtering is pending live validation. Run 36357521280 exposed failures in `kubectl exec` after migration; nodelet now selects sandboxes by current Pod UID and prefers ready sandboxes and running container attempts, with focused regression coverage pending quick-check. Five-node preflight reached five Ready Cilium nodes but its hostpath setup copy collided at `/tmp`; the script now uses `/var/tmp`. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement and new control-plane joins | Replacement ordering and Raft learner catch-up guard implemented; a new joined control plane is now promoted after Kubernetes Node readiness. Focused validation for this new-member path is pending; runtime scenario remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
@@ -22,6 +22,20 @@ separate living documents below.
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
+
+- Branch-runtime run
+  [36357521280](https://github.com/centerionware/not-k8s/actions/runs/36357521280)
+  at SHA `22848696` passed the `nodemigrate` quick-check and both focused
+  migration utility/runtime builds, but the Docker preflight and both migration
+  lanes ended in failure. Five-node Cilium setup and recovery passed before
+  `docker cp` collided on the hostpath helper's `/tmp` path. Both single-node
+  lanes reached their `stage=nodestore` fixture, then `kubectl exec` selected
+  an unavailable `emptyDir` test container. Code inspection points to CRI
+  lookups choosing stale sandboxes or container attempts. Nodelet now selects
+  by current Pod UID when available and prefers ready sandboxes and running
+  container attempts; its quick-check and live migration rerun are pending. Logs
+  are saved under `/tmp/nodemigrate-36357521280/`. No general build or full
+  e2e gate was run.
 
 - Branch-runtime run
   [36355485146](https://github.com/centerionware/not-k8s/actions/runs/36355485146)

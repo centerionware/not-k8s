@@ -214,10 +214,7 @@ impl CriRuntime {
     /// Find a container's CRI id within a sandbox by its `nodelet.dev/container-name` label.
     pub(crate) async fn find_container_id(&self, sandbox_id: &str, container_name: &str) -> Result<Option<String>> {
         let existing = self.list_pod_containers(sandbox_id).await?;
-        Ok(existing
-            .into_iter()
-            .find(|c| c.labels.get(CTR_NAME_LABEL).map(|n| n == container_name).unwrap_or(false))
-            .map(|c| c.id))
+        Ok(container_id_for_name(existing, container_name))
     }
 
     /// Resolve `{username, password}` for pulling `image` out of the given
@@ -741,4 +738,59 @@ impl CriRuntime {
         resp.status.context("ContainerStatus response had no status")
     }
 
+}
+
+/// CRI retains exited attempts until garbage collection. Prefer a running
+/// attempt for operations such as exec, and otherwise use the newest record
+/// so stale exited attempts cannot shadow the current container.
+fn container_id_for_name(containers: Vec<v1::Container>, container_name: &str) -> Option<String> {
+    let running = ContainerState::ContainerRunning as i32;
+    containers
+        .into_iter()
+        .filter(|container| container.labels.get(CTR_NAME_LABEL).is_some_and(|name| name == container_name))
+        .max_by_key(|container| (container.state == running, container.created_at))
+        .map(|container| container.id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn container(id: &str, name: &str, state: ContainerState, created_at: i64) -> v1::Container {
+        v1::Container {
+            id: id.to_string(),
+            state: state as i32,
+            created_at,
+            labels: HashMap::from([(CTR_NAME_LABEL.to_string(), name.to_string())]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn container_lookup_prefers_running_attempt_over_newer_exited_attempt() {
+        let containers = vec![
+            container("old-exited", "write-test", ContainerState::ContainerExited, 10),
+            container("running", "write-test", ContainerState::ContainerRunning, 20),
+            container("new-exited", "write-test", ContainerState::ContainerExited, 30),
+        ];
+
+        assert_eq!(container_id_for_name(containers, "write-test").as_deref(), Some("running"));
+    }
+
+    #[test]
+    fn container_lookup_uses_newest_attempt_when_none_are_running() {
+        let containers = vec![
+            container("old-exited", "write-test", ContainerState::ContainerExited, 10),
+            container("new-exited", "write-test", ContainerState::ContainerExited, 30),
+        ];
+
+        assert_eq!(container_id_for_name(containers, "write-test").as_deref(), Some("new-exited"));
+    }
+
+    #[test]
+    fn container_lookup_does_not_match_another_container_name() {
+        let containers = vec![container("sidecar", "sidecar", ContainerState::ContainerRunning, 10)];
+
+        assert_eq!(container_id_for_name(containers, "write-test"), None);
+    }
 }

@@ -464,9 +464,10 @@ echo "PASS: Docker isolation checks confirmed distinct namespaces, CRI/BPF suppo
 if [[ "$FIVE_NODE_MIGRATION" == true ]]; then
     echo "Running the full nodemigrate five-node source, target, and return checkpoints"
     docker cp "$NODEMIGRATE_HOSTPATH_SETUP" \
-        "cp-1-${SUFFIX}:/tmp/nodemigrate-hostpath-setup.sh" >/dev/null
+        "cp-1-${SUFFIX}:/var/tmp/nodemigrate-hostpath-setup.sh" >/dev/null
     NODEMIGRATE_DOCKER_SUFFIX="$SUFFIX" \
         NODEMIGRATE_NODE_IMAGE="$IMAGE" \
+        NODEMIGRATE_HOSTPATH_SETUP=/var/tmp/nodemigrate-hostpath-setup.sh \
         NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" \
         bash "$ROOT/.github/scripts/nodemigrate-five-node-integration.sh"
 else
