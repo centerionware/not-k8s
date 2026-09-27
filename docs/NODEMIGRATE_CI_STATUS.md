@@ -36,6 +36,24 @@ application Leases, custom RBAC, enabled PriorityClass defaults, durable
 CSIDriver specs, and application rollout history remain strict. Local shell and
 snapshot-filter checks pass; dedicated runtime validation is pending.
 
+Commit [`de2b9ed9`](https://github.com/centerionware/not-k8s/commit/de2b9ed91210a4894bcdb0203bfd9320109335a4)
+adds a narrow Kubernetes 1.37 `CSIDriver.spec.preventPodSchedulingIfMissing`
+compatibility overlay to the 1.34-based API schema and teaches `nodescheduler`
+to preserve and enforce that opt-in policy. The field is no longer a candidate
+for snapshot normalization. Focused API schema, protobuf, projection, and
+scheduler regression tests are in the branch. Component quick-check
+[36309717348](https://github.com/centerionware/not-k8s/actions/runs/36309717348)
+and a branch-runtime migration rerun
+[36309717243](https://github.com/centerionware/not-k8s/actions/runs/36309717243)
+were dispatched at SHA `de2b9ed91210a4894bcdb0203bfd9320109335a4`. The
+quick-check failed in its unit-test step with exit code 101; its job log is
+not yet retrievable because `gh` currently cannot connect to api.github.com.
+The migration lanes are still running. The earlier migration run
+[36308845021](https://github.com/centerionware/not-k8s/actions/runs/36308845021)
+at SHA `7ba45556862d3ecd90cffe22cde4ac4d71a9f71b` failed in both lanes after
+their migration steps and predates this API/scheduler fix; its logs are also
+not yet retrievable during the API connection failure.
+
 Run [36306098280](https://github.com/centerionware/not-k8s/actions/runs/36306098280)
 at SHA `39ceeb189ac619988ddc96815611b6e4d1848198` passed the five-node
 Docker/kubeadm/Cilium preflight and built both the utility and branch runtime.
@@ -1799,4 +1817,8 @@ later green run.
 
 | SHA | Workflow | Result | Evidence |
 | --- | --- | --- | --- |
+| `de2b9ed91210a4894bcdb0203bfd9320109335a4` | `nodeapiserver,nodescheduler` quick-check | Failed in the unit-test step with exit code 101. Root cause awaits the job log; log retrieval is temporarily failing to connect to api.github.com. | [Quick-check 36309717348](https://github.com/centerionware/not-k8s/actions/runs/36309717348) |
+| `de2b9ed91210a4894bcdb0203bfd9320109335a4` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Running; intended to verify field preservation and return migration with the new CSI scheduling behavior. | [Migration 36309717243](https://github.com/centerionware/not-k8s/actions/runs/36309717243) |
+| `de2b9ed91210a4894bcdb0203bfd9320109335a4` | Latest regular release (`v0.8.0`) K3s+Cilium and upstream+Cilium migration | Running against the exact latest regular runtime to check the current utility against the user's required 0.8.0 baseline. | [Migration 36310054614](https://github.com/centerionware/not-k8s/actions/runs/36310054614) |
+| `7ba45556862d3ecd90cffe22cde4ac4d71a9f71b` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Both migration lanes failed after their migration steps. This run predates the CSI compatibility change; logs await recovery of api.github.com access. | [Migration 36308845021](https://github.com/centerionware/not-k8s/actions/runs/36308845021) |
 | `f8ff6a93b719453df806ee366d5d6403829d6bb8` | APIService freshness quick-check and migration run | Focused `nodeapiserver` quick-check passed. Dedicated migration run failed both lanes after branch builds; five-node Docker preflight passed. K3s still omitted metrics resources even after APIService `Available=True`, disproving stale reflector state as the failure cause; both lanes also reproduced CSI NodeStageVolume volume-catalog misses. Neither lane completed a return migration. | [Quick-check 36301964871](https://github.com/centerionware/not-k8s/actions/runs/36301964871); [migration 36301989587](https://github.com/centerionware/not-k8s/actions/runs/36301989587); logs `/tmp/nodemigrate-36301989587/`. |
