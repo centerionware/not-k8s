@@ -9,11 +9,17 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration result
 
-Latest branch SHA `17281efb42343ae2f934f681f57f031a59bc6016` passed targeted
-nodemigrate quick-check [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874).
-Branch-runtime migration [36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317)
-is active for both K3s and upstream lanes. It has not produced checkpoint
-evidence yet; a completed utility build alone does not verify migration.
+At code SHA `17281efb42343ae2f934f681f57f031a59bc6016`, targeted nodemigrate
+quick-check [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
+passed. Branch-runtime migration [36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317)
+passed the five-node kubeadm/Cilium preflight and built the utility and
+combined runtime, then both source lanes failed before nodemigrate ran. The
+fixture's legacy token Secret was rejected because its required ServiceAccount
+name annotation was added after creation. No migration checkpoint or
+ServiceAccount token behavior was tested. The fixture fix is in the current
+worktree and awaits a rerun; artifacts are at
+`/tmp/nodemigrate-36315595317-k3s-artifact/` and
+`/tmp/nodemigrate-36315595317-kubernetes-artifact/`.
 
 The preceding run at SHA `f9356dad16a549fdaf07c2a79e135a8cbfc836e9`,
 [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064),
@@ -33,7 +39,8 @@ normalizer treats only documented controller/default/API version fields as
 lifecycle differences; source object specs and user rollout history remain
 checked. SHA `17281efb` also preserves and reissues legacy ServiceAccount
 token Secrets and exercises their RBAC at each checkpoint. Its targeted
-quick-check passed; live migration verification is active.
+quick-check passed, but the first live run stopped during test fixture setup
+before nodemigrate executed.
 
 Run [36299240279](https://github.com/centerionware/not-k8s/actions/runs/36299240279)
 at SHA `20648debff0f7f338c3e37303bbaf367ffa449a4` passed the five-node

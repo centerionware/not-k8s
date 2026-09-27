@@ -63,16 +63,26 @@ passed, including crate unit tests. Branch-runtime migration
 [36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317)
 is active at this SHA for both K3s and upstream lanes. It tests destination-
 bound legacy ServiceAccount token Secret preservation and allowed/denied token
-requests at each checkpoint; do not claim runtime verification until it ends.
+requests at each checkpoint. The run completed with both migration lanes
+failing in initial fixture setup: `kubectl create secret` rejected the
+`migration-legacy-token` Secret because the required
+`kubernetes.io/service-account.name` annotation was added only afterward.
+Nodemigrate was not reached, and no migration checkpoint or token behavior was
+tested. The five-node kubeadm/Cilium preflight passed. Artifacts are saved at
+`/tmp/nodemigrate-36315595317-k3s-artifact/nodemigrate-k3s.log`,
+`/tmp/nodemigrate-36315595317-kubernetes-artifact/nodemigrate-kubernetes.log`,
+and `/tmp/nodemigrate-36315595317/` for preflight.
 
 ## Most recent evidence
 
 The latest focused run is [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
 and the latest migration runtime run is
 [36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317),
-both for SHA `17281efb42343ae2f934f681f57f031a59bc6016`. The migration run is
-still active and uses branch-built runtime binaries; it does not test the
-regular `v0.8.0` release baseline.
+both for code SHA `17281efb42343ae2f934f681f57f031a59bc6016`. The migration
+run ended with failure in source fixture setup before nodemigrate executed;
+its Docker five-node preflight passed. It used branch-built runtime binaries
+and did not test the regular `v0.8.0` release baseline. The fixture annotation
+ordering is fixed in the current worktree and is pending a rerun.
 
 Run [36307445772](https://github.com/centerionware/not-k8s/actions/runs/36307445772)
 at SHA `d92e814911416403bba8b9cf02940fc23be1d140` passed the five-node

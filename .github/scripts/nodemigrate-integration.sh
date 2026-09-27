@@ -1639,10 +1639,15 @@ YAML
         --from-literal=token="$legacy_token" \
         --from-literal=namespace=migration-apps \
         --from-literal=fixture=legacy-secret-data-preserved \
-        --from-literal=ca.crt="$legacy_ca"
-    kubectl annotate secret migration-legacy-token -n migration-apps \
-        kubernetes.io/service-account.name=migration-token-user \
-        kubernetes.io/service-account.uid="$legacy_account_uid"
+        --from-literal=ca.crt="$legacy_ca" \
+        --dry-run=client -o json \
+        | jq --arg account migration-token-user --arg uid "$legacy_account_uid" '
+            .metadata.annotations = {
+              "kubernetes.io/service-account.name": $account,
+              "kubernetes.io/service-account.uid": $uid
+            }
+          ' \
+        | kubectl apply -f -
 }
 
 wait_for_httproute_condition() {

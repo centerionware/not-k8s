@@ -4,6 +4,20 @@ Last updated: 2026-09-27
 
 ## Current source-review finding
 
+- **Migration harness / ServiceAccount token fixture was rejected before
+  migration.** In run
+  [36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317),
+  both source lanes failed because the fixture created a
+  `kubernetes.io/service-account-token` Secret before adding its required
+  `kubernetes.io/service-account.name` annotation. Kubernetes rejected the
+  Secret; nodemigrate never ran, so this is not a migration utility failure or
+  evidence about the token-preservation fix. The fixture now submits the
+  ServiceAccount name and UID annotations in the initial create request. The
+  five-node cluster preflight passed, but migration checkpoint and token
+  behavior remain unverified. Logs are saved under
+  `/tmp/nodemigrate-36315595317-k3s-artifact/` and
+  `/tmp/nodemigrate-36315595317-kubernetes-artifact/`.
+
 - **Migration harness / storage safety: StatefulSet fixture deleted a PVC.** In
   run [36304940296](https://github.com/centerionware/not-k8s/actions/runs/36304940296),
   `exercise_statefulset_scaling` deleted ordinal 1's claim after scaling the
@@ -30,9 +44,10 @@ Last updated: 2026-09-27
   Focused export/patch tests and snapshot normalization checks are added.
   Targeted nodemigrate quick-check
   [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874)
-  passed at SHA `17281efb42343ae2f934f681f57f031a59bc6016`; branch-runtime
-  migration [36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317)
-  is active, so no passing token-Secret round trip is claimed yet.
+  passed at SHA `17281efb42343ae2f934f681f57f031a59bc6016`; run
+  [36315595317](https://github.com/centerionware/not-k8s/actions/runs/36315595317)
+  failed in fixture setup before nodemigrate, so no passing token-Secret
+  round trip is claimed yet.
 
 ## Latest runtime findings
 
