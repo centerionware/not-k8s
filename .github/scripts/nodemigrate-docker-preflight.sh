@@ -9,6 +9,11 @@ NETWORK="nodemigrate-probe-${SUFFIX}"
 NODES=(cp-1 cp-2 cp-3 worker-1 worker-2)
 CONTAINERS=()
 VOLUMES=()
+CILIUM_KPR="${NODEMIGRATE_CILIUM_KPR:-false}"
+[[ "$CILIUM_KPR" == false || "$CILIUM_KPR" == true ]] || {
+    echo "NODEMIGRATE_CILIUM_KPR must be false or true, got '$CILIUM_KPR'" >&2
+    exit 2
+}
 
 mkdir -p "$(dirname "$LOG")"
 exec > >(tee -a "$LOG") 2>&1
@@ -319,7 +324,11 @@ collect_cluster_diagnostics() {
     collect_node_diagnostics
 }
 
-if ! docker exec "$cp1" kubeadm init \
+KUBEADM_INIT_ARGS=()
+if [[ "$CILIUM_KPR" == true ]]; then
+    KUBEADM_INIT_ARGS+=(--skip-phases=addon/kube-proxy)
+fi
+if ! docker exec "$cp1" kubeadm init "${KUBEADM_INIT_ARGS[@]}" \
     --kubernetes-version "$(docker exec "$cp1" kubeadm version -o short)" \
     --control-plane-endpoint=cp-1:6443 \
     --apiserver-advertise-address="$cp1_ip" \
@@ -357,7 +366,7 @@ for node in worker-1 worker-2; do
 done
 
 echo "Installing Helm and Cilium in the five-node upstream cluster"
-if ! docker exec "$cp1" bash -ec '
+if ! docker exec --env NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" "$cp1" bash -ec '
     curl -fsSL https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz -o /tmp/helm.tgz
     tar -xzf /tmp/helm.tgz -C /tmp
     install -m0755 /tmp/linux-amd64/helm /usr/local/bin/helm
@@ -368,7 +377,7 @@ if ! docker exec "$cp1" bash -ec '
         --namespace kube-system \
         --set ipam.mode=kubernetes \
         --set cni.binPath=/opt/cni/bin \
-        --set kubeProxyReplacement=false \
+        --set kubeProxyReplacement="$NODEMIGRATE_CILIUM_KPR" \
         --set operator.replicas=1 \
         --set k8sServiceHost=cp-1 \
         --set k8sServicePort=6443 \
@@ -388,6 +397,13 @@ if ! docker exec "$cp1" bash -ec '
     kubectl get daemonset cilium -n kube-system -o json | jq -e "
       .status.desiredNumberScheduled == 5 and .status.numberReady == 5
     " >/dev/null
+    if [[ "$NODEMIGRATE_CILIUM_KPR" == true ]]; then
+        if kubectl get daemonset kube-proxy -n kube-system >/dev/null 2>&1; then
+            echo "FAIL: kube-proxy DaemonSet remains with Cilium kube-proxy replacement enabled" >&2
+            exit 1
+        fi
+        echo "PASS: Cilium kube-proxy replacement is enabled and kube-proxy is absent"
+    fi
 '; then
     echo "Cilium installation or readiness checks failed; collecting diagnostics"
     collect_cluster_diagnostics

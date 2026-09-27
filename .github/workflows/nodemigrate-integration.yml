@@ -94,6 +94,7 @@ jobs:
         env:
           NODEMIGRATE_NODE_IMAGE: nodemigrate-ci-node:ubuntu-24.04
           NODEMIGRATE_PREFLIGHT_LOG: ${{ runner.temp }}/nodemigrate-docker-preflight.log
+          NODEMIGRATE_CILIUM_KPR: ${{ inputs.cilium_kpr }}
         run: bash .github/scripts/nodemigrate-docker-preflight.sh
 
       - name: Upload probe log

@@ -4,6 +4,18 @@ Last updated: 2026-09-27
 
 ## Current fixture finding
 
+- **Nodemigrate integration fixture / five-node preflight ignored its KPR
+  input.** Run
+  [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
+  passed the Docker preflight with `cilium_kpr=true`, but inspection found the
+  preflight script still hard-coded `kubeProxyReplacement=false` and installed
+  kube-proxy. The five-node portion therefore did not cover the requested KPR
+  mode. The script now passes KPR into kubeadm and Helm, skips the kube-proxy
+  add-on when enabled, and asserts the kube-proxy DaemonSet is absent. Shell
+  syntax passed locally; PR validation and an enabled-KPR preflight run remain
+  pending. The active run predates the fix and is not evidence for five-node
+  KPR.
+
 - **nodemigrate / Cilium initial control-plane bootstrap started nodeproxy with
   kube-proxy replacement enabled.** Code review while KPR-enabled migration
   run [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)

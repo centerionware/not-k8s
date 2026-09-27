@@ -128,11 +128,13 @@ was dispatched at `7f1c53f1531383e6ef3b9b73fe36f1fe3301216c` with
 `cilium_kpr=true` and `runtime_source=branch`. As of 2026-09-27 19:25 UTC,
 the five-node Docker preflight and both utility/combined-runtime builds had
 passed; the K3s and upstream `Run migration` steps were still in progress.
-This SHA predates the initial control-plane `--proxy=none` fix and the
-nodeproxy-inactive integration assertion, so it is baseline evidence only for
-KPR-enabled source and fixture setup. Do not claim target proxy selection or
-post-fix migration behavior from this run. A matching KPR-enabled branch run
-at the fixed code SHA is pending after the older run becomes terminal.
+The preflight script at this SHA always installed kube-proxy, so its five-node
+setup used KPR disabled despite the workflow input; only the two single-node
+source fixtures requested KPR enabled. The run also predates the initial
+control-plane `--proxy=none` fix and nodeproxy-inactive assertion. Do not claim
+five-node KPR, target proxy selection, or post-fix behavior from it. The current
+preflight now honors the KPR input, with validation and runtime verification
+pending.
 
 Release-backed migration run
 [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663)
