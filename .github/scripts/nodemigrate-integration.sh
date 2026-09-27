@@ -2118,6 +2118,13 @@ verify_stage() {
     CURRENT_KUBECONFIG="$2"
     export KUBECONFIG="$CURRENT_KUBECONFIG"
     echo "Verifying stage=$stage distro=$SOURCE_DIST kubeconfig=$CURRENT_KUBECONFIG"
+    if [[ "$stage" == nodestore && "${NODEMIGRATE_CILIUM_KPR:-false}" == true ]]; then
+        if systemctl is-active --quiet nodeproxy; then
+            echo "nodeproxy is active at the Cilium KPR nodestore checkpoint" >&2
+            return 1
+        fi
+        echo "PASS nodeproxy is inactive with Cilium kube-proxy replacement at stage=$stage"
+    fi
     capture_cilium_agent_cri_security "$CURRENT_KUBECONFIG"
     verify_ingress_spec "$stage"
     local expected_ca_b64 expected_namespace_count deadline trust_bundles

@@ -47,7 +47,8 @@ See the expanded requirement in [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md).
 The dedicated integration workflow now accepts `cilium_kpr=false|true`.
 For `true`, it disables the K3s kube-proxy or skips kubeadm's kube-proxy
 addon, configures Cilium KPR, and fails the source fixture if kube-proxy's
-DaemonSet remains. Workflow validation passed at `027ee68d` in
+DaemonSet remains; the nodestore checkpoint also fails if nodeproxy is active.
+Workflow validation passed at `027ee68d` in
 [36342627911](https://github.com/centerionware/not-k8s/actions/runs/36342627911);
 nodemigrate crate tests passed in
 [36342627913](https://github.com/centerionware/not-k8s/actions/runs/36342627913).
