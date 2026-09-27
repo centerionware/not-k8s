@@ -31,17 +31,28 @@ at SHA `d2eebede56084347cbc8eeba03fb12336bed7e6e` completed with both lanes
 failing after the branch runtime builds and five-node Docker preflight passed.
 K3s forward migration completed and destination readiness passed. At the
 nodestore checkpoint, ingress, namespace trust CA, non-root emptyDir, and
-system-addon rollouts passed; the Deployment scale assertion failed, and CSI
-volume staging reported that the hostPath driver had not registered with
-nodelet. Its metrics APIService reported `Available=True`, but metrics-server
-could not scrape the nodelet kubelet because the kubelet serving certificate
-was signed by an unknown CA. Upstream forward migration passed the source and
-nodestore workload checks and exposed all 119 source-discovered listable API
-resources, then failed strict source-object parity on same-identity field
-differences in workloads, system state, CSI, and Cilium objects. Neither lane
-ran return migration or achieved a round trip. Full logs:
+system-addon rollouts passed; the Deployment scale assertion failed. The
+hostPath CSI driver registered after initial retries, but later PVC staging
+still failed. Its metrics APIService reported `Available=True`, but
+metrics-server could not scrape the nodelet kubelet because the kubelet
+serving certificate was signed by an unknown CA. Upstream forward migration
+passed the source and nodestore workload checks and exposed all 119
+source-discovered listable API resources, then failed strict source-object
+parity on same-identity field differences in workloads, system state, CSI,
+and Cilium objects. Neither lane ran return migration or achieved a round
+trip. Full logs:
 `/tmp/nodemigrate-36297966919-k3s.log` and
 `/tmp/nodemigrate-36297966919-kubernetes.log`.
+
+The harness now prints Deployment, ReplicaSet, Pod, and event state when its
+scale assertion fails. That change is in
+[36299240279](https://github.com/centerionware/not-k8s/actions/runs/36299240279)
+at SHA `20648deb`; Docker preflight passed and both migration lanes are still
+running. Nodelet now logs the full error chain for CSI volume mount failures;
+the component check passed at SHA `aa96d6b5` in
+[36299331009](https://github.com/centerionware/not-k8s/actions/runs/36299331009).
+The active runtime run predates that nodelet change, so CSI status diagnostics
+from it are still pending a runtime run on `aa96d6b5`.
 
 Migration run
 [36294950798](https://github.com/centerionware/not-k8s/actions/runs/36294950798)
