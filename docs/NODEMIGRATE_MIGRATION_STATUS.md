@@ -178,7 +178,13 @@ selected for migration, and the counts/reasons for lifecycle-excluded objects
 or kinds. The skip reasons explain read-only status, destination
 re-registration or regeneration, refreshed metrics, CSI reattachment,
 destination CA bundles, controller-managed endpoints/Pods, heartbeat Leases,
-and service-account tokens. Tests cover the classifications. At SHA
+and service-account tokens. Tests cover the classifications, but source review
+found that not-k8s only creates the default ServiceAccount and does not
+regenerate legacy `kubernetes.io/service-account-token` Secrets. This exclusion
+therefore violates the full credential-migration requirement until the token is
+reissued into the same Secret or compatible signing trust is preserved and a
+token-only authentication round trip passes. See the
+[bug tracker](NODEMIGRATE_BUGS.md). At SHA
 `39890702faf4815b022bd9419472e509b6f1076e`, the focused crate tests
 [36268585399](https://github.com/centerionware/not-k8s/actions/runs/36268585399)
 and migration workflow validation

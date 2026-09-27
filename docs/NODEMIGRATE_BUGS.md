@@ -2,6 +2,22 @@
 
 Last updated: 2026-09-27
 
+## Current source-review finding
+
+- **`nodemigrate` / `nodecontroller`: legacy ServiceAccount token Secrets are
+  excluded.** `object_skip_reason` drops every Secret of type
+  `kubernetes.io/service-account-token`, while the not-k8s
+  `service-account-controller` only ensures a namespace's `default`
+  ServiceAccount and does not recreate token Secrets. Existing service-account
+  JWT issuance/validation does not migrate that Secret or guarantee that a
+  source token remains valid against the target issuer, signing key, and
+  ServiceAccount UID. This contradicts the full migration requirement for every
+  Secret and usable credentials. The fix must preserve the Secret's namespace
+  and name, carry compatible issuer/signing trust or issue a target-valid
+  credential into that same Secret, and verify authentication with it at
+  source, nodestore, and returned-source checkpoints. Source review confirms
+  the gap; no runtime token-Secret round trip currently verifies a fix.
+
 ## Branch-runtime findings from runs 36293700293 and 36294950798
 
 Run [36293700293](https://github.com/centerionware/not-k8s/actions/runs/36293700293)
