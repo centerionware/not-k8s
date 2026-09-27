@@ -2385,7 +2385,38 @@ capture_migratable_api_objects() {
     local summary_output="${output%.jsonl}-summary.jsonl"
     local resource_inventory="$2"
     local resources resource list_json object_json normalized
-    kubectl api-resources --verbs=list -o name | LC_ALL=C sort -u > "$resource_inventory"
+    local source_inventory="$CHECKPOINT_DIR/source/api-resources.txt"
+    if [[ "$resource_inventory" != "$source_inventory" && -f "$source_inventory" ]]; then
+        local discovery_error missing deadline discovery_output
+        discovery_error="$(mktemp)"
+        discovery_output="$(mktemp)"
+        deadline=$((SECONDS + 60))
+        while true; do
+            if kubectl api-resources --verbs=list -o name > "$discovery_output" 2>"$discovery_error"; then
+                LC_ALL=C sort -u "$discovery_output" > "$resource_inventory"
+                missing="$(comm -23 "$source_inventory" "$resource_inventory")"
+                if [[ -z "$missing" ]]; then
+                    break
+                fi
+            else
+                missing="$(cat "$source_inventory")"
+            fi
+            if (( SECONDS >= deadline )); then
+                echo "Source-discovered listable API resources did not reappear within 60 seconds at stage=${output%/migratable-objects.jsonl}:" >&2
+                printf '%s\n' "$missing" >&2
+                if [[ -s "$discovery_error" ]]; then
+                    echo "Last API discovery error:" >&2
+                    cat "$discovery_error" >&2
+                fi
+                rm -f "$discovery_error" "$discovery_output"
+                return 1
+            fi
+            sleep 2
+        done
+        rm -f "$discovery_error" "$discovery_output"
+    else
+        kubectl api-resources --verbs=list -o name | LC_ALL=C sort -u > "$resource_inventory"
+    fi
     resources="$(cat "$resource_inventory")"
     [[ -n "$resources" ]] || {
         echo "Kubernetes API discovery returned no listable resources" >&2
