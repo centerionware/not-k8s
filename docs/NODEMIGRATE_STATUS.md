@@ -23,6 +23,12 @@ separate living documents below.
 
 ## Current verification
 
+- Release-backed run
+  [36351022258](https://github.com/centerionware/not-k8s/actions/runs/36351022258)
+  was dispatched at SHA `55978b86` against released `v0.8.0`, with Cilium KPR
+  enabled. Both K3s and upstream lanes plus the Docker preflight were still
+  running at last check; no migration outcome is claimed yet.
+
 - At code SHA `2d98e05edc709b7aeec145d652b29aa1fe0137a9`, focused
   `nodemigrate` and `nodebootstrap` tests passed in
   [36350477684](https://github.com/centerionware/not-k8s/actions/runs/36350477684).

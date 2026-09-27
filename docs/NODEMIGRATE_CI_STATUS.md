@@ -7,6 +7,14 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+Release-backed migration run
+[36351022258](https://github.com/centerionware/not-k8s/actions/runs/36351022258)
+was dispatched at branch SHA `55978b86` with `runtime_source=release` and
+`cilium_kpr=true`, exercising the regular `v0.8.0` runtime. At last inspection,
+the Docker preflight and both source lanes were still active; the lanes were
+building `nodemigrate` and had not reached migration results. This run does not
+enable the full build or general e2e workflows.
+
 Run [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
 at SHA `7f1c53f1` is terminal `cancelled`. Its K3s lane completed forward
 migration and API export, then started retained K3s for the return leg and
