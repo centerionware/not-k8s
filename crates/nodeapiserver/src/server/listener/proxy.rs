@@ -399,13 +399,13 @@ async fn proxy_resource(
     };
 
     if enforce_rbac {
-        let (user_name, user_groups): (&str, Vec<String>) = match identity {
-            Some(id) => (id.name.as_str(), id.groups.clone()),
-            None => (ANONYMOUS_USERNAME, vec![UNAUTHENTICATED_GROUP.to_string()]),
+        let (user_name, user_groups): (String, Vec<String>) = match identity {
+            Some(id) => (id.name, id.groups),
+            None => (ANONYMOUS_USERNAME.to_string(), vec![UNAUTHENTICATED_GROUP.to_string()]),
         };
         let resolved = authz::resolve::rules_for(
             &mut client,
-            user_name,
+            &user_name,
             &user_groups,
             &info.namespace,
             Some(&cache_registry),
@@ -428,7 +428,7 @@ async fn proxy_resource(
         if !authz::rbac::rules_allow(&attrs, &resolved.rules) {
             return json_response(
                 StatusCode::FORBIDDEN,
-                &forbidden_status(path_str, user_name),
+                &forbidden_status(path_str, &user_name),
             );
         }
     }
