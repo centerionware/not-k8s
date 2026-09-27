@@ -9,6 +9,27 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration result
 
+Run [36297966919](https://github.com/centerionware/not-k8s/actions/runs/36297966919)
+at SHA `d2eebede56084347cbc8eeba03fb12336bed7e6e` passed the Docker
+five-node kubeadm/Cilium preflight and built both `nodemigrate` and the branch
+runtime. The K3s forward migration completed and target API readiness passed;
+the target then failed the fixture's strict Deployment scale check. The same
+lane logged that the unchanged hostPath CSI driver had not registered with
+nodelet, and CSI `NodeStageVolume` failed. The metrics APIService was
+`Available=True`, but metrics-server could not scrape the nodelet kubelet due
+to its serving certificate chaining to an unknown CA. No K3s return migration
+ran.
+
+The upstream lane passed its source and nodestore behavior checks, including
+all 119 listable API resources exposed at the target. It then failed the
+strict source-object comparator on same-identity changes in CoreDNS, controller
+replica counts, Leases, system RBAC/PriorityClasses, CSI, and Cilium objects.
+Those fields remain failures until their preservation or regeneration behavior
+is fixed and verified. Neither lane reached the return leg or round-trip gate.
+The complete lane logs are
+`/tmp/nodemigrate-36297966919-k3s.log` and
+`/tmp/nodemigrate-36297966919-kubernetes.log`.
+
 Run [36295890192](https://github.com/centerionware/not-k8s/actions/runs/36295890192)
 at SHA `57fd9ca6305ecb79c45b31513e82de4a3ce46c59` passed Docker five-node
 preflight and both utility/runtime builds. The K3s lane migrated through the

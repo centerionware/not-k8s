@@ -25,11 +25,23 @@ A follow-up PV/PVC export regression test passed nodemigrate crate tests at
 SHA `a2214765e134fbd7dc72d113f36dcc99b41c1530` in
 [36298232980](https://github.com/centerionware/not-k8s/actions/runs/36298232980).
 These checks prove crate-level behavior, not migration data-path safety.
-The authorized branch-runtime migration run
+The branch-runtime migration run
 [36297966919](https://github.com/centerionware/not-k8s/actions/runs/36297966919)
-is in progress at SHA `d2eebede`; its five-node Docker preflight passed and
-both single-node lanes built the branch runtime. The per-stage migration result
-is pending; do not count preflight or builds as a migration pass.
+at SHA `d2eebede56084347cbc8eeba03fb12336bed7e6e` completed with both lanes
+failing after the branch runtime builds and five-node Docker preflight passed.
+K3s forward migration completed and destination readiness passed. At the
+nodestore checkpoint, ingress, namespace trust CA, non-root emptyDir, and
+system-addon rollouts passed; the Deployment scale assertion failed, and CSI
+volume staging reported that the hostPath driver had not registered with
+nodelet. Its metrics APIService reported `Available=True`, but metrics-server
+could not scrape the nodelet kubelet because the kubelet serving certificate
+was signed by an unknown CA. Upstream forward migration passed the source and
+nodestore workload checks and exposed all 119 source-discovered listable API
+resources, then failed strict source-object parity on same-identity field
+differences in workloads, system state, CSI, and Cilium objects. Neither lane
+ran return migration or achieved a round trip. Full logs:
+`/tmp/nodemigrate-36297966919-k3s.log` and
+`/tmp/nodemigrate-36297966919-kubernetes.log`.
 
 Migration run
 [36294950798](https://github.com/centerionware/not-k8s/actions/runs/36294950798)

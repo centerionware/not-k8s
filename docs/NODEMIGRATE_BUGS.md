@@ -18,6 +18,45 @@ Last updated: 2026-09-27
   source, nodestore, and returned-source checkpoints. Source review confirms
   the gap; no runtime token-Secret round trip currently verifies a fix.
 
+## Branch-runtime findings from run 36297966919
+
+Run [36297966919](https://github.com/centerionware/not-k8s/actions/runs/36297966919)
+at SHA `d2eebede56084347cbc8eeba03fb12336bed7e6e` built the migration utility
+and branch runtime and passed the Docker kubeadm/Cilium preflight. Both lanes
+completed forward migration but failed before return migration.
+
+- **`nodelet` / `nodebootstrap`: CSI driver registration is not restored at
+  cutover.** In the K3s target lane, `nodelet` repeatedly logged that no CSI
+  driver was configured for `hostpath.csi.k8s.io`, followed by failed
+  `NodeStageVolume` calls while the unchanged CSI workload was present. The
+  migration passes its registrar directory, but the target runtime does not
+  have the driver's endpoint in `NODELET_CSI_DRIVERS` and plugin registration
+  did not populate it. Preserve/discover the existing driver endpoint and
+  prove a bound PVC mounts and reads its original data at all checkpoints.
+  This finding is from the live branch runtime; the fix is not implemented.
+- **`nodecontroller`: Deployment `/scale` behavior failed at the K3s target
+  checkpoint.** The target accepted `kubectl scale --replicas=2` and the
+  fixture's rollout command returned success, but its follow-up assertion did
+  not observe both requested replicas as available. The current failure
+  diagnostic does not print the Deployment/ReplicaSet states, so the exact
+  controller state transition is not yet established. Add that state to the
+  failure output, then fix and verify the owning Deployment reconciliation.
+- **`nodelet` / `nodebootstrap`: metrics-server cannot verify the target
+  kubelet serving certificate.** Regenerating the aggregated-API trust bundle
+  worked: the K3s `v1beta1.metrics.k8s.io` APIService reports `Available=True`
+  with `all checks passed`, unlike the previous 401. metrics-server still logs
+  `x509: certificate signed by unknown authority` when scraping the migrated
+  nodelet's `:10250/metrics/resource` endpoint. Aggregated API availability is
+  fixed; live node metrics remain unavailable until the serving certificate
+  trust chain is made compatible and scrape results are verified.
+- **`nodeapiserver` / runtime state: upstream strict API parity still fails.**
+  The Kubernetes lane exposed all 119 source-discovered listable resources,
+  passed target workload checks, then failed same-identity object fingerprints
+  in CoreDNS, ReplicaSets/StatefulSets, Leases, PriorityClasses/system RBAC,
+  CSIDriver/CSINode, and CiliumNode. These remain differences, not waived
+  normalizations; no return comparison ran. Per-field paths and hashes are in
+  `/tmp/nodemigrate-36297966919-kubernetes.log`.
+
 ## Branch-runtime findings from runs 36293700293 and 36294950798
 
 Run [36293700293](https://github.com/centerionware/not-k8s/actions/runs/36293700293)
