@@ -616,7 +616,22 @@ fn migrate_to_existing(
         "run nodemigrate as root to control both service stacks"
     );
     let target_api = transfer::KubeApi::destination(request.to)?;
-    let source_api = if request.skip_api_export {
+    let mut export = request
+        .source_export
+        .as_ref()
+        .map(transfer::Export::load)
+        .transpose()
+        .with_context(|| {
+            format!(
+                "loading protected staged-migration export {}",
+                request
+                    .source_export
+                    .as_deref()
+                    .unwrap_or_else(|| std::path::Path::new("<missing>"))
+                    .display()
+            )
+        })?;
+    let source_api = if request.skip_api_export || export.is_some() {
         None
     } else {
         Some(transfer::KubeApi::source(source)?)
@@ -624,7 +639,7 @@ fn migrate_to_existing(
     if let Some(source_api) = &source_api {
         source_api.ready()?;
     }
-    if request.skip_api_export {
+    if request.skip_api_export && !request.stage_target {
         target_api.ready().context(
             "skip-api-export requires the retained destination cluster to be Ready through NODEMIGRATE_DESTINATION_KUBECONFIG",
         )?;
@@ -634,8 +649,13 @@ fn migrate_to_existing(
         .as_ref()
         .map(|api| api.node_scheduling_state(&returning_node_name))
         .transpose()?
-        .flatten();
-    let destination_node_exists = if request.skip_api_export {
+        .flatten()
+        .or_else(|| {
+            export
+                .as_ref()
+                .and_then(|export| export.node_state(&returning_node_name).cloned())
+        });
+    let destination_node_exists = if request.skip_api_export && !request.stage_target {
         target_api.node_exists(&returning_node_name)?
     } else {
         false
@@ -655,14 +675,16 @@ fn migrate_to_existing(
             .as_ref()
             .and_then(|cluster| cluster.cni.as_deref())
             .unwrap_or("external or undetected");
-        println!("Migration plan: nodestore -> {:?}; retained target service '{}' will be enabled and started; target CNI={cni}; replace-existing-node={replace_existing_node}; source-api-export={}; stage-target={}; uninstall-after-migrate={}", request.to, target.service_name, if request.skip_api_export { "skipped (destination already has cluster state)" } else { "enabled" }, request.stage_target, request.uninstall_after_migrate);
+        println!("Migration plan: nodestore -> {:?}; retained target service '{}' will be enabled and started; target CNI={cni}; replace-existing-node={replace_existing_node}; source-api-export={}; staged-source-export={}; stage-target={}; uninstall-after-migrate={}", request.to, target.service_name, if request.skip_api_export { "skipped (destination already has cluster state)" } else { "enabled" }, request.source_export.as_ref().map_or("none", |_| "reused for offline node/PV recovery"), request.stage_target, request.uninstall_after_migrate);
         return Ok(());
     }
-    let mut export = source_api
-        .as_ref()
-        .map(|source_api| source_api.export(source))
-        .transpose()?;
-    let host_path_snapshot = if request.skip_api_export {
+    if export.is_none() {
+        export = source_api
+            .as_ref()
+            .map(|source_api| source_api.export(source))
+            .transpose()?;
+    }
+    let host_path_snapshot = if request.skip_api_export && !request.stage_target {
         let name = node_name(target);
         let local_node_labels = target_api.node_labels(&name).ok();
         Some(target_api.snapshot_host_paths(local_node_labels.as_ref())?)
@@ -697,7 +719,7 @@ fn migrate_to_existing(
     eprintln!("nodemigrate: nodestore service stack is stopped");
     if let Some(export) = &mut export {
         eprintln!("nodemigrate: snapshotting local persistent-volume payloads");
-        if let Err(error) = export.snapshot_host_paths() {
+        if let Err(error) = export.snapshot_host_paths_for_node(&returning_node_name) {
             if let Err(restore_error) = service::restore(source, previous_service) {
                 bail!("snapshotting local persistent volumes failed ({error:#}); restoring nodestore also failed ({restore_error:#}); recovery data is at {recovery_location}");
             }
@@ -707,7 +729,10 @@ fn migrate_to_existing(
         }
         eprintln!("nodemigrate: local persistent-volume snapshot completed");
     }
-    eprintln!("nodemigrate: starting retained {} service", target.service_name);
+    eprintln!(
+        "nodemigrate: starting retained {} service",
+        target.service_name
+    );
     if let Err(error) = service::activate(target) {
         return Err(rollback_reverse_migration(
             source,
@@ -719,7 +744,10 @@ fn migrate_to_existing(
             &recovery_location,
         ));
     }
-    eprintln!("nodemigrate: retained {} start command returned", target.service_name);
+    eprintln!(
+        "nodemigrate: retained {} start command returned",
+        target.service_name
+    );
     if request.stage_target {
         let recovery = export
             .as_ref()
@@ -757,11 +785,7 @@ fn migrate_to_existing(
         eprintln!("nodemigrate: protected Kubernetes API import completed");
     }
     let observed_replacement_state = if destination_node_exists || replace_existing_node {
-        match remove_replaced_node(
-            &target_api,
-            &returning_node_name,
-            replace_existing_node,
-        ) {
+        match remove_replaced_node(&target_api, &returning_node_name, replace_existing_node) {
             Ok(state) => state,
             Err(error) => {
                 return Err(rollback_reverse_migration(
@@ -954,12 +978,44 @@ fn resume_export_import(
         "retained destination API is not ready; protected export remains at {}",
         export.dir.display()
     ))?;
+    let control_plane_nodes = export.control_plane_node_names();
+    ensure!(
+        !control_plane_nodes.is_empty(),
+        "protected export has no control-plane Node scheduling metadata; export retained at {}",
+        export.dir.display()
+    );
+    let replace_existing_node = replace_existing_node_requested()?;
+    for name in &control_plane_nodes {
+        let scheduling_state = export
+            .node_state(name)
+            .with_context(|| {
+                format!("protected export has no scheduling metadata for control-plane Node {name}")
+            })?
+            .clone();
+        if target_api.node_exists(name)? {
+            remove_replaced_node(&target_api, name, replace_existing_node)
+                .with_context(|| format!("re-registering staged control-plane Node {name}"))?;
+        }
+        wait_for_node(&target_api, name)
+            .with_context(|| format!("waiting for staged control-plane Node {name}"))?;
+        restore_node_scheduling_state(&target_api, name, Some(&scheduling_state)).with_context(
+            || format!("restoring staged control-plane Node {name} scheduling state"),
+        )?;
+    }
     target_api.import(&export).with_context(|| {
         format!(
             "resuming migration API import; protected export remains at {}",
             export.dir.display()
         )
     })?;
+    for name in &control_plane_nodes {
+        let repaired = target_api.restore_node_owner_references(&export, name)?;
+        if repaired > 0 {
+            eprintln!(
+                "nodemigrate: restored {repaired} owner reference(s) to staged control-plane Node {name}"
+            );
+        }
+    }
     println!(
         "Imported {} Kubernetes objects into retained {:?} cluster. Recovery export: {}",
         export.object_count(),
@@ -1390,7 +1446,9 @@ fn detect_csi_staging_root(mountinfo: &str) -> Result<Option<PathBuf>> {
             if components[index..index + 3] != ["plugins", "kubernetes.io", "csi"]
                 || components[index + 5] != "globalmount"
                 || components[index + 4].len() != 64
-                || !components[index + 4].bytes().all(|byte| byte.is_ascii_hexdigit())
+                || !components[index + 4]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
             {
                 continue;
             }
@@ -1488,10 +1546,12 @@ fn print_help() {
          Later control-plane nodes joining an already migrated nodestore cluster\n\
          may use skip-api-import=true; the first control plane must import state.\n\
          For reverse multi-control-plane migration, stage-target=true starts\n\
-         an early retained control plane without waiting for API quorum; use\n\
-         import-export=/path after retained control-plane quorum returns to\n\
-         import the staged API state. Use skip-api-export=true for later nodes\n\
-         after target state has been imported.\n\
+         retained control planes without waiting for API quorum. Later staged\n\
+         nodes can reuse the first protected export with source-export=/path to\n\
+         recover local persistent data without contacting either API. After\n\
+         target quorum returns, run import-export=/path once to import cluster\n\
+         state. Use skip-api-export=true for later nodes after target API\n\
+         readiness.\n\
          \n\
          `inspect` reports detected local Kubernetes installations. Migration\n\
          exports Kubernetes API objects into a protected recovery directory,\n\
@@ -1508,8 +1568,8 @@ fn print_help() {
 mod tests {
     use super::{
         apply_cni_runtime_paths, confirm_migration, detect_csi_staging_root,
-        migration_csi_staging_root, replacement_worker_args, rollback_reverse_migration_with,
-        reverse_node_replacement_state, validate_destination_node_replacement,
+        migration_csi_staging_root, replacement_worker_args, reverse_node_replacement_state,
+        rollback_reverse_migration_with, validate_destination_node_replacement,
         validate_reverse_control_plane_options, validate_skip_api_import,
     };
     use crate::transfer::NodeSchedulingState;
@@ -1518,7 +1578,11 @@ mod tests {
         request::{Distribution, MigrationRequest},
     };
     use std::collections::HashMap;
-    use std::{io::Cursor, path::{Path, PathBuf}, process::Command};
+    use std::{
+        io::Cursor,
+        path::{Path, PathBuf},
+        process::Command,
+    };
 
     #[test]
     fn reverse_migration_rollback_stops_target_before_restoring_data_and_source() {
@@ -1730,9 +1794,10 @@ mod tests {
             Path::new("/var/lib/kubelet/plugins/kubernetes.io/csi")
         );
         assert_eq!(
-            migration_csi_staging_root(Some(PathBuf::from(
-                "/srv/kubelet/plugins/kubernetes.io/csi"
-            )), "")
+            migration_csi_staging_root(
+                Some(PathBuf::from("/srv/kubelet/plugins/kubernetes.io/csi")),
+                ""
+            )
             .unwrap(),
             Path::new("/srv/kubelet/plugins/kubernetes.io/csi")
         );

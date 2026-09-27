@@ -19,8 +19,12 @@ nodemigrate restored nodestore and retained the export. Rollback fixture
 verification separately observed a Pod disappear before `kubectl exec`, so
 the non-root `emptyDir` marker failure is not yet attributed to migration.
 K3s remains in progress. The upstream log contains 226 jq parse errors from
-the watcher; its stderr/JSON handling fix is at `deaed970`, and the follow-up
-diagnostics at `bb32d6c8` now capture kube-proxy readiness as well. Neither
+the watcher in the pre-fix runtime at `f186930d`; the `deaed970` fix captures
+`kubectl` stderr separately from JSON and emits structured request/parse
+diagnostics. Its focused diagnostic check passes, and PR validation at the
+current docs SHA passed. A post-fix migration run has not yet confirmed the
+noise is gone from a full migration log. The follow-up diagnostics at
+`bb32d6c8` also capture kube-proxy readiness. Neither
 lane has passed a full round trip, and no PV/PVC/backing-volume deletion was
 reported. Full lane evidence is recorded in the [CI status](NODEMIGRATE_CI_STATUS.md).
 

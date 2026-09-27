@@ -1452,6 +1452,19 @@ impl Export {
         self.node_states.get(name)
     }
 
+    pub(crate) fn control_plane_node_names(&self) -> Vec<String> {
+        self.node_states
+            .iter()
+            .filter(|(_, state)| {
+                state
+                    .labels
+                    .contains_key("node-role.kubernetes.io/control-plane")
+                    || state.labels.contains_key("node-role.kubernetes.io/master")
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
     pub fn snapshot_host_paths_for_node(&mut self, node_name: &str) -> Result<()> {
         let labels = &self
             .node_state(node_name)
@@ -2615,13 +2628,14 @@ fn export_directory() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApiResource, DynamicObject, Export, ExportedObject, KubeApi, NodeSchedulingState,
-        SkipReason, custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
+        custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
         namespace_ca_bundle_matches, node_scheduling_patch, object_rank, object_skip_reason,
         object_type_label, persistent_host_paths, preserve_discovered_type_meta,
         remapped_node_owner_references, restore_cni_path_backups, retryable_import_error,
         same_group_kind, sanitize, service_account_token_secret_patch, skip_kind_reason,
         skip_object, snapshot_k3s_cni_paths, summarize_import_failures, write_export_manifest,
+        ApiResource, DynamicObject, Export, ExportedObject, KubeApi, NodeSchedulingState,
+        SkipReason,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
@@ -3399,16 +3413,37 @@ current-context: test
             source_uid: Some("source-uid".to_string()),
         }];
 
-        let node_states = BTreeMap::from([(
-            "node-a".to_string(),
-            NodeSchedulingState {
-                uid: Some("node-uid".to_string()),
-                labels: HashMap::from([("zone".to_string(), "west".to_string())]),
-                annotations: HashMap::new(),
-                taints: Vec::new(),
-                unschedulable: Some(true),
-            },
-        )]);
+        let node_states = BTreeMap::from([
+            (
+                "node-a".to_string(),
+                NodeSchedulingState {
+                    uid: Some("node-uid".to_string()),
+                    labels: HashMap::from([
+                        ("zone".to_string(), "west".to_string()),
+                        (
+                            "node-role.kubernetes.io/control-plane".to_string(),
+                            String::new(),
+                        ),
+                    ]),
+                    annotations: HashMap::new(),
+                    taints: Vec::new(),
+                    unschedulable: Some(true),
+                },
+            ),
+            (
+                "node-b".to_string(),
+                NodeSchedulingState {
+                    uid: Some("worker-uid".to_string()),
+                    labels: HashMap::from([(
+                        "kubernetes.io/hostname".to_string(),
+                        "node-b".to_string(),
+                    )]),
+                    annotations: HashMap::new(),
+                    taints: Vec::new(),
+                    unschedulable: Some(false),
+                },
+            ),
+        ]);
         write_export_manifest(directory.path(), &objects, &node_states).unwrap();
 
         let manifest: serde_json::Value =
@@ -3430,6 +3465,7 @@ current-context: test
             export.node_state("node-a").unwrap().unschedulable,
             Some(true)
         );
+        assert_eq!(export.control_plane_node_names(), ["node-a"]);
     }
 
     #[test]

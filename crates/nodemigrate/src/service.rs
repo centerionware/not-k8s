@@ -183,7 +183,10 @@ pub fn stop_reverse_migration_target(installation: &Installation) -> Result<()> 
         .service_manager
         .context("target service manager is unknown; cannot roll back the retained target")?;
     ensure!(
-        matches!(installation.distribution, Distribution::K3s | Distribution::Kubernetes),
+        matches!(
+            installation.distribution,
+            Distribution::K3s | Distribution::Kubernetes
+        ),
         "reverse migration rollback requires a retained K3s or Kubernetes target"
     );
 
@@ -194,8 +197,12 @@ pub fn stop_reverse_migration_target(installation: &Installation) -> Result<()> 
         SourceCiliumIdentity::default()
     };
 
-    stop_and_disable(manager, &installation.service_name)
-        .with_context(|| format!("stopping retained target service {}", installation.service_name))?;
+    stop_and_disable(manager, &installation.service_name).with_context(|| {
+        format!(
+            "stopping retained target service {}",
+            installation.service_name
+        )
+    })?;
 
     let cilium_identity = if installation.distribution == Distribution::Kubernetes {
         stop_upstream_static_pods_inner(installation, false)

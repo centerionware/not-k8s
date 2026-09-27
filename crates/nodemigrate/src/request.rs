@@ -38,10 +38,11 @@ pub struct MigrationRequest {
     /// still created and local host paths are still snapshotted.
     #[serde(default)]
     pub skip_api_import: bool,
-    /// Reuse a protected forward-migration export when the source API is no
-    /// longer available during an ordered multi-node migration. Requires
-    /// skip_api_import because the first control plane already imported the
-    /// cluster-wide objects.
+    /// Reuse a protected migration export when the live API is unavailable
+    /// during an ordered multi-node migration. On forward migration this is
+    /// for later nodes joining an already-imported nodestore cluster; on a
+    /// staged return it supplies node metadata and local-volume paths without
+    /// exporting cluster-wide objects again.
     #[serde(default)]
     pub source_export: Option<PathBuf>,
     /// Start a retained control plane without waiting for an API that still
@@ -170,13 +171,24 @@ impl MigrationRequest {
                     (
                         Distribution::K3s | Distribution::Kubernetes,
                         Distribution::Nodestore
+                    ) | (
+                        Distribution::Nodestore,
+                        Distribution::K3s | Distribution::Kubernetes
                     )
                 ),
-            "source-export is only valid when migrating K3s or Kubernetes to nodestore"
+            "source-export is only valid when migrating to or from nodestore"
         );
         ensure!(
-            source_export.is_none() || skip_api_import,
-            "source-export is for later control-plane or worker migrations after the cluster API state was imported; use skip-api-import=true"
+            source_export.is_none()
+                || (matches!(
+                    (from, to),
+                    (Distribution::K3s | Distribution::Kubernetes, Distribution::Nodestore)
+                ) && skip_api_import)
+                || (matches!(
+                    (from, to),
+                    (Distribution::Nodestore, Distribution::K3s | Distribution::Kubernetes)
+                ) && stage_target),
+            "source-export requires skip-api-import for later forward nodes or stage-target for a later reverse control plane"
         );
 
         Ok(Self {
@@ -355,7 +367,25 @@ mod tests {
     }
 
     #[test]
-    fn rejects_source_export_for_reverse_migration() {
+    fn accepts_a_protected_export_for_a_later_staged_reverse_control_plane() {
+        let request = MigrationRequest::parse(&args(&[
+            "to=kubernetes",
+            "from=nodestore",
+            "stage-target=true",
+            "source-export=/var/lib/nodemigrate/exports/1234-5-0",
+        ]))
+        .unwrap();
+        assert!(request.stage_target);
+        assert_eq!(
+            request.source_export.as_deref(),
+            Some(std::path::Path::new(
+                "/var/lib/nodemigrate/exports/1234-5-0"
+            ))
+        );
+    }
+
+    #[test]
+    fn rejects_source_export_for_an_unstaged_reverse_migration() {
         assert!(MigrationRequest::parse(&args(&[
             "to=kubernetes",
             "from=nodestore",
