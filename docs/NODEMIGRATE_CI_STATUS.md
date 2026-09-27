@@ -47,6 +47,14 @@ components for the migration test and exercises both single-node lanes plus the
 isolated upstream 3-control-plane/2-worker round trip. Results are pending; no
 gate is claimed from dispatch alone.
 
+The five-node return coordinator fix at SHA `1bcd76e3` copies kubeadm's
+recovered `/etc/kubernetes/admin.conf` to both workers before their return
+migrations, because `kubeadm join` does not provision that admin credential on
+workers. PR shell validation passed in
+[36353488792](https://github.com/centerionware/not-k8s/actions/runs/36353488792).
+Run 36352851628 predates this fix and cannot validate the worker return path;
+runtime validation at `1bcd76e3` remains pending.
+
 At SHA `42162ef20afca2e4b4f616cc1d83fbd05071a9ae`, focused `nodelet`
 quick-check [36311005893](https://github.com/centerionware/not-k8s/actions/runs/36311005893)
 passed. Migration run [36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956)

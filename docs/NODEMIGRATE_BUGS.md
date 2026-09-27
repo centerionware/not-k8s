@@ -4,6 +4,18 @@ Last updated: 2026-09-27
 
 ## Current fixture finding
 
+- **Five-node return fixture: kubeadm workers had no API admin kubeconfig.**
+  The return coordinator supplied `/etc/kubernetes/admin.conf` to worker
+  migrations, but `kubeadm join` does not install that control-plane credential
+  on worker nodes. After the retained API recovered, the fixture now copies the
+  recovered control-plane admin config to each worker with mode `0600` before
+  asking nodemigrate to verify fresh Node registration. The shell syntax check
+  passed in PR validation [36353488792](https://github.com/centerionware/not-k8s/actions/runs/36353488792)
+  at SHA `1bcd76e3`; the active runtime run
+  [36352851628](https://github.com/centerionware/not-k8s/actions/runs/36352851628)
+  predates this fix, so its round-trip result cannot validate the correction.
+  Runtime verification at the corrected SHA is pending.
+
 - **`nodemigrate`: a new control-plane join could stay a Raft learner.** The
   five-node migration design joins each additional control plane to the
   existing nodestore cluster, but the previous code promoted membership only
