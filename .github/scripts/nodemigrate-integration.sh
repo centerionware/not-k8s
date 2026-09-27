@@ -1670,7 +1670,7 @@ verify_ingress_spec() {
 
 verify_system_addon_rollouts() {
     local name
-    for name in coredns local-path-provisioner; do
+    for name in coredns local-path-provisioner metrics-server; do
         if ! kubectl get deployment "$name" -n kube-system >/dev/null 2>&1; then
             continue
         fi

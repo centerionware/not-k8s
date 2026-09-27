@@ -8,7 +8,8 @@ def regenerated_system_addon_replica_set:
   .kind == "ReplicaSet" and .metadata.namespace == "kube-system" and
   any((.metadata.ownerReferences // [])[]?;
     .controller == true and .kind == "Deployment" and
-    (.name == "coredns" or .name == "local-path-provisioner")
+    (.name == "coredns" or .name == "local-path-provisioner" or
+     .name == "metrics-server")
   );
 
 def default_kubernetes_service_endpoint:

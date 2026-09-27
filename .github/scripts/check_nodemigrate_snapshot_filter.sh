@@ -68,6 +68,7 @@ for transient in \
     '{"apiVersion":"cilium.io/v2","kind":"CiliumIdentity","metadata":{"name":"12345"}}' \
     '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"coredns-54bf7cdff9","namespace":"kube-system","ownerReferences":[{"kind":"Deployment","name":"coredns","controller":true}]}}' \
     '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"local-path-provisioner-69879d7dd7","namespace":"kube-system","ownerReferences":[{"kind":"Deployment","name":"local-path-provisioner","controller":true}]}}' \
+    '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"metrics-server-77dbbf84b","namespace":"kube-system","ownerReferences":[{"kind":"Deployment","name":"metrics-server","controller":true}]}}' \
     '{"apiVersion":"v1","kind":"Secret","type":"kubernetes.io/service-account-token","metadata":{"name":"token","namespace":"apps"}}'; do
     [[ -z "$(jq -cS -f "$FILTER" <<< "$transient")" ]] || {
         echo "transient object was included in the migratable snapshot" >&2
