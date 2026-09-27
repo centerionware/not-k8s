@@ -13,8 +13,10 @@ Last updated: 2026-09-27
   `kube-system/cilium-config` from the live source API or protected export and
   applies the same proxy-mode selection to initial bootstrap and post-cleanup
   reconciliation. Focused coverage checks both live-API-export parsing and
-  nodebootstrap arguments; quick-check and KPR-enabled migration verification
-  are pending. Run 36343008296 predates this fix and does not verify it.
+  nodebootstrap arguments; nodemigrate quick-check
+  [36343511798](https://github.com/centerionware/not-k8s/actions/runs/36343511798)
+  passed at code SHA `da0fab88`. KPR-enabled migration verification is pending.
+  Run 36343008296 predates this fix and does not verify it.
 
 - **Migration diagnostics / return Service routing failure lacked kube-proxy
   readiness evidence.** Upstream lane of run

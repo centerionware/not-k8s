@@ -57,9 +57,11 @@ While it runs, code review found that the first control-plane bootstrap also
 needs to disable nodeproxy when the imported Cilium config enables KPR; the
 existing change covered joined workers only. The initial-bootstrap path now
 reads this setting from the live source API or protected export, passes
-`--proxy=none`, and reports the selected mode. Focused unit coverage and a
-post-fix KPR-enabled migration run are pending. The active run predates this
-fix and is evidence only for the prior implementation.
+`--proxy=none`, and reports the selected mode. Focused nodemigrate quick-check
+[36343511798](https://github.com/centerionware/not-k8s/actions/runs/36343511798)
+passed at code SHA `da0fab88`. The active KPR-enabled run predates this fix and
+is evidence only for the prior implementation; a post-fix KPR-enabled
+migration run remains pending.
 
 The staged reverse control-plane export change is at `3f807ba8`. Its first
 crate run, [36340951765](https://github.com/centerionware/not-k8s/actions/runs/36340951765),
