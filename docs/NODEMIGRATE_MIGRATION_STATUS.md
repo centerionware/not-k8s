@@ -44,6 +44,16 @@ workflow validation passed for branch head `71dd6c87` in
 and [36342224306](https://github.com/centerionware/not-k8s/actions/runs/36342224306).
 See the expanded requirement in [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md).
 
+The dedicated integration workflow now accepts `cilium_kpr=false|true`.
+For `true`, it disables the K3s kube-proxy or skips kubeadm's kube-proxy
+addon, configures Cilium KPR, and fails the source fixture if kube-proxy's
+DaemonSet remains. Workflow validation passed at `027ee68d` in
+[36342627911](https://github.com/centerionware/not-k8s/actions/runs/36342627911);
+nodemigrate crate tests passed in
+[36342627913](https://github.com/centerionware/not-k8s/actions/runs/36342627913).
+The KPR-enabled live migration has not yet run; the previous two-lane migration
+workflow is still active at its older SHA.
+
 The staged reverse control-plane export change is at `3f807ba8`. Its first
 crate run, [36340951765](https://github.com/centerionware/not-k8s/actions/runs/36340951765),
 found a fixture assertion still expecting one Node after the fixture gained a
