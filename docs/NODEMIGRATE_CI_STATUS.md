@@ -15,6 +15,21 @@ new fixes.
 
 ## Most recent evidence
 
+Migration run
+[36294950798](https://github.com/centerionware/not-k8s/actions/runs/36294950798)
+at SHA `acf583bf` passed five-node preflight and both utility/runtime builds.
+The nodeapiserver probe-auth fix is independently verified by targeted
+quick-check [36294951013](https://github.com/centerionware/not-k8s/actions/runs/36294951013):
+K3s metrics APIService then reported `Available=True` with reason `Passed`.
+Both migration lanes stopped before migration because the harness exceeded the
+OS command-line argument limit while passing large field-fingerprint JSON into
+`jq`. The harness fix now streams each normalized object over stdin and stores
+only identity/digest summaries in semantic snapshots. Shell syntax, inventory
+comparator, and whitespace checks pass locally. Dedicated migration rerun is
+pending; no source PV/PVC/data deletion or round-trip behavior was exercised by
+that failed run. The prior upstream same-identity source-object differences
+remain unresolved.
+
 Run [36293700293](https://github.com/centerionware/not-k8s/actions/runs/36293700293)
 at SHA `ad2ee6a016993c43effeab3d1aa83e9f6cf40f5e` completed with both
 migration lanes failing. Five-node Docker/kubeadm/Cilium preflight and both
@@ -24,9 +39,8 @@ passed. The new non-root, read-only-rootfs emptyDir fixture passed at source
 and nodestore checkpoints in both lanes. K3s then failed because
 `nodes.metrics.k8s.io` and `pods.metrics.k8s.io` were missing: metrics-server
 was Ready and served its generated TLS cert, but its APIService discovery
-probe got HTTP 403. The worktree now passes the upstream `system:kube-aggregator`
-probe identity and front-proxy certificate to that nodeapiserver check;
-focused nodeapiserver quick-check and rerun are pending.
+probe got HTTP 403. This was fixed and confirmed in run `36294950798` as
+described above.
 
 Upstream passed source and nodestore API readiness, then failed strict source
 object digest parity on same-identity objects including CoreDNS, CSI driver,

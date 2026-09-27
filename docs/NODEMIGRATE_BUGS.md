@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-27
 
-## Branch-runtime findings from run 36293700293
+## Branch-runtime findings from runs 36293700293 and 36294950798
 
 Run [36293700293](https://github.com/centerionware/not-k8s/actions/runs/36293700293)
 at SHA `ad2ee6a016993c43effeab3d1aa83e9f6cf40f5e` passed the five-node
@@ -13,13 +13,22 @@ Both migration lanes passed the new non-root, read-only-rootfs `emptyDir` write
 probe at source and nodestore checkpoints, confirming that nodelet now gives
 emptyDir roots kubelet's writable mode 0777.
 
-The K3s lane still lacks `nodes.metrics.k8s.io` and `pods.metrics.k8s.io` at
-nodestore. Its metrics-server Pod is now Ready and creates its serving cert;
-the APIService reports `FailedDiscoveryCheck` with HTTP 403. The branch
-availability probe was not presenting the front-proxy identity. The worktree
-now gives the nodeapiserver probe the upstream `system:kube-aggregator` user,
-`system:masters` group, and configured proxy-client certificate. Focused
-nodeapiserver quick-check and runtime verification are pending.
+The K3s lane at `36293700293` lacked `nodes.metrics.k8s.io` and
+`pods.metrics.k8s.io` at nodestore: metrics-server was Ready, but APIService
+discovery returned HTTP 403 because the availability probe did not present the
+front-proxy identity. The fix gives the probe the upstream
+`system:kube-aggregator` user, `system:masters` group, and configured
+proxy-client certificate. Focused nodeapiserver quick-check
+[36294951013](https://github.com/centerionware/not-k8s/actions/runs/36294951013)
+passed. In migration run
+[36294950798](https://github.com/centerionware/not-k8s/actions/runs/36294950798),
+K3s APIService discovery then reported `Available=True`, reason `Passed`,
+message `all checks passed`, confirming the 403 was fixed. Both fixture lanes
+then stopped before migration because the harness passed large field-fingerprint
+JSON through a `jq --argjson` command-line argument and hit `Argument list too
+long`. The harness now streams normalized objects through stdin and keeps
+field-level hashes out of the semantic-state snapshot. Focused shell and
+inventory checks pass; another migration run is pending.
 
 The upstream lane passed discovery and reached the object parity check, where
 same-identity normalized source digests still differ. Affected examples include
@@ -32,8 +41,9 @@ worktree revision compares every source identity and digest while reporting
 target-only identities independently, including when source objects have
 changed. It now records hashed per-field fingerprints and reports only changed
 field paths, never object or Secret values. Focused inventory-script checks
-and another branch-runtime migration are pending. Neither lane completed a
-return migration or parity gate.
+pass. Run `36294950798` did not reach object parity because of the harness
+argument-size failure above; neither lane completed a return migration or
+parity gate.
 
 ## Branch-runtime run 36285968999
 

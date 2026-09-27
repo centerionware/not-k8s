@@ -2362,7 +2362,7 @@ capture_semantic_checkpoint() {
       --slurpfile cilium "$stage_dir/cilium.json" \
       --slurpfile crds "$stage_dir/required-crds.json" \
       --slurpfile storageclass "$stage_dir/storageclass.json" \
-      --slurpfile migratable_objects "$stage_dir/migratable-objects.jsonl" \
+      --slurpfile migratable_objects "$stage_dir/migratable-objects-summary.jsonl" \
       '{nodes:$nodes[0], application:$app[0], persistentVolumes:$pvs[0],
         certificate:$certificate[0], issuer:$issuer[0],
         certManager:$cert_manager[0], traefik:$traefik[0], cilium:$cilium[0],
@@ -2374,8 +2374,9 @@ capture_semantic_checkpoint() {
 
 capture_migratable_api_objects() {
     local output="$1"
+    local summary_output="${output%.jsonl}-summary.jsonl"
     local resource_inventory="$2"
-    local resources resource list_json object_json normalized identity digest fields
+    local resources resource list_json object_json normalized
     kubectl api-resources --verbs=list -o name | LC_ALL=C sort -u > "$resource_inventory"
     resources="$(cat "$resource_inventory")"
     [[ -n "$resources" ]] || {
@@ -2390,9 +2391,7 @@ capture_migratable_api_objects() {
             normalized="$(jq -cS -f "$ROOT/.github/scripts/nodemigrate-snapshot-normalize.jq" \
                 <<< "$object_json")"
             [[ -n "$normalized" ]] || continue
-            identity="$(jq -cS '{apiGroup: ((.apiVersion | split("/")) | if length > 1 then .[0] else "" end), kind, namespace: (.metadata.namespace // ""), name: .metadata.name}' <<< "$normalized")"
-            digest="$(printf '%s' "$normalized" | sha256sum | awk '{print $1}')"
-            fields="$(python3 -c '
+            python3 -c '
 import hashlib
 import json
 import sys
@@ -2409,16 +2408,31 @@ def walk(value, path, result):
         canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
         result[path or "/"] = hashlib.sha256(canonical.encode()).hexdigest()
 
-result = {}
-walk(json.load(sys.stdin), "", result)
-json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))
-' <<< "$normalized")"
-            jq -cS -n --argjson identity "$identity" --arg digest "$digest" \
-                --argjson fields "$fields" \
-                '{identity: $identity, sha256: $digest, fields: $fields}' >> "$output"
+raw = sys.stdin.read().removesuffix("\n")
+obj = json.loads(raw)
+fields = {}
+walk(obj, "", fields)
+version = obj.get("apiVersion", "")
+group = version.split("/", 1)[0] if "/" in version else ""
+metadata = obj.get("metadata") or {}
+row = {
+    "identity": {
+        "apiGroup": group,
+        "kind": obj.get("kind"),
+        "namespace": metadata.get("namespace", ""),
+        "name": metadata.get("name"),
+    },
+    "sha256": hashlib.sha256(raw.encode()).hexdigest(),
+    "fields": fields,
+}
+json.dump(row, sys.stdout, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+print()
+' <<< "$normalized" >> "$output"
         done < <(jq -c '.items[]' <<< "$list_json")
     done <<< "$resources"
     LC_ALL=C sort -o "$output" "$output"
+    jq -cS '{identity, sha256}' "$output" > "$summary_output"
+    chmod 0600 "$output" "$summary_output"
     echo "Captured $(wc -l < "$resource_inventory" | tr -d ' ') listable API resources at stage=${resource_inventory%/api-resources.txt}:"
     cat "$resource_inventory"
 }
