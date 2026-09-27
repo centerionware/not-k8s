@@ -140,7 +140,10 @@ async fn handle(
         // itself answers `NotApplicable` for and which the generic REST
         // dispatch further down handles instead — that path, by far the
         // hottest one in practice, never pays this extra `LIST`.
-        let (crds, aggregated) = if parts.first().map(String::as_str) == Some("apis")
+        let needs_aggregated_resources = parts.len() == 1
+            && parts[0] == "apis"
+            && wants_aggregated_discovery(accept_header);
+        let (crds, aggregated, aggregated_resource_lists) = if parts.first().map(String::as_str) == Some("apis")
             && parts.len() <= 3
         {
             match storage.clone() {
@@ -168,14 +171,32 @@ async fn handle(
                             Vec::new()
                         }
                     };
-                    (crds, aggregated)
+                    let aggregated_resource_lists = if needs_aggregated_resources {
+                        aggregator::route::fetch_discovery_resource_lists(
+                            &mut client,
+                            &aggregated,
+                            aggregation_proxy_identity.as_deref(),
+                        )
+                        .await
+                    } else {
+                        Vec::new()
+                    };
+                    let mut aggregated = aggregated;
+                    if needs_aggregated_resources {
+                        aggregated.retain(|(group, version)| {
+                            aggregated_resource_lists.iter().any(|(resource_group, resource_version, _)| {
+                                resource_group == group && resource_version == version
+                            })
+                        });
+                    }
+                    (crds, aggregated, aggregated_resource_lists)
                 }
-                None => (Vec::new(), Vec::new()),
+                None => (Vec::new(), Vec::new(), Vec::new()),
             }
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new())
         };
-        match route_discovery(&parts, accept_header, &crds, &aggregated) {
+        match route_discovery(&parts, accept_header, &crds, &aggregated, &aggregated_resource_lists) {
             DiscoveryRoute::Found(doc) => {
                 let mut response = json_response_with_content_type(
                     StatusCode::OK,

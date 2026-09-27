@@ -795,4 +795,15 @@ See the [CI run record](NODEMIGRATE_CI_STATUS.md), [migration status](NODEMIGRAT
 
 The failure in [run 36300720876](https://github.com/centerionware/not-k8s/actions/runs/36300720876) remained after the fixture waited 60 seconds: `nodes.metrics.k8s.io` and `pods.metrics.k8s.io` were absent although the metrics APIService was reported `Available=True` and metrics-server added `metrics.k8s.io/v1beta1`. This was consistent with, but did not by itself prove, a stale APIService watch-cache snapshot in nodeapiserver.
 
-The branch now makes APIService route resolution and aggregated group discovery list APIService objects directly from nodestore. These objects are few, while their status controls whether groups appear in discovery; using the reflector cache could preserve stale registration or availability state. Existing discovery still honors a current `Available=False` condition and fresh-preflights an APIService without a condition. A `nodeapiserver` quick-check and a dedicated migration rerun are still required to verify this fix. The metrics-server-to-nodelet certificate trust failure remains a separate open issue.
+The branch changed APIService route resolution and group discovery to read APIService objects directly from nodestore. Focused `nodeapiserver` quick-check passed at [run 36301964871](https://github.com/centerionware/not-k8s/actions/runs/36301964871), but the subsequent branch-runtime migration run [36301989587](https://github.com/centerionware/not-k8s/actions/runs/36301989587) still omitted both metrics resources after the APIService became `Available=True`; therefore stale reflector state was not the cause of this discovery failure. Source review found that the APIGroupDiscovery v2 builder deliberately emitted an empty `resources` list for APIService-backed groups. Since Kubernetes 1.37 clients can use that aggregated format, this is now the primary discovery defect being fixed: fetch each available backend's APIResourceList and include its resource/subresource entries in v2. That follow-up is not yet checked. The metrics-server-to-nodelet certificate trust failure remains separate and unresolved.
+
+
+- **`nodeapiserver`: v2 aggregated discovery hides APIService resources.** The
+  1.37 migration fixture kept omitting `nodes.metrics.k8s.io` and
+  `pods.metrics.k8s.io` after APIService status became `Available=True` and
+  metrics-server added `metrics.k8s.io/v1beta1`. The existing v2 builder returned
+  the group-version with an empty `resources` array by design. It must fetch each
+  available APIService's live `APIResourceList`, convert resource and subresource
+  entries to `APIResourceDiscovery`, and exclude only backends whose discovery
+  fetch actually fails. A pure regression now checks conversion; focused CI and a
+  runtime retry are pending. Logs: `/tmp/nodemigrate-36301989587/`.

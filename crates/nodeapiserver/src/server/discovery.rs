@@ -452,8 +452,23 @@ fn group_discovery_value(group: &str) -> Value {
 /// [`merged_group_version_map`]'s own doc comment for where `crds`
 /// comes from.
 pub fn api_group_discovery_list_with_crds(crds: &[DiscoverableResource], aggregated: &[(String, String)]) -> Value {
+    api_group_discovery_list_with_aggregated_resources(crds, aggregated, &[])
+}
+
+/// Builds aggregated discovery v2 with the live resource documents returned
+/// by APIService backends. Without these documents, aggregated API versions
+/// must not be advertised with empty resource lists: clients that prefer this
+/// format do not fall back to legacy per-version discovery.
+pub fn api_group_discovery_list_with_aggregated_resources(
+    crds: &[DiscoverableResource],
+    aggregated: &[(String, String)],
+    resource_lists: &[(String, String, Value)],
+) -> Value {
     let groups = merged_group_version_map(crds, aggregated);
-    let items: Vec<Value> = groups.keys().map(|group| group_discovery_value_with_crds(group, crds, aggregated)).collect();
+    let items: Vec<Value> = groups
+        .keys()
+        .map(|group| group_discovery_value_with_resources(group, crds, aggregated, resource_lists))
+        .collect();
     json!({
         "kind": "APIGroupDiscoveryList",
         "apiVersion": "apidiscovery.k8s.io/v2",
@@ -482,12 +497,20 @@ pub fn api_v1_group_discovery_list_with_crds() -> Value {
 /// /apis/{group}/{version}` for one of these groups is caught earlier,
 /// in `server::listener::handle`, and answered with a real live proxied
 /// fetch to the backend's own discovery endpoint instead of ever
-/// reaching this function — this empty-`resources` shape is only what
-/// `apidiscovery.k8s.io/v2`'s own aggregated multi-group listing
-/// (`/apis` with `Accept: application/json;as=APIGroupDiscoveryList...`)
-/// shows for an aggregated group, since that one request can't proxy to
-/// N different backends at once the way a single-group request can.
+/// reaching this function. The listener fetches each available aggregated
+/// group's `/apis/{group}/{version}` resource list before building v2, so
+/// clients using aggregated discovery see the same resources as clients
+/// following the legacy per-group discovery flow.
 fn group_discovery_value_with_crds(group: &str, crds: &[DiscoverableResource], aggregated: &[(String, String)]) -> Value {
+    group_discovery_value_with_resources(group, crds, aggregated, &[])
+}
+
+fn group_discovery_value_with_resources(
+    group: &str,
+    crds: &[DiscoverableResource],
+    aggregated: &[(String, String)],
+    resource_lists: &[(String, String, Value)],
+) -> Value {
     let versions = merged_group_version_map(crds, aggregated).remove(group).unwrap_or_default();
     let version_values: Vec<Value> = versions
         .iter()
@@ -497,6 +520,10 @@ fn group_discovery_value_with_crds(group: &str, crds: &[DiscoverableResource], a
             sorted.sort_by_key(|r| r.resource);
             let mut resource_values: Vec<Value> = sorted.iter().map(|r| api_resource_discovery_value(r)).collect();
             resource_values.extend(crds.iter().filter(|r| r.group == group && &r.version == version).map(crd_resource_discovery_value));
+            if let Some((_, _, remote_list)) = resource_lists.iter().find(|(remote_group, remote_version, _)| remote_group == group && remote_version == version) {
+                resource_values.extend(aggregated_resource_discovery_values(group, version, remote_list));
+            }
+            resource_values.sort_by(|left, right| left["resource"].as_str().cmp(&right["resource"].as_str()));
             json!({
                 "version": version,
                 "resources": resource_values,
@@ -509,6 +536,57 @@ fn group_discovery_value_with_crds(group: &str, crds: &[DiscoverableResource], a
         "metadata": {"name": group},
         "versions": version_values,
     })
+}
+
+/// Converts an aggregated backend's APIResourceList into APIGroupDiscovery
+/// resources, including the parent/subresource relationship required by v2.
+fn aggregated_resource_discovery_values(group: &str, version: &str, document: &Value) -> Vec<Value> {
+    let mut resources = BTreeMap::<String, Value>::new();
+    for resource in document.get("resources").and_then(Value::as_array).into_iter().flatten() {
+        let Some(name) = resource.get("name").and_then(Value::as_str) else { continue };
+        let mut parts = name.splitn(2, '/');
+        let plural = parts.next().unwrap_or_default();
+        if plural.is_empty() { continue; }
+        let response_kind = resource.get("kind").and_then(Value::as_str).filter(|kind| !kind.is_empty()).map(|kind| {
+            json!({
+                "group": resource.get("group").and_then(Value::as_str).unwrap_or(group),
+                "version": resource.get("version").and_then(Value::as_str).unwrap_or(version),
+                "kind": kind,
+            })
+        });
+        let verbs = resource.get("verbs").cloned().unwrap_or_else(|| json!([]));
+        if let Some(subresource) = parts.next() {
+            if subresource.is_empty() { continue; }
+            let parent = resources.entry(plural.to_string()).or_insert_with(|| json!({
+                "resource": plural,
+                "scope": if resource.get("namespaced").and_then(Value::as_bool).unwrap_or(false) { "Namespaced" } else { "Cluster" },
+                "verbs": [],
+                "subresources": [],
+            }));
+            let mut sub = json!({"subresource": subresource, "verbs": verbs});
+            if let Some(kind) = response_kind { sub["responseKind"] = kind; }
+            parent["subresources"].as_array_mut().expect("subresources initialized as array").push(sub);
+            continue;
+        }
+        let mut entry = json!({
+            "resource": plural,
+            "scope": if resource.get("namespaced").and_then(Value::as_bool).unwrap_or(false) { "Namespaced" } else { "Cluster" },
+            "singularResource": resource.get("singularName").and_then(Value::as_str).filter(|name| !name.is_empty()).unwrap_or(plural),
+            "verbs": verbs,
+        });
+        if let Some(kind) = response_kind { entry["responseKind"] = kind; }
+        if let Some(short_names) = resource.get("shortNames").filter(|value| value.as_array().is_some_and(|array| !array.is_empty())) {
+            entry["shortNames"] = short_names.clone();
+        }
+        if let Some(categories) = resource.get("categories").filter(|value| value.as_array().is_some_and(|array| !array.is_empty())) {
+            entry["categories"] = categories.clone();
+        }
+        if let Some(subresources) = resources.get(plural).and_then(|existing| existing.get("subresources")) {
+            entry["subresources"] = subresources.clone();
+        }
+        resources.insert(plural.to_string(), entry);
+    }
+    resources.into_values().collect()
 }
 
 /// Same shape [`api_resource_discovery_value`] builds, for one
@@ -816,18 +894,32 @@ mod tests {
         assert_eq!(widgets["scope"], "Namespaced");
     }
 
-    /// Group L Phase 3's discovery merge: an aggregated group/version now
-    /// shows up in the v2 shape too, matching the legacy shape's own merge.
-    /// The initial group-level merge has an empty `resources` list because
-    /// the backend's live resource enumeration is fetched separately for
-    /// the exact `/apis/{group}/{version}` request.
+    /// Aggregated APIService resource lists are included in v2 discovery,
+    /// including their resource scope, kind, verbs, and subresource entries.
     #[test]
-    fn aggregated_discovery_merges_an_aggregated_apiservice_group_too() {
+    fn aggregated_discovery_includes_live_apiservice_resources() {
         let aggregated = [("metrics.k8s.io".to_string(), "v1beta1".to_string())];
-        let list = api_group_discovery_list_with_crds(&[], &aggregated);
+        let resource_lists = [(
+            "metrics.k8s.io".to_string(),
+            "v1beta1".to_string(),
+            json!({"kind":"APIResourceList","groupVersion":"metrics.k8s.io/v1beta1","resources":[
+                {"name":"nodes","singularName":"node","namespaced":false,"kind":"NodeMetrics","verbs":["get","list"]},
+                {"name":"pods","singularName":"pod","namespaced":true,"kind":"PodMetrics","verbs":["get","list"]},
+                {"name":"pods/metrics","singularName":"","namespaced":true,"kind":"PodMetrics","verbs":["get"]}
+            ]})
+        )];
+        let list = api_group_discovery_list_with_aggregated_resources(&[], &aggregated, &resource_lists);
         let items = list["items"].as_array().unwrap();
         let group = items.iter().find(|g| g["metadata"]["name"] == "metrics.k8s.io").expect("metrics.k8s.io should be discoverable");
         let v1beta1 = group["versions"].as_array().unwrap().iter().find(|v| v["version"] == "v1beta1").expect("v1beta1 should be present");
-        assert_eq!(v1beta1["resources"], json!([]), "an aggregated group's own resources aren't known statically yet");
+        let resources = v1beta1["resources"].as_array().unwrap();
+        let nodes = resources.iter().find(|r| r["resource"] == "nodes").expect("nodes metrics should be discoverable");
+        assert_eq!(nodes["responseKind"]["kind"], "NodeMetrics");
+        assert_eq!(nodes["scope"], "Cluster");
+        assert_eq!(nodes["verbs"], json!(["get", "list"]));
+        let pods = resources.iter().find(|r| r["resource"] == "pods").expect("pod metrics should be discoverable");
+        assert_eq!(pods["scope"], "Namespaced");
+        assert_eq!(pods["subresources"][0]["subresource"], "metrics");
+        assert_eq!(pods["subresources"][0]["verbs"], json!(["get"]));
     }
 }
