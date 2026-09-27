@@ -34,10 +34,10 @@ branch-runtime return migration remains unverified. The paired upstream lane
 failed earlier and is not evidence for the current branch.
 
 The [bug and fix tracker](NODEMIGRATE_BUGS.md) lists confirmed defects by
-owning component, branch fix, and focused test evidence. The target is the
-coordinated `v0.8.1` runtime and standalone utility; `v0.8.0` remains the
-release-backed regression baseline, not a claim that its runtime contains the
-new fixes.
+owning component, branch fix, and focused test evidence. The intended
+`v0.8.1` regular runtime and standalone utility are based on this branch. Branch
+runtime tests are the primary migration target; `v0.8.0` can remain an optional
+published-runtime regression baseline, but is not required or exclusive.
 
 At SHA `42162ef20afca2e4b4f616cc1d83fbd05071a9ae`, focused `nodelet`
 quick-check [36311005893](https://github.com/centerionware/not-k8s/actions/runs/36311005893)

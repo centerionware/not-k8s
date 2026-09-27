@@ -15,7 +15,7 @@ on:
         options:
           - release
           - branch
-        default: release
+        default: branch
       cilium_kpr:
         description: Test Cilium's eBPF replacement for kube-proxy
         required: false

@@ -279,6 +279,16 @@ excluded by the task-specific rules below.
 These task-specific rules override conflicting general build/e2e/test
 instructions in `AGENTS.md` for nodemigrate work:
 
+- The coordinated `v0.8.1` regular runtime and standalone nodemigrate release
+  will be based on this nodemigrate branch and its accepted fixes. Test the
+  branch-built `notk8s` components that form the migration target; the released
+  `v0.8.0` runtime is an optional regression baseline, not a required or
+  exclusive test target.
+- Compile the specific changed components required by the migration test in
+  the dedicated CI workflow. This includes `nodemigrate` and the branch runtime
+  components exercised by the scenario. These test builds are authorized and
+  do not constitute the general build gate.
+
 - Do not run the repository's general `build.yml` gate for this objective.
 - Do not run the repository's general e2e gate for this objective.
 - Do not run local Cargo builds, Cargo tests, or local e2e on the development
@@ -290,15 +300,17 @@ instructions in `AGENTS.md` for nodemigrate work:
   Run the focused checks for every changed crate. These runs are allowed and
   are not a general build gate.
 - The dedicated `nodemigrate-integration.yml` workflow is the migration
-  runtime test. Its build step only prepares binaries for that test. It is
-  manually dispatched and must not be run unless the user authorizes the
-  migration runtime/e2e run. Record each lane and checkpoint independently.
+  runtime test. Its build steps compile binaries for that test, including
+  branch-built fixes, and are explicitly allowed. The user has authorized the
+  migration runtime test; dispatch it as needed and record each lane and
+  checkpoint independently.
 - Static checks such as `bash -n`, formatting checks, and documentation/link
   review are allowed. Do not represent them as runtime migration evidence.
 - A release workflow run is required only when carrying out the separately
-  authorized publication. Release validation must use the latest regular
-  release's version and must not advance shared `VERSION` for a standalone
-  nodemigrate publication.
+  authorized publication. The initial `v0.8.1` nodemigrate publication must
+  use the matching regular `v0.8.1` version built from this branch's accepted
+  changes; it must not independently bump shared `VERSION`. Testing is not
+  restricted to the latest published release.
 
 These rules alter only this nodemigrate objective; they do not amend the
 repository-wide merge policy for other work.
