@@ -4,6 +4,19 @@ Last updated: 2026-09-27
 
 ## Current fixture finding
 
+- **`nodemigrate`: later cluster nodes reused the first node's protected
+  export.** Forward and staged reverse control-plane paths loaded
+  `source-export=` and wrote node-specific host-path/CNI recovery material
+  under the shared export directory. Concurrent or sequential replacements
+  therefore shared recovery state, contrary to the per-node recovery contract.
+  The utility now makes a deep, mode-restricted local copy for each source
+  control-plane or worker before using it; control-plane snapshots are added
+  only to that node's copy, while workers keep their separate local-volume
+  snapshot. The original remains available to later nodes. A focused unit
+  regression checks that changing one node's copy cannot alter another copy or
+  the source export.
+  Targeted CI verification is pending.
+
 - **`nodemigrate`: kube-proxy and nodeproxy could both own Service
   routing when Cilium KPR is disabled.** The upstream lane in run
   [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)

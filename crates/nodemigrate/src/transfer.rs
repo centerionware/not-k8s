@@ -1587,6 +1587,54 @@ impl Export {
         Ok(())
     }
 
+    /// Make a node-private protected copy before attaching host and CNI recovery
+    /// data. Later cluster nodes must not mutate the first node's export.
+    pub(crate) fn private_copy_for_node(&self, node_name: &str) -> Result<Self> {
+        ensure!(!node_name.is_empty(), "source node name is empty");
+        let directory = export_directory()?.join(format!("node-{}", safe_backup_name(node_name)));
+        self.copy_to_directory(directory)
+    }
+
+    fn copy_to_directory(&self, directory: PathBuf) -> Result<Self> {
+        fs::create_dir(&directory).with_context(|| {
+            format!(
+                "creating node-private migration export {}",
+                directory.display()
+            )
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        }
+
+        let mut objects = Vec::with_capacity(self.objects.len());
+        for (index, object) in self.objects.iter().enumerate() {
+            let path = directory.join(format!("{index:08}.json"));
+            fs::copy(&object.path, &path).with_context(|| {
+                format!(
+                    "copying protected migration object {}",
+                    object.path.display()
+                )
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            }
+            fs::File::open(&path)
+                .with_context(|| format!("opening copied migration object {}", path.display()))?
+                .sync_all()
+                .with_context(|| format!("syncing copied migration object {}", path.display()))?;
+            objects.push(ExportedObject {
+                path,
+                source_uid: object.source_uid.clone(),
+            });
+        }
+        write_export_manifest(&directory, &objects, &self.node_states)?;
+        Self::load(directory)
+    }
+
     pub fn load(directory: impl Into<PathBuf>) -> Result<Self> {
         let directory = directory.into();
         let directory_metadata = fs::symlink_metadata(&directory).with_context(|| {
@@ -3609,6 +3657,61 @@ current-context: test
             Some("worker-uid")
         );
         assert_eq!(export.control_plane_node_names(), ["node-a"]);
+    }
+
+    #[test]
+    fn node_private_export_copy_does_not_mutate_the_shared_source_export() {
+        let root = tempfile::tempdir().unwrap();
+        let source_dir = root.path().join("source");
+        let first_node_dir = root.path().join("first-node");
+        let second_node_dir = root.path().join("second-node");
+        fs::create_dir(&source_dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&source_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let source_object = source_dir.join("00000000.json");
+        let source_data = br#"{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"migration-state","namespace":"default"},"data":{"marker":"original"}}"#;
+        fs::write(&source_object, source_data).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&source_object, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let source_objects = [ExportedObject {
+            path: source_object.clone(),
+            source_uid: Some("source-object-uid".to_string()),
+        }];
+        write_export_manifest(&source_dir, &source_objects, &BTreeMap::new()).unwrap();
+        let source = Export::load(&source_dir).unwrap();
+
+        let first = source.copy_to_directory(first_node_dir).unwrap();
+        let second = source.copy_to_directory(second_node_dir).unwrap();
+        assert_ne!(first.dir, second.dir);
+        assert_ne!(first.objects[0].path, second.objects[0].path);
+        assert_eq!(
+            first.objects[0].source_uid.as_deref(),
+            Some("source-object-uid")
+        );
+        assert_eq!(
+            second.objects[0].source_uid.as_deref(),
+            Some("source-object-uid")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(first.dir.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+            assert_eq!(
+                first.objects[0].path.metadata().unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        fs::write(&first.objects[0].path, b"node-specific change").unwrap();
+        assert_eq!(fs::read(&source_object).unwrap(), source_data);
+        assert_eq!(fs::read(&second.objects[0].path).unwrap(), source_data);
+        assert_ne!(fs::read(&first.objects[0].path).unwrap(), source_data);
     }
 
     #[test]

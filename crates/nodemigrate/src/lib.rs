@@ -117,7 +117,7 @@ fn migrate_to_nodestore(
     let mut export = request
         .source_export
         .as_ref()
-        .map(|path| transfer::Export::load(path))
+        .map(transfer::Export::load)
         .transpose()?;
     let source_api = if export.is_some() {
         None
@@ -219,6 +219,16 @@ fn migrate_to_nodestore(
         };
         println!("Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}; proxy={proxy}{replacement}; replace-existing-node={replace_existing_node}; cluster-api-import={}; {}source service will be disabled; uninstall-after-migrate={}", request.from, if joins_existing { "existing cluster" } else { "new cluster" }, if request.skip_api_import { "skipped (state imported by an earlier control plane)" } else { "enabled" }, if joins_existing { "install node agent on joined node; " } else { "" }, request.uninstall_after_migrate);
         return Ok(());
+    }
+
+    if let Some(source_export) = export.take() {
+        export = Some(
+            source_export
+                .private_copy_for_node(&migrating_node_name)
+                .with_context(|| {
+                    format!("creating private protected export for node {migrating_node_name}")
+                })?,
+        );
     }
 
     let proxy_owner = if cilium_kube_proxy_replacement {
@@ -441,7 +451,7 @@ fn migrate_worker_to_nodestore(
     let name = node_name(source);
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
     target_api.ready()?;
-    let source_export = request
+    let mut source_export = request
         .source_export
         .as_ref()
         .map(transfer::Export::load)
@@ -488,6 +498,18 @@ fn migrate_worker_to_nodestore(
         };
         println!("Migration plan: {:?} worker -> existing nodestore cluster; node={name}; source CNI={cni}; target Service proxy={service_proxy}; replace-existing-node={existing_node}; source service '{}' will be disabled; cluster API objects are managed by the control-plane migration", request.from, source.service_name);
         return Ok(());
+    }
+
+    if let Some(export) = source_export.take() {
+        source_export = Some(export.private_copy_for_node(&name).with_context(|| {
+            format!("creating private protected export for worker {name}")
+        })?);
+    }
+    if let Some(export) = source_export.as_ref() {
+        eprintln!(
+            "nodemigrate: node-private protected source export copy at {}",
+            export.dir.display()
+        );
     }
 
     let mut host_path_snapshot = target_api.snapshot_host_paths(local_node_labels)?;
@@ -681,6 +703,7 @@ fn migrate_to_existing(
         is_root(),
         "run nodemigrate as root to control both service stacks"
     );
+    let returning_node_name = node_name(target);
     let target_api = transfer::KubeApi::destination(request.to)?;
     let mut export = request
         .source_export
@@ -710,7 +733,6 @@ fn migrate_to_existing(
             "skip-api-export requires the retained destination cluster to be Ready through NODEMIGRATE_DESTINATION_KUBECONFIG",
         )?;
     }
-    let returning_node_name = node_name(target);
     let source_node_state = source_api
         .as_ref()
         .map(|api| api.node_scheduling_state(&returning_node_name))
@@ -743,6 +765,15 @@ fn migrate_to_existing(
             .unwrap_or("external or undetected");
         println!("Migration plan: nodestore -> {:?}; retained target service '{}' will be enabled and started; target CNI={cni}; replace-existing-node={replace_existing_node}; source-api-export={}; staged-source-export={}; stage-target={}; uninstall-after-migrate={}", request.to, target.service_name, if request.skip_api_export { "skipped (destination already has cluster state)" } else { "enabled" }, request.source_export.as_ref().map_or("none", |_| "reused for offline node/PV recovery"), request.stage_target, request.uninstall_after_migrate);
         return Ok(());
+    }
+    if let Some(source_export) = export.take() {
+        export = Some(
+            source_export
+                .private_copy_for_node(&returning_node_name)
+                .with_context(|| {
+                    format!("creating private staged export for node {returning_node_name}")
+                })?,
+        );
     }
     if export.is_none() {
         export = source_api

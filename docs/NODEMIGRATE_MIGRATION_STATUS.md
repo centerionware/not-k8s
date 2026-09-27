@@ -60,6 +60,16 @@ workflow validation passed for branch head `71dd6c87` in
 and [36342224306](https://github.com/centerionware/not-k8s/actions/runs/36342224306).
 See the expanded requirement in [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md).
 
+For staged cluster replacement, a later node must not write host-path or CNI
+recovery data into the first node's protected export. Forward control-plane,
+forward worker, and staged reverse control-plane paths now deep-copy a supplied
+`source-export=` into a new mode-restricted node-local export before use. The
+first export remains intact for remaining nodes; each control-plane's PV/CNI
+backup is attached only to its private copy, while each worker keeps its
+separate local-volume snapshot. A focused unit regression covers export-copy
+isolation. Targeted nodemigrate CI and multi-node runtime verification are
+pending.
+
 The dedicated integration workflow now accepts `cilium_kpr=false|true`.
 For `true`, it disables the K3s kube-proxy or skips kubeadm's kube-proxy
 addon, configures Cilium KPR, and fails the source fixture if kube-proxy's
