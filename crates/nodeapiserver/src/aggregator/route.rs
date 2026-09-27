@@ -211,13 +211,31 @@ pub async fn fetch_discovery_resource_lists(
                 continue;
             }
         };
-        let body = match http_body_util::Limited::new(response.into_body(), 4 * 1024 * 1024).collect().await {
-            Ok(body) => body.to_bytes(),
-            Err(error) => {
-                tracing::warn!(%group, %version, error = ?error, "aggregated discovery: backend resource list exceeded its size limit or failed while reading");
-                continue;
+        const MAX_DISCOVERY_BODY_BYTES: usize = 4 * 1024 * 1024;
+        let mut response_body = response.into_body();
+        let mut body = Vec::new();
+        let mut body_read_failed = false;
+        while let Some(frame) = response_body.frame().await {
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(error) => {
+                    tracing::warn!(%group, %version, error = ?error, "aggregated discovery: reading backend resource list failed");
+                    body_read_failed = true;
+                    break;
+                }
+            };
+            if let Ok(data) = frame.into_data() {
+                if body.len().saturating_add(data.len()) > MAX_DISCOVERY_BODY_BYTES {
+                    tracing::warn!(%group, %version, limit = MAX_DISCOVERY_BODY_BYTES, "aggregated discovery: backend resource list exceeded its size limit");
+                    body_read_failed = true;
+                    break;
+                }
+                body.extend_from_slice(&data);
             }
-        };
+        }
+        if body_read_failed {
+            continue;
+        }
         let resource_list: Value = match serde_json::from_slice(&body) {
             Ok(value) => value,
             Err(error) => {
