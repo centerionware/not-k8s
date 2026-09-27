@@ -1,6 +1,6 @@
 # nodemigrate release status
 
-Last updated: 2026-09-24
+Last updated: 2026-09-27
 
 This is the living release record for
 [the full nodemigrate goal](NODEMIGRATION_GOAL.md).
@@ -26,9 +26,9 @@ This is the living release record for
 
 | Item | Status |
 | --- | --- |
-| Standalone crate and artifact packaging | Present in release workflow; needs current-SHA verification |
-| Excluded from combined `notk8s` binary | Intended and documented; verify package contents with the release artifact when available |
-| Version follows latest regular release | Workflow reads the current regular release tag at dispatch; latest observed test baseline is `v0.8.0` on 2026-09-24. Intended coordinated target is `v0.8.1`, not yet published. |
+| Standalone crate and artifact packaging | Present in release workflow; static policy check passed at SHA `5a75cc9e` |
+| Excluded from combined `notk8s` binary | Static policy check confirmed `nodemigrate` is absent from `crates/notk8s/Cargo.toml`; package contents still need verification from a release artifact |
+| Version follows latest regular release | Workflow reads the current regular release tag at dispatch; GitHub API confirmed latest regular release is `v0.8.0` on 2026-09-27. Intended coordinated target is `v0.8.1`, not yet published. |
 | Shared `VERSION` unchanged by nodemigrate-only release | Required invariant; no nodemigrate-only publication recorded |
 | Regular-release pointer unchanged by nodemigrate-only publication | `gh release create --latest=false` prevents the standalone release from replacing GitHub's latest-release pointer; workflow policy check enforces the flag |
 | Published nodemigrate release | Not published/recorded for this migration task |
@@ -42,7 +42,7 @@ latest-release pointer guard, at SHA
 No publication was performed.
 
 The repository's latest regular release test baseline was [`v0.8.0`](https://github.com/centerionware/not-k8s/releases/tag/v0.8.0)
-on 2026-09-24. Component and nodemigrate focused tests passed at SHA
+when checked through GitHub's releases/latest API on 2026-09-27. Component and nodemigrate focused tests passed at SHA
 `f9e4b31139a30fb7a453161e4dc2295983fcef8f`; release-backed lanes confirm the
 old runtime defects and exercise rollback. The initial utility is intended to
 ship with the corresponding regular `v0.8.1` release after the fixes and
@@ -50,6 +50,12 @@ migration gates are complete. A
 standalone-only publication must not bump shared `VERSION`; the workflow reads
 the latest regular tag at publication time rather than relying on this status
 snapshot.
+
+The local policy check `python3 .github/scripts/check_nodemigrate_release.py`
+passed at SHA `5a75cc9e0679efff8fb7fb84fc7012f8e2c9077e`, confirming release
+artifact separation and that publication reads the latest regular release
+without advancing shared `VERSION`. This is static workflow evidence, not a
+release artifact or publication test.
 
 ## Publication record
 
