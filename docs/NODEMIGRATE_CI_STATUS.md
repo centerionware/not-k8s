@@ -100,8 +100,11 @@ became ready and cert-manager webhook requests subsequently failed. The lane
 rolled the source back and retained the protected export; it did not reach a
 nodestore workload checkpoint or reverse migration. This is a target CNI
 startup failure; the nodelet CRI security context and isolation/mount setup
-remain under diagnosis, so no owning-component defect is asserted yet. The
-completed upstream artifact is saved at
+remain under diagnosis, so no owning-component defect is asserted yet. This
+run predates SHA `ddc2cfdf`, which adds redacted source/target Cilium CRI
+security-context and relevant OCI mount diagnostics; do not attribute the
+failure to nodelet until those fields are compared. The completed upstream
+artifact is saved at
 `/tmp/nodemigrate-36321804254-upstream/nodemigrate-kubernetes.log`.
 The K3s lane in the same run is still active; update this entry with its
 terminal result before treating the run as complete.
