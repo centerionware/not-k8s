@@ -59,13 +59,17 @@ live scenarios before treating them as settled.
   target object loses it. A narrow optional-field overlay now retains it in the
   1.34-based OpenAPI and protobuf schemas. `nodescheduler` watches CSIDriver
   dynamically so a newer typed field is not discarded, and enforces driver
-  registration on a node when this flag is true. Focused API-pruning,
-  protobuf-round-trip, dynamic-projection, and scheduler tests have been added;
-  they still require the authorized remote quick-check. This does not change
-  the advertised base API version to 1.37 or claim full 1.37 compatibility.
-  Migration run [36308845021](https://github.com/centerionware/not-k8s/actions/runs/36308845021)
-  at SHA `7ba45556` predates this fix. Rerun both migration lanes at the fix
-  SHA to verify preservation on both migration legs.
+  registration on a node when this flag is true. The first focused
+  `nodeapiserver,nodescheduler` quick-check at SHA `de2b9ed9` ran 1,423 tests
+  successfully and exposed another defect: pruning ignored `allOf` property
+  declarations in the built-in CSIDriver OpenAPI schema, so the API-level
+  regression failed. Schema pruning now merges property declarations across
+  `allOf`, with both a focused merger regression and the actual CSIDriver
+  schema test. The rerun is pending. This does not change the advertised base
+  API version to 1.37 or claim full 1.37 compatibility. Migration run
+  [36308845021](https://github.com/centerionware/not-k8s/actions/runs/36308845021)
+  at SHA `7ba45556` predates the field and pruning fixes. The migration rerun
+  at SHA `de2b9ed9` is still active.
 
 Run [36306098280](https://github.com/centerionware/not-k8s/actions/runs/36306098280)
 at SHA `39ceeb189ac619988ddc96815611b6e4d1848198` passed the five-node
