@@ -1196,17 +1196,6 @@ async fn refresh_service_account_token_secrets(
                 )
             })?;
 
-        let secrets: Api<DynamicObject> =
-            Api::namespaced_with(client.clone(), namespace, &secret_resource);
-        let secret = secrets
-            .get_opt(name)
-            .await
-            .with_context(|| {
-                format!("reading migrated ServiceAccount token Secret {namespace}/{name}")
-            })?
-            .with_context(|| {
-                format!("migrated ServiceAccount token Secret {namespace}/{name} is missing")
-            })?;
         let service_accounts: Api<DynamicObject> =
             Api::namespaced_with(client.clone(), namespace, &account_resource);
         let account = service_accounts
@@ -1249,24 +1238,71 @@ async fn refresh_service_account_token_secrets(
                 )
             })?;
 
-        let patch = service_account_token_secret_patch(
-            &secret,
-            namespace,
-            &account_uid,
-            token,
-            destination_ca,
-        )?;
-        let name = secret
-            .metadata
-            .name
-            .as_deref()
-            .context("migrated Secret has no metadata.name")?;
-        secrets
-            .patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+        let secrets: Api<DynamicObject> =
+            Api::namespaced_with(client.clone(), namespace, &secret_resource);
+        if let Some(secret) = secrets
+            .get_opt(name)
             .await
             .with_context(|| {
-                format!("writing refreshed token data to Secret {namespace}/{name}")
-            })?;
+                format!("reading migrated ServiceAccount token Secret {namespace}/{name}")
+            })?
+        {
+            patch_service_account_token_secret(
+                &secrets,
+                &secret,
+                namespace,
+                &account_uid,
+                token,
+                destination_ca,
+            )
+            .await?;
+        } else {
+            ensure!(
+                secret_capabilities.supports_operation(verbs::CREATE),
+                "destination cannot recreate migrated ServiceAccount token Secrets"
+            );
+            let reissued = service_account_token_secret_value(
+                &value,
+                namespace,
+                &account_uid,
+                token,
+                destination_ca,
+            )?;
+            let object: DynamicObject =
+                serde_json::from_value(reissued).context("decoding reissued ServiceAccount token Secret")?;
+            match secrets.create(&PostParams::default(), &object).await {
+                Ok(_) => {}
+                Err(kube::Error::Api(response)) if response.code == 409 => {
+                    // The token controller or another writer may have recreated
+                    // the name after the preceding GET. Refresh that current
+                    // object using its resourceVersion instead of overwriting it
+                    // with the stale export.
+                    let current = secrets
+                        .get(name)
+                        .await
+                        .with_context(|| {
+                            format!("reading concurrently recreated token Secret {namespace}/{name}")
+                        })?;
+                    patch_service_account_token_secret(
+                        &secrets,
+                        &current,
+                        namespace,
+                        &account_uid,
+                        token,
+                        destination_ca,
+                    )
+                    .await?;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("recreating migrated ServiceAccount token Secret {namespace}/{name}")
+                    });
+                }
+            }
+            eprintln!(
+                "nodemigrate: recreated missing ServiceAccount token Secret {namespace}/{name} with destination credentials"
+            );
+        }
         refreshed += 1;
     }
     if refreshed > 0 {
@@ -1302,6 +1338,82 @@ fn service_account_token_secret_patch(
             "ca.crt": base64::engine::general_purpose::STANDARD.encode(destination_ca)
         }
     }))
+}
+
+fn service_account_token_secret_value(
+    source: &Value,
+    namespace: &str,
+    service_account_uid: &str,
+    token: &str,
+    destination_ca: &str,
+) -> Result<Value> {
+    let mut secret = source.clone();
+    let metadata = secret
+        .pointer_mut("/metadata")
+        .and_then(Value::as_object_mut)
+        .context("exported ServiceAccount token Secret has no metadata")?;
+    metadata.remove("uid");
+    metadata.remove("resourceVersion");
+    metadata.remove("managedFields");
+    let annotations = metadata
+        .entry("annotations")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .context("ServiceAccount token Secret annotations are not an object")?;
+    annotations.insert(
+        "kubernetes.io/service-account.uid".to_string(),
+        Value::String(service_account_uid.to_string()),
+    );
+
+    let data = secret
+        .as_object_mut()
+        .context("exported ServiceAccount token Secret is not an object")?
+        .entry("data")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .context("ServiceAccount token Secret data is not an object")?;
+    data.insert(
+        "token".to_string(),
+        Value::String(base64::engine::general_purpose::STANDARD.encode(token)),
+    );
+    data.insert(
+        "namespace".to_string(),
+        Value::String(base64::engine::general_purpose::STANDARD.encode(namespace)),
+    );
+    data.insert(
+        "ca.crt".to_string(),
+        Value::String(base64::engine::general_purpose::STANDARD.encode(destination_ca)),
+    );
+    Ok(secret)
+}
+
+async fn patch_service_account_token_secret(
+    secrets: &Api<DynamicObject>,
+    secret: &DynamicObject,
+    namespace: &str,
+    service_account_uid: &str,
+    token: &str,
+    destination_ca: &str,
+) -> Result<()> {
+    let patch = service_account_token_secret_patch(
+        secret,
+        namespace,
+        service_account_uid,
+        token,
+        destination_ca,
+    )?;
+    let name = secret
+        .metadata
+        .name
+        .as_deref()
+        .context("migrated Secret has no metadata.name")?;
+    secrets
+        .patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+        .with_context(|| {
+            format!("writing refreshed token data to Secret {namespace}/{name}")
+        })?;
+    Ok(())
 }
 
 fn kubeconfig_root_ca(kubeconfig_path: &Path) -> Result<String> {
@@ -2780,7 +2892,8 @@ mod tests {
         object_type_label, parse_cilium_kube_proxy_replacement, persistent_host_paths,
         preserve_discovered_type_meta, remapped_node_owner_references, restore_cni_path_backups,
         retryable_import_error, same_group_kind, sanitize, service_account_token_secret_patch,
-        skip_kind_reason, skip_object, snapshot_k3s_cni_paths, summarize_import_failures,
+        service_account_token_secret_value, skip_kind_reason, skip_object,
+        snapshot_k3s_cni_paths, summarize_import_failures,
         write_export_manifest, ApiResource, DynamicObject, Export, ExportedObject, KubeApi,
         NodeSchedulingState, SkipReason,
     };
@@ -3345,6 +3458,64 @@ current-context: test
         assert_eq!(decode("token"), b"target-signed-jwt");
         assert_eq!(decode("namespace"), b"apps");
         assert_eq!(decode("ca.crt"), destination_ca.as_bytes());
+    }
+
+    #[test]
+    fn missing_migrated_service_account_token_secret_is_recreated_for_destination() {
+        use base64::Engine;
+
+        let source = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "type": "kubernetes.io/service-account-token",
+            "metadata": {
+                "name": "migration-legacy-token",
+                "namespace": "migration-apps",
+                "uid": "source-secret-uid",
+                "resourceVersion": "41",
+                "annotations": {
+                    "kubernetes.io/service-account.name": "migration-token-user",
+                    "kubernetes.io/service-account.uid": "source-account-uid"
+                }
+            },
+            "data": {
+                "token": "c291cmNlLXRva2Vu",
+                "namespace": "b2xkLW5hbWVzcGFjZQ==",
+                "ca.crt": "c291cmNlLWNh",
+                "fixture": "bGVnYWN5LXNlY3JldC1kYXRhLXByZXNlcnZlZA=="
+            }
+        });
+        let destination_ca = "-----BEGIN CERTIFICATE-----\ntarget-ca\n-----END CERTIFICATE-----\n";
+        let secret = service_account_token_secret_value(
+            &source,
+            "migration-apps",
+            "destination-account-uid",
+            "destination-signed-jwt",
+            destination_ca,
+        )
+        .unwrap();
+        let decode = |key: &str| {
+            base64::engine::general_purpose::STANDARD
+                .decode(secret["data"][key].as_str().unwrap())
+                .unwrap()
+        };
+
+        assert_eq!(secret["metadata"]["name"], "migration-legacy-token");
+        assert_eq!(secret["metadata"]["namespace"], "migration-apps");
+        assert!(secret["metadata"].get("uid").is_none());
+        assert!(secret["metadata"].get("resourceVersion").is_none());
+        assert_eq!(
+            secret["metadata"]["annotations"]["kubernetes.io/service-account.name"],
+            "migration-token-user"
+        );
+        assert_eq!(
+            secret["metadata"]["annotations"]["kubernetes.io/service-account.uid"],
+            "destination-account-uid"
+        );
+        assert_eq!(decode("token"), b"destination-signed-jwt");
+        assert_eq!(decode("namespace"), b"migration-apps");
+        assert_eq!(decode("ca.crt"), destination_ca.as_bytes());
+        assert_eq!(decode("fixture"), b"legacy-secret-data-preserved");
     }
 
     #[test]

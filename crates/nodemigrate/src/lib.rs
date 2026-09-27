@@ -813,7 +813,7 @@ fn migrate_to_existing(
         })
         .unwrap_or_else(|| "no new export was created".to_string());
     eprintln!("nodemigrate: stopping the nodestore service stack for return migration");
-    let previous_service = service::disable(source).with_context(|| {
+    let previous_service = disable_nodestore_and_stop_pods(source).with_context(|| {
         format!("disabling nodestore failed; recovery data is at {recovery_location}")
     })?;
     eprintln!("nodemigrate: nodestore service stack is stopped");
@@ -1209,7 +1209,8 @@ fn migrate_worker_from_nodestore(
         "Worker local-volume recovery snapshot saved at {}",
         host_path_snapshot.recovery_directory().display()
     );
-    let previous_service = service::disable(source)?;
+    let previous_service = disable_nodestore_and_stop_pods(source)
+        .context("stopping nodestore worker services before returning to the retained cluster")?;
     let replacement_state = if existing_node {
         match remove_replaced_node(
             &target_api,
@@ -1266,6 +1267,31 @@ fn run_bootstrap(mut command: Command) -> Result<()> {
         "nodebootstrap exited with status {status}"
     );
     Ok(())
+}
+
+fn disable_nodestore_and_stop_pods(
+    source: &detect::Installation,
+) -> Result<service::PreviousServiceState> {
+    ensure!(
+        source.distribution == request::Distribution::Nodestore,
+        "pod sandbox handoff is only valid when returning from nodestore"
+    );
+    let previous_service = service::disable(source).context("stopping the nodestore service stack")?;
+    eprintln!("nodemigrate: stopping nodestore CRI pod sandboxes before retained-cluster startup");
+    let handoff = service::stop_source_pod_sandboxes(source)
+        .context("stopping nodestore CRI pod sandboxes while containerd is available")
+        .and_then(|identity| {
+            service::stop_orphaned_cilium_processes(source, &identity)
+                .context("stopping nodestore Cilium processes before retained-cluster startup")
+                .map(|_| ())
+        });
+    if let Err(error) = handoff {
+        if let Err(restore_error) = service::restore(source, previous_service) {
+            bail!("stopping nodestore pods failed ({error:#}) and restoring the service stack failed ({restore_error:#})");
+        }
+        return Err(error).context("stopping nodestore pods; nodestore was restored");
+    }
+    Ok(previous_service)
 }
 
 fn is_root() -> bool {

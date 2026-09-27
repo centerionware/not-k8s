@@ -156,16 +156,17 @@ silently waive the merge protocol.
 
 For the user's authorized `nodemigrate` release work, the user has explicitly
 changed those defaults: the planned `v0.8.1` release is based on the active
-`nodemigrate` migration branch, and fixes on that branch may be compiled and
-validated by its focused migration CI workflow. Do not restrict migration
-validation to the latest regular release (`v0.8.0`); use the branch-built
-runtime as the primary target, with `v0.8.0` available as an optional baseline
-when useful. The user has explicitly waived the general `build.yml` gate and
-general full `e2e.yml` gate for this work. Run migration-utility checks and the
-requested K3s/upstream and isolated multi-node migration paths as needed, and
-build only the affected branch components through that focused workflow. This
-exception does not authorize local Cargo builds/tests on the development host,
-nor does it authorize merging or publishing a release.
+`nodemigrate` migration branch, and bugs may be fixed directly on that branch.
+Focused migration tests may compile the affected branch components; the
+branch-built runtime is the primary target. Do not require migration
+validation to use only the latest regular release (`v0.8.0`); it is an
+optional baseline when useful. The user has explicitly waived the general
+`build.yml` gate and general full `e2e.yml` gate for this work. Run
+migration-utility checks and the requested K3s/upstream and isolated multi-node
+migration paths as needed, and build only the affected branch components
+through that focused workflow. This exception does not authorize local Cargo
+builds/tests on the development host, nor does it authorize merging or
+publishing a release.
 
 For runtime fixes, add or strengthen a real-cluster regression in the current
 Rust e2e suite and add a focused unit test when it can deterministically expose

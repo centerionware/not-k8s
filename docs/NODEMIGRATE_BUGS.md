@@ -4,6 +4,25 @@ Last updated: 2026-09-27
 
 ## Current fixture finding
 
+- **Branch runtime run 36352851628 exposed three unresolved return-path defects.**
+  Its K3s lane migrated forward and passed the nodestore object/CRD checkpoint,
+  but return readiness failed after K3s restarted with Cilium KPR enabled. The
+  log shows Cilium health binding `10.1.0.85:4240` failed with `address
+  already in use`, while Service and Pod IP traffic failed with `no route to
+  host`; both `kube-proxy` and `nodeproxy` were inactive as intended for Cilium
+  KPR. The likely cause is live nodestore CRI pods surviving service shutdown.
+  The branch now stops nodestore pod sandboxes and exact-identity leftover
+  Cilium processes before starting the retained cluster; runtime confirmation
+  is pending. The upstream lane passed retained API readiness but import then
+  failed because `migration-apps/migration-legacy-token` was missing. The
+  branch now recreates a missing legacy token Secret using destination-bound
+  credentials while preserving other data; runtime confirmation is pending.
+  Docker preflight failed before migration because its `node` wrapper passed
+  the host selector to `docker exec` as the command (`cp-1: executable file
+  not found`). The wrapper now consumes the selector before invoking Docker;
+  a passing five-node runtime run remains pending. Artifacts are saved under
+  `/tmp/nodemigrate-36352851628/`.
+
 - **Five-node return fixture: kubeadm workers had no API admin kubeconfig.**
   The return coordinator supplied `/etc/kubernetes/admin.conf` to worker
   migrations, but `kubeadm join` does not install that control-plane credential

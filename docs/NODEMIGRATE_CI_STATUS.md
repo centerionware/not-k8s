@@ -41,11 +41,29 @@ published-runtime regression baseline, but is not required or exclusive.
 
 Branch-runtime migration run
 [36352851628](https://github.com/centerionware/not-k8s/actions/runs/36352851628)
-was dispatched at SHA `655ba83c` with `runtime_source=branch`,
-`cilium_kpr=true`, and `five_node_migration=true`. It builds the changed runtime
-components for the migration test and exercises both single-node lanes plus the
-isolated upstream 3-control-plane/2-worker round trip. Results are pending; no
-gate is claimed from dispatch alone.
+ran at SHA `655ba83c` with `runtime_source=branch`, `cilium_kpr=true`, and
+`five_node_migration=true`. The `nodemigrate` and `notk8s` component builds
+passed, and all five isolated Kubeadm/Cilium nodes became Ready. The K3s lane
+passed forward migration and its nodestore checkpoint (700 API objects, 59
+CRDs), then failed returning to K3s: API readiness timed out, Cilium's health
+listener reported `address already in use`, and workload Service/Pod IPs were
+unreachable. KPR was enabled and both `kube-proxy` and `nodeproxy` were
+inactive, so this was not a competing Service-proxy configuration. The branch
+now stops nodestore CRI pod sandboxes and exact-identity leftover Cilium
+processes before starting the retained cluster; runtime verification is
+pending.
+
+The upstream lane passed forward migration, its nodestore checkpoint (667 API
+objects, 55 CRDs), and retained API readiness, then failed during return import
+because `migration-apps/migration-legacy-token` was missing. The branch now
+recreates the missing Secret with destination-bound token credentials while
+preserving its other data; runtime verification is pending.
+
+The five-node preflight reached five Ready Kubeadm/Cilium nodes but failed
+before migration because the Docker `node` helper treated `cp-1` as the command
+to execute. The helper now shifts past its node selector; a passing five-node
+runtime round trip remains pending. The separate recovered admin kubeconfig
+fix at `1bcd76e3` was not exercised by run 36352851628.
 
 The five-node return coordinator fix at SHA `1bcd76e3` copies kubeadm's
 recovered `/etc/kubernetes/admin.conf` to both workers before their return

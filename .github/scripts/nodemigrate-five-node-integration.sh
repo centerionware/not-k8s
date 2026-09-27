@@ -8,8 +8,16 @@ CILIUM_KPR="${NODEMIGRATE_CILIUM_KPR:-false}"
 NODES=(cp-1 cp-2 cp-3 worker-1 worker-2)
 
 container() { printf '%s-%s' "$1" "$SUFFIX"; }
-node() { docker exec "$(container "$1")" "$@"; }
-node_env() { docker exec "$(container "$1")" env "$@"; }
+node() {
+    local host="$1"
+    shift
+    docker exec "$(container "$host")" "$@"
+}
+node_env() {
+    local host="$1"
+    shift
+    docker exec "$(container "$host")" env "$@"
+}
 
 fail() {
     echo "FAIL: $*" >&2
