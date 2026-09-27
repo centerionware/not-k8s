@@ -69,7 +69,12 @@ passed after copying the claimRef identity before the PV update. The immediately
 preceding migration run [36290028538](https://github.com/centerionware/not-k8s/actions/runs/36290028538)
 used the earlier `42d42cfb` SHA: five-node Docker preflight passed, but both
 runtime build jobs failed to compile, so neither lane performed migration or
-changed a PV. Rerun the migration workflow on the corrected SHA is pending.
+changed a PV. The corrected-SHA rerun [36290458212](https://github.com/centerionware/not-k8s/actions/runs/36290458212)
+at `863ea3ba27d75a201f13bf1964ea6bca0171c643` has passed the five-node Docker
+preflight and both `nodemigrate` and branch-runtime builds; the K3s and upstream
+migration steps are still running. This run also checks PV/PVC semantic state
+at the source, target, and returned-source checkpoints. No result is recorded
+until both lanes finish.
 
 Release-backed migration run [36283329273](https://github.com/centerionware/not-k8s/actions/runs/36283329273)
 at SHA `786e95577686f1fd5ed08a94f76ade48861314b4` fetched the exact regular
