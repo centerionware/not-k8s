@@ -15,26 +15,25 @@ new fixes.
 
 ## Most recent evidence
 
-Run [36304940296](https://github.com/centerionware/not-k8s/actions/runs/36304940296)
-at SHA `9ded8f16246262817041197d6884708085cd8911` passed the focused
-`nodeapiserver` quick-check [36304738739](https://github.com/centerionware/not-k8s/actions/runs/36304738739)
-and the five-node Docker/kubeadm/Cilium preflight. Both migration utility and
-branch-runtime builds passed. Both migration lanes failed before completing a
-round trip. K3s reached the nodestore checkpoint, then reported that the
-source-discovered `kube-system/metrics-server-77dbbf84b` ReplicaSet was missing
-there. The upstream Kubernetes lane failed source-to-nodestore parity; reported
-differences include changing scheduler Lease fields, upstream bootstrap
-metadata on CoreDNS RBAC and PriorityClasses, `CSIDriver` scheduling behavior,
-and `CSINode` owner references. Runtime logs also show CSI socket connection
-refusals and restarted Cilium/cert-manager Pods, which need separate diagnosis.
+Run [36306098280](https://github.com/centerionware/not-k8s/actions/runs/36306098280)
+at SHA `39ceeb189ac619988ddc96815611b6e4d1848198` passed the five-node
+Docker/kubeadm/Cilium preflight and built both the utility and branch runtime.
+Both migration lanes failed before completing a round trip. The fixed
+StatefulSet fixture preserved ordinal 0/1 PVC identities, PV bindings, and data
+at both source and nodestore checkpoints in both lanes. K3s then reported the
+source-discovered `kube-system/metrics-server-77dbbf84b` ReplicaSet missing at
+nodestore. Upstream Kubernetes failed strict source-to-nodestore parity;
+reported differences include changing Leases, CoreDNS RBAC defaults,
+PriorityClass defaults, `CSIDriver` scheduling behavior, and `CSINode` owner
+references. Neither lane reached the return leg. Full logs are saved at
+`/tmp/nodemigrate-36306098280/`.
 
-The run also exposed a destructive fixture action: its StatefulSet scale
-exercise deleted ordinal 1's PVC, causing the hostPath CSI provisioner to
-delete that claim's `Delete`-policy PV before nodemigrate started. Nodemigrate
-itself did not delete the PV. The harness change now keeps that claim, PV
-binding, and data through scale-down/up and asserts their identity and contents.
-The changed fixture still needs a dedicated runtime rerun; no K3s/upstream round
-trip has passed.
+The fixture issue was first observed in run
+[36304940296](https://github.com/centerionware/not-k8s/actions/runs/36304940296):
+it deleted ordinal 1's PVC, so the hostPath CSI provisioner deleted that
+claim's `Delete`-policy PV before nodemigrate started. Nodemigrate itself did
+not delete the PV. The fix is verified by the storage assertions in run
+36306098280.
 
 
 Run [36299240279](https://github.com/centerionware/not-k8s/actions/runs/36299240279)

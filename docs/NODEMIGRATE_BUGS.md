@@ -14,8 +14,11 @@ Last updated: 2026-09-27
   migration checkpoint undermines the required data-preservation proof. The
   fixture now retains the ordinal 1 PVC, PV binding, and payload through
   scale-down and scale-up, and verifies the same claim UID, volume name, and
-  data. Shell syntax passes; runtime validation on the changed fixture is
-  pending.
+  data. This fix was exercised at both source and nodestore checkpoints in
+  K3s and upstream Kubernetes in run
+  [36306098280](https://github.com/centerionware/not-k8s/actions/runs/36306098280);
+  all four storage assertions passed. The migration lanes later failed on
+  unrelated object-preservation/parity checks, before completing round trips.
 
 - **`nodemigrate` / `nodecontroller`: legacy ServiceAccount token Secrets are
   excluded.** `object_skip_reason` drops every Secret of type
@@ -31,7 +34,18 @@ Last updated: 2026-09-27
   source, nodestore, and returned-source checkpoints. Source review confirms
   the gap; no runtime token-Secret round trip currently verifies a fix.
 
-## Latest runtime findings from run 36299240279
+## Latest runtime findings
+
+Run [36306098280](https://github.com/centerionware/not-k8s/actions/runs/36306098280)
+at SHA `39ceeb189ac619988ddc96815611b6e4d1848198` passed the five-node
+Docker/kubeadm/Cilium preflight and built both the utility and branch runtime.
+The corrected storage fixture passed at source and nodestore in both lanes.
+K3s then failed because source-discovered `kube-system/metrics-server-77dbbf84b`
+ReplicaSet was missing at nodestore. Upstream failed strict object parity;
+remaining differences include changing Leases, CoreDNS RBAC defaults,
+PriorityClass defaults, `CSIDriver.spec.preventPodSchedulingIfMissing`, and
+`CSINode` owner references. Neither lane reached the return leg. Full logs are
+saved at `/tmp/nodemigrate-36306098280/`.
 
 Run [36299240279](https://github.com/centerionware/not-k8s/actions/runs/36299240279)
 at SHA `20648debff0f7f338c3e37303bbaf367ffa449a4` passed the isolated
