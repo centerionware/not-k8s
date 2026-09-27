@@ -236,6 +236,8 @@ watch_migration_target_state() {
     local stop_file="${3:?missing watcher stop file}"
     local output_file="${4:?missing watcher output file}"
     local previous_snapshot="" snapshot now last_capture=0
+    local cache_key mounted_ca_b64 ca_fingerprint
+    declare -A mounted_ca_cache=()
     : > "$output_file"
     while [[ ! -e "$stop_file" ]]; do
         if systemctl is-active --quiet "$ready_service" \
@@ -320,33 +322,6 @@ watch_migration_target_state() {
                           ' || true
                     echo 'target API CA fingerprint:'
                     printf '%s' "$target_ca_b64" | base64 -d 2>/dev/null | sha256sum || true
-                    echo 'mounted service-account CA fingerprints for Cilium and cert-manager:'
-                    KUBECONFIG="$kubeconfig" kubectl get pods -A -o json 2>/dev/null \
-                        | jq -r '
-                            .items[]?
-                            | select((.metadata.namespace == "kube-system" and
-                                      (.metadata.labels["k8s-app"] // "") == "cilium") or
-                                     (.metadata.namespace == "cert-manager" and
-                                      (.metadata.labels["app.kubernetes.io/component"] // "") == "webhook"))
-                            | .metadata.namespace as $ns
-                            | .metadata.name as $pod
-                            | .spec.containers[]?.name
-                            | [$ns, $pod, .] | @tsv
-                          ' \
-                        | while IFS=$'\t' read -r pod_ns pod_name container_name; do
-                            [[ -n "$pod_name" && -n "$container_name" ]] || continue
-                            printf '%s/%s container=%s ' "$pod_ns" "$pod_name" "$container_name"
-                            if mounted_ca_b64="$(KUBECONFIG="$kubeconfig" \
-                                kubectl --request-timeout=5s exec -n "$pod_ns" \
-                                    "$pod_name" -c "$container_name" -- \
-                                    cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
-                                | base64 -w0)"; then
-                                printf '%s' "$mounted_ca_b64" | base64 -d 2>/dev/null \
-                                    | sha256sum || true
-                            else
-                                echo 'mounted CA unavailable (exec failed; see preceding error)'
-                            fi
-                        done || true
                 else
                     echo 'target admin kubeconfig did not expose a flattened API CA'
                 fi
@@ -370,12 +345,53 @@ watch_migration_target_state() {
                     KUBECONFIG="$kubeconfig" kubectl get events -A \
                         --sort-by=.lastTimestamp 2>&1 | tail -n 80 || true
                 } >> "$output_file"
+                capture_mounted_service_account_ca "$kubeconfig" >> "$output_file"
                 previous_snapshot="$snapshot"
                 last_capture="$now"
             fi
         fi
         sleep 5
     done
+}
+
+capture_mounted_service_account_ca() {
+    local kubeconfig="${1:?missing target kubeconfig}"
+    local pod_ns pod_name pod_uid container_name cache_key mounted_ca_b64 ca_fingerprint
+    echo 'Mounted service-account CA fingerprints for Cilium and cert-manager:'
+    while IFS=$'\t' read -r pod_ns pod_name pod_uid container_name; do
+        [[ -n "$pod_name" && -n "$pod_uid" && -n "$container_name" ]] || continue
+        cache_key="$pod_uid/$container_name"
+        if [[ -z "${mounted_ca_cache[$cache_key]+present}" ]]; then
+            if mounted_ca_b64="$(KUBECONFIG="$kubeconfig" \
+                kubectl --request-timeout=5s exec -n "$pod_ns" "$pod_name" \
+                    -c "$container_name" -- \
+                    cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+                    2>/dev/null | base64 -w0)"; then
+                ca_fingerprint="$(printf '%s' "$mounted_ca_b64" | base64 -d 2>/dev/null \
+                    | sha256sum | awk '{print $1}')"
+                mounted_ca_cache[$cache_key]="sha256:$ca_fingerprint"
+            else
+                # Cilium and cert-manager commonly use distroless images without
+                # `cat`. Record the unavailable probe once per Pod UID/container
+                # instead of emitting an exec error every watcher interval.
+                mounted_ca_cache[$cache_key]=unavailable
+            fi
+        fi
+        printf '%s/%s container=%s ca=%s\n' \
+            "$pod_ns" "$pod_name" "$container_name" "${mounted_ca_cache[$cache_key]}"
+    done < <(KUBECONFIG="$kubeconfig" kubectl get pods -A -o json 2>/dev/null \
+        | jq -r '
+            .items[]?
+            | select((.metadata.namespace == "kube-system" and
+                      (.metadata.labels["k8s-app"] // "") == "cilium") or
+                     (.metadata.namespace == "cert-manager" and
+                      (.metadata.labels["app.kubernetes.io/component"] // "") == "webhook"))
+            | .metadata.namespace as $ns
+            | .metadata.name as $pod
+            | .metadata.uid as $uid
+            | .spec.containers[]?.name
+            | [$ns, $pod, $uid, .] | @tsv
+          ')
 }
 
 stop_target_forward_watch() {
