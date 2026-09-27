@@ -22,9 +22,22 @@ Confirmed defect and branch work:
   validates `policy/v1 Eviction`, runs NodeRestriction, matches PDB label
   selectors, returns 429 when matching status allows no disruptions, and
   otherwise requests graceful deletion. Focused tests cover selector matching
-  and missing/zero/positive allowance values. Quick-check and migration
-  rerun are pending. The current positive-allowance path does not reserve the
-  PDB allowance atomically, so concurrent evictions remain a known gap.
+  and missing/zero/positive allowance values. Targeted quick-check
+  [36287345872](https://github.com/centerionware/not-k8s/actions/runs/36287345872)
+  passed. Migration run [36287345921](https://github.com/centerionware/not-k8s/actions/runs/36287345921)
+  advanced beyond the PDB 429 assertion in both lanes, confirming the missing
+  endpoint is fixed for this fixture. The current positive-allowance path does
+  not reserve the PDB allowance atomically, so concurrent evictions remain a
+  known gap.
+- **`nodecontroller`: PV reclaim policies were not implemented.** At both
+  nodestore checkpoints, deleting the temporary StatefulSet ordinal-1 PVC left
+  its dynamically provisioned `Delete`-policy PV present for the full five
+  minute fixture deadline. `pv_binder` explicitly documented that it did not
+  handle release/reclaim. The worktree now reconciles released claims by UID,
+  requests preconditioned PV deletion for `Delete`, and leaves payloads intact
+  while marking `Retain`/legacy `Recycle` volumes `Released`; CSI deletion
+  finalizers remain with the external provisioner. Focused tests and runtime
+  rerun are pending.
 
 ## Release-backed run 36279843865
 

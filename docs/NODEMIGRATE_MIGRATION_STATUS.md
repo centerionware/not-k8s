@@ -71,9 +71,14 @@ passed at `2ee43f2a`, including shell syntax and the snapshot/Helm helper
 checks. Branch-runtime run [36285968999](https://github.com/centerionware/not-k8s/actions/runs/36285968999)
 ran this fixture at both K3s and upstream nodestore checkpoints. Both target
 apiserver lanes returned 404 for `pods/eviction`, proving the endpoint was
-missing before PDB behavior could be checked. The branch now dispatches the
-endpoint and applies NodeRestriction plus PDB selector/status checks. Focused
-quick-check and a fresh migration run are pending; concurrent allowance
+missing before PDB behavior could be checked. The new handler and
+NodeRestriction/PDB matching passed targeted quick-check
+[36287345872](https://github.com/centerionware/not-k8s/actions/runs/36287345872).
+Migration rerun [36287345921](https://github.com/centerionware/not-k8s/actions/runs/36287345921)
+advanced beyond the PDB 429 assertion in both lanes. It then failed because
+the temporary ordinal-1 PV remained after claim deletion. `pv_binder` had no
+reclaim handling; a UID-checked reclaim path is now in the worktree, awaiting
+focused quick-check and runtime revalidation. Concurrent PDB allowance
 reservation is not yet atomic.
 
 The same checkpoint now exercises the Deployment `/scale` subresource by

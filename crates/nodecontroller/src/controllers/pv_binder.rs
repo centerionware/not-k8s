@@ -37,11 +37,12 @@
 //! (hand-created PV) path; dynamic provisioning is unaffected since the
 //! provisioner itself already created a PV sized for the request.
 //!
-//! **No unbinding/reclaim.** Once bound, this controller never reconsiders
-//! the pairing — release-on-PVC-delete and the `Retain`/`Delete`/`Recycle`
-//! reclaim policies are not implemented (matches `stateful_set.rs`'s own
-//! documented PVC-lifecycle gap: this crate's PVCs are created with no
-//! reclaim automation anywhere yet).
+//! **Reclaim follows the PV policy.** When a bound claim is actually gone,
+//! `Delete` removes the PV with UID/resource-version preconditions so an
+//! external CSI provisioner can run its deletion finalizers; `Retain` leaves
+//! the PV and payload in place and publishes `Released`. The deprecated
+//! `Recycle` policy is also retained as `Released` because this controller
+//! has no safe scrubber for arbitrary volume backends.
 //!
 //! **First-match wins for static binding**, not upstream's "smallest PV
 //! that still satisfies the request" preference — with no capacity
@@ -56,7 +57,7 @@ use k8s_openapi::api::core::v1::{
     PersistentVolumeStatus,
 };
 use k8s_openapi::api::storage::v1::StorageClass;
-use kube::api::{Api, ListParams, Patch, PatchParams};
+use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, Preconditions};
 use kube::runtime::watcher::Event;
 use kube::{Client, ResourceExt};
 use std::collections::{HashMap, HashSet};
@@ -91,6 +92,149 @@ struct BinderState {
     /// A key can be re-enqueued while its API writes are in flight. Keep that
     /// follow-up queued, but never reconcile the same claim concurrently.
     in_flight: HashSet<(String, String)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReclaimAction {
+    Delete,
+    Retain,
+}
+
+fn reclaim_action(pv: &PersistentVolume) -> ReclaimAction {
+    match pv
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.persistent_volume_reclaim_policy.as_deref())
+    {
+        Some("Delete") => ReclaimAction::Delete,
+        Some("Retain") | Some("Recycle") | None => ReclaimAction::Retain,
+        Some(_) => ReclaimAction::Retain,
+    }
+}
+
+fn pv_claim_ref(pv: &PersistentVolume) -> Option<(&str, &str, Option<&str>)> {
+    let claim_ref = pv.spec.as_ref()?.claim_ref.as_ref()?;
+    Some((
+        claim_ref.namespace.as_deref()?,
+        claim_ref.name.as_deref()?,
+        claim_ref.uid.as_deref(),
+    ))
+}
+
+fn pv_has_live_claim(pv: &PersistentVolume, claims: &HashMap<(String, String), PersistentVolumeClaim>) -> bool {
+    let Some((namespace, name, claim_uid)) = pv_claim_ref(pv) else {
+        return true;
+    };
+    claims
+        .get(&(namespace.to_string(), name.to_string()))
+        .is_some_and(|claim| claim_uid.is_none_or(|uid| claim.uid().as_deref() == Some(uid)))
+}
+
+async fn reconcile_released_pv(client: &Client, name: &str) -> bool {
+    let pv_api: Api<PersistentVolume> = Api::all(client.clone());
+    let pv = match tokio::time::timeout(API_WRITE_TIMEOUT, pv_api.get_opt(name)).await {
+        Ok(Ok(Some(pv))) => pv,
+        Ok(Ok(None)) => return false,
+        Ok(Err(error)) => {
+            tracing::warn!(pv = %name, error = ?error, "failed to read released PersistentVolume");
+            return true;
+        }
+        Err(_) => {
+            tracing::warn!(pv = %name, "timed out reading released PersistentVolume");
+            return true;
+        }
+    };
+    let Some(claim_ref) = pv.spec.as_ref().and_then(|spec| spec.claim_ref.as_ref()) else {
+        return false;
+    };
+    let (Some(namespace), Some(claim_name)) = (claim_ref.namespace.as_deref(), claim_ref.name.as_deref()) else {
+        tracing::warn!(pv = %name, "cannot reclaim PersistentVolume with incomplete claimRef");
+        return false;
+    };
+    let pvc_api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
+    match tokio::time::timeout(API_WRITE_TIMEOUT, pvc_api.get_opt(claim_name)).await {
+        Ok(Ok(Some(pvc))) if claim_ref.uid.as_deref().is_none_or(|uid| pvc.uid().as_deref() == Some(uid)) => {
+            return false;
+        }
+        Ok(Ok(Some(_))) | Ok(Ok(None)) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(pv = %name, namespace, claim = %claim_name, error = ?error, "failed to verify released claim");
+            return true;
+        }
+        Err(_) => {
+            tracing::warn!(pv = %name, namespace, claim = %claim_name, "timed out verifying released claim");
+            return true;
+        }
+    }
+    match tokio::time::timeout(API_WRITE_TIMEOUT, pvc_api.list(&ListParams::default())).await {
+        Ok(Ok(claims)) => {
+            if claims.items.iter().any(|claim| {
+                claim
+                    .spec
+                    .as_ref()
+                    .and_then(|spec| spec.volume_name.as_deref())
+                    == Some(name)
+            }) {
+                return false;
+            }
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(pv = %name, namespace, error = ?error, "failed to check replacement PVC references before reclaim");
+            return true;
+        }
+        Err(_) => {
+            tracing::warn!(pv = %name, namespace, "timed out checking replacement PVC references before reclaim");
+            return true;
+        }
+    }
+
+    match reclaim_action(&pv) {
+        ReclaimAction::Delete => {
+            let params = DeleteParams {
+                preconditions: Some(Preconditions {
+                    uid: pv.uid(),
+                    resource_version: pv.resource_version(),
+                }),
+                ..Default::default()
+            };
+            match tokio::time::timeout(API_WRITE_TIMEOUT, pv_api.delete(name, &params)).await {
+                Ok(Ok(_)) => {
+                    tracing::info!(pv = %name, namespace, claim = %claim_name, "reclaiming Delete-policy PersistentVolume");
+                    false
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(pv = %name, namespace, claim = %claim_name, error = ?error, "failed to reclaim Delete-policy PersistentVolume");
+                    true
+                }
+                Err(_) => {
+                    tracing::warn!(pv = %name, "timed out reclaiming Delete-policy PersistentVolume");
+                    true
+                }
+            }
+        }
+        ReclaimAction::Retain => {
+            if pv.status.as_ref().and_then(|status| status.phase.as_deref()) == Some("Released") {
+                return false;
+            }
+            let patch = serde_json::json!({"status":{"phase":"Released"}});
+            match tokio::time::timeout(
+                API_WRITE_TIMEOUT,
+                pv_api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)),
+            )
+            .await
+            {
+                Ok(Ok(_)) => false,
+                Ok(Err(error)) => {
+                    tracing::warn!(pv = %name, error = ?error, "failed to mark retained PersistentVolume Released");
+                    true
+                }
+                Err(_) => {
+                    tracing::warn!(pv = %name, "timed out marking retained PersistentVolume Released");
+                    true
+                }
+            }
+        }
+    }
 }
 
 fn is_fully_bound(pvc: &PersistentVolumeClaim) -> bool {
@@ -522,6 +666,25 @@ fn ns_of<K: ResourceExt>(obj: &K) -> String {
 pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
     let state = Arc::new(Mutex::new(BinderState::default()));
     let queue: Arc<KeyedWorkQueue<(String, String)>> = Arc::new(KeyedWorkQueue::default());
+    let reclaim_queue: Arc<KeyedWorkQueue<String>> = Arc::new(KeyedWorkQueue::default());
+
+    for worker in 0..BINDER_WORKERS {
+        let client = client.clone();
+        let queue = reclaim_queue.clone();
+        tokio::spawn(async move {
+            loop {
+                let name = queue.pop().await;
+                if tokio::time::timeout(RECONCILE_TIMEOUT, reconcile_released_pv(&client, &name))
+                    .await
+                    .unwrap_or(true)
+                {
+                    tracing::warn!(worker, pv = %name, "released PersistentVolume reconcile will retry");
+                    tokio::time::sleep(RETRY_DELAY).await;
+                    queue.enqueue(name);
+                }
+            }
+        });
+    }
 
     // Watches are the fast path, but a watch restart or broadcast lag must
     // not leave a PVC permanently unprocessed. Periodically refresh the PVC
@@ -689,15 +852,22 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                                 }
                             });
                         }
-                        let keys = {
+                        let (keys, stale_claim) = {
                             let mut state = state.lock().expect("PV binder state mutex poisoned");
-                            state.pvs.insert(pv.name_any(), pv);
-                            state
+                            let watch_healthy = state.pvc_watch_healthy;
+                            let name = pv.name_any();
+                            state.pvs.insert(name.clone(), pv.clone());
+                            let keys = state
                                 .claims
                                 .values()
                                 .map(|pvc| (ns_of(pvc), pvc.name_any()))
-                                .collect::<Vec<_>>()
+                                .collect::<Vec<_>>();
+                            let stale_claim = watch_healthy && !pv_has_live_claim(&pv, &state.claims);
+                            (keys, stale_claim.then_some(name))
                         };
+                        if let Some(name) = stale_claim {
+                            reclaim_queue.enqueue(name);
+                        }
                         for key in keys {
                             queue.enqueue(key);
                         }
@@ -727,11 +897,28 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                         queue.enqueue((ns, name));
                     }
                     Some(Ok(Event::Delete(pvc))) => {
-                        state
-                            .lock()
-                            .expect("PV binder state mutex poisoned")
-                            .claims
-                            .remove(&(ns_of(&pvc), pvc.name_any()));
+                        let namespace = ns_of(&pvc);
+                        let claim_name = pvc.name_any();
+                        let deleted_uid = pvc.uid();
+                        let releasable = {
+                            let mut state = state.lock().expect("PV binder state mutex poisoned");
+                            state.claims.remove(&(namespace.clone(), claim_name.clone()));
+                            state
+                                .pvs
+                                .values()
+                                .filter(|pv| {
+                                    pv_claim_ref(pv).is_some_and(|(pv_ns, pv_name, pv_uid)| {
+                                        pv_ns == namespace
+                                            && pv_name == claim_name
+                                            && pv_uid.is_none_or(|uid| deleted_uid.as_deref() == Some(uid))
+                                    })
+                                })
+                                .map(|pv| pv.name_any())
+                                .collect::<Vec<_>>()
+                        };
+                        for name in releasable {
+                            reclaim_queue.enqueue(name);
+                        }
                     }
                     Some(Ok(Event::Init)) => {
                         state
@@ -740,10 +927,19 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
                             .pvc_watch_healthy = false;
                     }
                     Some(Ok(Event::InitDone)) => {
-                        state
-                            .lock()
-                            .expect("PV binder state mutex poisoned")
-                            .pvc_watch_healthy = true;
+                        let stale_pvs = {
+                            let mut state = state.lock().expect("PV binder state mutex poisoned");
+                            state.pvc_watch_healthy = true;
+                            state
+                                .pvs
+                                .values()
+                                .filter(|pv| !pv_has_live_claim(pv, &state.claims))
+                                .map(|pv| pv.name_any())
+                                .collect::<Vec<_>>()
+                        };
+                        for name in stale_pvs {
+                            reclaim_queue.enqueue(name);
+                        }
                     }
                     Some(Err(e)) => {
                         state
@@ -830,6 +1026,44 @@ mod tests {
             volume_binding_mode: Some(mode.to_string()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn reclaim_policy_deletes_only_delete_volumes() {
+        let pv = |policy: Option<&str>| {
+            serde_json::from_value::<PersistentVolume>(serde_json::json!({
+                "spec": {"persistentVolumeReclaimPolicy": policy}
+            }))
+            .unwrap()
+        };
+        assert_eq!(reclaim_action(&pv(Some("Delete"))), ReclaimAction::Delete);
+        assert_eq!(reclaim_action(&pv(Some("Retain"))), ReclaimAction::Retain);
+        assert_eq!(reclaim_action(&pv(Some("Recycle"))), ReclaimAction::Retain);
+        assert_eq!(reclaim_action(&pv(None)), ReclaimAction::Retain);
+    }
+
+    #[test]
+    fn stale_claim_reference_is_detected_by_uid_not_name_alone() {
+        let pv: PersistentVolume = serde_json::from_value(serde_json::json!({
+            "spec": {"claimRef": {
+                "namespace": "apps", "name": "data", "uid": "old-uid"
+            }}
+        }))
+        .unwrap();
+        let claim = |uid: &str| PersistentVolumeClaim {
+            metadata: ObjectMeta {
+                namespace: Some("apps".to_string()),
+                name: Some("data".to_string()),
+                uid: Some(uid.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let same_claim = HashMap::from([(("apps".to_string(), "data".to_string()), claim("old-uid"))]);
+        let replacement = HashMap::from([(("apps".to_string(), "data".to_string()), claim("new-uid"))]);
+        assert!(pv_has_live_claim(&pv, &same_claim));
+        assert!(!pv_has_live_claim(&pv, &replacement));
+        assert!(!pv_has_live_claim(&pv, &HashMap::new()));
     }
 
     #[test]

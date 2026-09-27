@@ -33,10 +33,17 @@ The feature branch now adds a `pods/eviction` handler that checks matching
 PDB selectors and returns `TooManyRequests` when `disruptionsAllowed` is zero,
 then uses graceful Pod deletion when allowed. It also invokes NodeRestriction
 for node identities and adds focused selector/status tests. These changes have
-not yet passed quick-check or runtime migration validation. The eviction path
-does not yet reserve disruption allowance atomically for concurrent eviction
-requests; that remains a correctness gap to address before claiming full PDB
-semantics.
+passed targeted `nodeapiserver` quick-check
+[36287345872](https://github.com/centerionware/not-k8s/actions/runs/36287345872).
+Migration run [36287345921](https://github.com/centerionware/not-k8s/actions/runs/36287345921)
+then passed the PDB 429 assertion in both lanes and continued into StatefulSet
+volume-claim-template scale checks. It failed in both lanes because the
+temporary ordinal-1 PV was not deleted after its PVC was removed. The cause is
+confirmed in `nodecontroller::pv_binder`, whose documented scope had no release
+or reclaim handling. A claim-release reconciler is now in the worktree; its
+focused quick-check and a migration rerun are pending. The eviction path still
+does not reserve allowance atomically across concurrent requests, so full PDB
+concurrency semantics remain unverified.
 
 Release-backed migration run [36283329273](https://github.com/centerionware/not-k8s/actions/runs/36283329273)
 at SHA `786e95577686f1fd5ed08a94f76ade48861314b4` fetched the exact regular
