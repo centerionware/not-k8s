@@ -137,7 +137,13 @@ impl CriRuntime {
                                     out.insert(v.name.clone(), resolved);
                                     csi_volume_names.insert(v.name.clone());
                                 }
-                                Err(e) => warn!(volume = %v.name, claim = %pvc_source.claim_name, error = ?e, "failed to mount CSI volume"),
+                                Err(e) => warn!(
+                                    volume = %v.name,
+                                    claim = %pvc_source.claim_name,
+                                    error = ?e,
+                                    error_chain = %format!("{e:#}"),
+                                    "failed to mount CSI volume"
+                                ),
                             }
                         }
                         Ok(None) => {
@@ -167,7 +173,13 @@ impl CriRuntime {
                                 out.insert(v.name.clone(), resolved);
                                 csi_volume_names.insert(v.name.clone());
                             }
-                            Err(e) => warn!(volume = %v.name, claim = %claim_name, error = ?e, "failed to mount CSI volume for generic ephemeral volume"),
+                            Err(e) => warn!(
+                                volume = %v.name,
+                                claim = %claim_name,
+                                error = ?e,
+                                error_chain = %format!("{e:#}"),
+                                "failed to mount CSI volume for generic ephemeral volume"
+                            ),
                         }
                     }
                     Ok(None) => {
