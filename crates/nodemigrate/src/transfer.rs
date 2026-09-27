@@ -2584,6 +2584,52 @@ current-context: test
     }
 
     #[test]
+    fn migration_export_preserves_pv_reclaim_policy_and_pvc_binding() {
+        let pv = sanitize(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "PersistentVolume",
+            "metadata": {"name": "migration-data", "uid": "source-pv-uid"},
+            "spec": {
+                "persistentVolumeReclaimPolicy": "Retain",
+                "claimRef": {
+                    "namespace": "migration-apps",
+                    "name": "migration-data",
+                    "uid": "source-pvc-uid"
+                },
+                "hostPath": {"path": "/var/lib/migration-data", "type": "DirectoryOrCreate"}
+            },
+            "status": {"phase": "Bound"}
+        }))
+        .expect("PersistentVolume should be exported");
+        assert_eq!(pv.source_uid.as_deref(), Some("source-pv-uid"));
+        assert_eq!(pv.value["spec"]["persistentVolumeReclaimPolicy"], "Retain");
+        assert_eq!(pv.value["spec"]["claimRef"]["name"], "migration-data");
+        assert_eq!(pv.value["spec"]["claimRef"]["uid"], "source-pvc-uid");
+        assert_eq!(
+            pv.value["spec"]["hostPath"]["path"],
+            "/var/lib/migration-data"
+        );
+        assert!(pv.value.get("status").is_none());
+
+        let pvc = sanitize(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "PersistentVolumeClaim",
+            "metadata": {"name": "migration-data", "namespace": "migration-apps"},
+            "spec": {
+                "volumeName": "migration-data",
+                "storageClassName": "",
+                "accessModes": ["ReadWriteOnce"],
+                "resources": {"requests": {"storage": "1Gi"}}
+            },
+            "status": {"phase": "Bound"}
+        }))
+        .expect("PersistentVolumeClaim should be exported");
+        assert_eq!(pvc.value["spec"]["volumeName"], "migration-data");
+        assert_eq!(pvc.value["spec"]["storageClassName"], "");
+        assert!(pvc.value.get("status").is_none());
+    }
+
+    #[test]
     fn migration_export_restores_type_metadata_from_discovery() {
         let resource = ApiResource::from_gvk(&kube::core::GroupVersionKind::gvk(
             "apps",
