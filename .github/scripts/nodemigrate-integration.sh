@@ -382,6 +382,19 @@ diagnostics() {
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get nodes -o wide || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe nodes || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get pods,pvc,pv -A -o wide || true
+            echo "Aggregated metrics API diagnostics:"
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get apiservices v1beta1.metrics.k8s.io -o yaml || true
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe apiservice v1beta1.metrics.k8s.io || true
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe deployment metrics-server -n kube-system || true
+            while IFS= read -r metrics_pod; do
+                [[ -n "$metrics_pod" ]] || continue
+                KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe pod -n kube-system "$metrics_pod" || true
+                KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n kube-system "$metrics_pod" \
+                    --all-containers --tail=200 || true
+                KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n kube-system "$metrics_pod" \
+                    --all-containers --previous --tail=200 || true
+            done < <(KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get pods -n kube-system -o json \
+                | jq -r '.items[] | select(.metadata.name | startswith("metrics-server-")) | .metadata.name' 2>/dev/null || true)
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get statefulset migration-stateful \
                 -n migration-apps -o json | jq '{
                   metadata: {generation: .metadata.generation},
