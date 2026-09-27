@@ -9,6 +9,16 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration result
 
+At SHA `f9356dad16a549fdaf07c2a79e135a8cbfc836e9`, targeted nodemigrate
+quick-check [36313588814](https://github.com/centerionware/not-k8s/actions/runs/36313588814)
+and branch-runtime migration [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064)
+are running. The branch now replaces same-name destination objects with an
+optimistic full update so omitted source fields do not survive as hybrid
+objects, and repairs Node-owned references after target Node registration.
+The checkpoint normalizer now treats only documented controller/default/API
+version fields as lifecycle differences; source object specs and user rollout
+history remain checked. No new runtime result is available yet.
+
 Run [36299240279](https://github.com/centerionware/not-k8s/actions/runs/36299240279)
 at SHA `20648debff0f7f338c3e37303bbaf367ffa449a4` passed the five-node
 Docker/kubeadm/Cilium preflight and both utility/runtime builds. In K3s, the

@@ -36,6 +36,24 @@ Last updated: 2026-09-27
 
 ## Latest runtime findings
 
+- **`nodemigrate`: destination collisions retained fields outside the source
+  object, and Node-owned references were lost.** The latest completed branch
+  runtime run, [36311005956](https://github.com/centerionware/not-k8s/actions/runs/36311005956)
+  at `42162ef2`, passed PV/PVC bindings and data in both lanes, then failed
+  source-object parity. The upstream CoreDNS deployment retained or changed
+  same-name fields, which follows from the importer's server-side apply
+  semantics: apply only relinquishes fields owned by its own manager. The K3s
+  lane also showed a Node-owned Secret whose source owner reference could not
+  be mapped because Nodes are regenerated rather than imported. Existing-object
+  imports now use resource-version-checked full replacement; missing objects
+  use create. After the replacement Node becomes Ready, nodemigrate restores
+  owner references using the source and destination Node UIDs from the protected
+  export. The focused helper and lifecycle-normalization checks pass locally;
+  nodemigrate quick-check [36313588814](https://github.com/centerionware/not-k8s/actions/runs/36313588814)
+  and migration [36313589064](https://github.com/centerionware/not-k8s/actions/runs/36313589064)
+  at SHA `f9356dad` are pending. This change has not yet passed a live
+  migration.
+
 - **`nodelet`: CSINode registration omits and does not repair its Node owner
   reference.** The first branch-runtime run with strict target CSINode
   registration checks, [36308845021](https://github.com/centerionware/not-k8s/actions/runs/36308845021),
