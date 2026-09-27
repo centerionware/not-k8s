@@ -4,6 +4,18 @@ Last updated: 2026-09-27
 
 ## Current fixture finding
 
+- **nodemigrate / Cilium initial control-plane bootstrap started nodeproxy with
+  kube-proxy replacement enabled.** Code review while KPR-enabled migration
+  run [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
+  was active found that the migration disabled nodeproxy for joined worker
+  bootstraps but omitted `--proxy=none` from the first nodestore bootstrap.
+  At SHA `da0fab88`, nodemigrate now reads
+  `kube-system/cilium-config` from the live source API or protected export and
+  applies the same proxy-mode selection to initial bootstrap and post-cleanup
+  reconciliation. Focused coverage checks both live-API-export parsing and
+  nodebootstrap arguments; quick-check and KPR-enabled migration verification
+  are pending. Run 36343008296 predates this fix and does not verify it.
+
 - **Migration diagnostics / return Service routing failure lacked kube-proxy
   readiness evidence.** Upstream lane of run
   [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)
