@@ -573,6 +573,7 @@ fn aggregated_resource_discovery_values(group: &str, version: &str, document: &V
             "scope": if resource.get("namespaced").and_then(Value::as_bool).unwrap_or(false) { "Namespaced" } else { "Cluster" },
             "singularResource": resource.get("singularName").and_then(Value::as_str).filter(|name| !name.is_empty()).unwrap_or(plural),
             "verbs": verbs,
+            "subresources": [],
         });
         if let Some(kind) = response_kind { entry["responseKind"] = kind; }
         if let Some(short_names) = resource.get("shortNames").filter(|value| value.as_array().is_some_and(|array| !array.is_empty())) {
