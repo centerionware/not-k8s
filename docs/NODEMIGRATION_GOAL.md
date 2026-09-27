@@ -55,6 +55,13 @@ bump the regular release version. This is a target, not publication authority.
 - Discover and preserve the source CNI arrangement, including Cilium. Do not
   require Flannel, overwrite external CNI host configuration, or assume that
   copying API objects alone recreates host networking state.
+- Detect and preserve the Service datapath mode separately from the CNI.
+  Cilium may replace kube-proxy through its eBPF Service handling; Cilium's
+  Envoy L7 proxy is a separate function. Do not run kube-proxy, not-k8s
+  `nodeproxy`, and Cilium's kube-proxy replacement as competing Service
+  datapaths. Support and test Cilium with kube-proxy replacement enabled and
+  disabled, recording which component owns ClusterIP/NodePort routing at each
+  migration stage and verifying Service behavior after every transition.
 - Transfer Kubernetes API resources, including custom resources, add-ons,
   secrets, and persistent volume metadata, while accounting for destination
   UIDs, controller-owned transient objects, and API compatibility. Preserve

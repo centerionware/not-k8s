@@ -3456,7 +3456,7 @@ current-context: test
         let export = Export::load(directory.path()).unwrap();
         assert_eq!(export.objects.len(), 1);
         assert_eq!(export.objects[0].source_uid.as_deref(), Some("source-uid"));
-        assert_eq!(export.node_state_count(), 1);
+        assert_eq!(export.node_state_count(), 2);
         assert_eq!(
             export.node_state("node-a").unwrap().uid.as_deref(),
             Some("node-uid")
@@ -3464,6 +3464,10 @@ current-context: test
         assert_eq!(
             export.node_state("node-a").unwrap().unschedulable,
             Some(true)
+        );
+        assert_eq!(
+            export.node_state("node-b").unwrap().uid.as_deref(),
+            Some("worker-uid")
         );
         assert_eq!(export.control_plane_node_names(), ["node-a"]);
     }

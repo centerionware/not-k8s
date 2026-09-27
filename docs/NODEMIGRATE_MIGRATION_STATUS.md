@@ -28,6 +28,15 @@ noise is gone from a full migration log. The follow-up diagnostics at
 lane has passed a full round trip, and no PV/PVC/backing-volume deletion was
 reported. Full lane evidence is recorded in the [CI status](NODEMIGRATE_CI_STATUS.md).
 
+The migration fixture installs Cilium 1.20.2 with
+`kubeProxyReplacement=false`. That lane therefore expects kube-proxy on the
+upstream source/return cluster; it tests Cilium as the CNI, not Cilium's eBPF
+Service replacement mode. The `kube-proxy` watcher output is diagnostic and an
+empty result is valid for a Cilium KPR cluster. Add explicit KPR-enabled
+coverage and verify that kube-proxy and not-k8s `nodeproxy` do not compete with
+Cilium for Service routing. Cilium's Envoy L7 proxy remains a separate
+component. See the expanded requirement in [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md).
+
 The nodemigrate quick-check passed at utility SHA `17281efb42343ae2f934f681f57f031a59bc6016`
 in [36315451874](https://github.com/centerionware/not-k8s/actions/runs/36315451874).
 The fixture failure at
