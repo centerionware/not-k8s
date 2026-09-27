@@ -12,6 +12,20 @@ def regenerated_system_addon_replica_set:
      .name == "metrics-server")
   );
 
+def regenerated_system_lease:
+  .kind == "Lease" and .metadata.namespace == "kube-system" and (
+    .metadata.name == "kube-controller-manager" or
+    .metadata.name == "kube-scheduler" or
+    ((.metadata.name // "") | startswith("apiserver-")) or
+    .metadata.name == "cert-manager-cainjector-leader-election" or
+    .metadata.name == "cert-manager-controller" or
+    .metadata.name == "cilium-operator-resource-lock"
+  );
+
+def system_coredns_rbac_bootstrap_metadata:
+  (.kind == "ClusterRole" or .kind == "ClusterRoleBinding") and
+  .metadata.name == "system:coredns";
+
 def default_kubernetes_service_endpoint:
   .metadata.namespace == "default" and (
     .metadata.name == "kubernetes" or
@@ -46,6 +60,8 @@ select(
      .metadata.name != "extension-apiserver-authentication"))
 | select(controller_regenerated_pod | not)
 | select(regenerated_system_addon_replica_set | not)
+| select(regenerated_system_lease | not)
+| select(.kind != "CSINode")
 | select((.kind != "Secret") or (.type != "kubernetes.io/service-account-token"))
 | del(.status, .metadata.uid, .metadata.creationTimestamp,
       .metadata.deletionTimestamp, .metadata.deletionGracePeriodSeconds,
@@ -55,3 +71,12 @@ select(
     .metadata.ownerReferences |= map(del(.uid))
   else . end
 | if .spec.claimRef then .spec.claimRef |= del(.uid) else . end
+| if .kind == "PriorityClass" and .globalDefault == false then del(.globalDefault) else . end
+| if system_coredns_rbac_bootstrap_metadata then
+    (if (.metadata.labels | type) == "object" then
+       .metadata.labels |= del(."kubernetes.io/bootstrapping")
+     else . end)
+    | (if (.metadata.annotations | type) == "object" then
+         .metadata.annotations |= del(."rbac.authorization.kubernetes.io/autoupdate")
+       else . end)
+  else . end

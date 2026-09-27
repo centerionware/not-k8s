@@ -35,6 +35,30 @@ after_normalized="$(jq -cS -f "$FILTER" <<< "$after")"
 jq -e '.metadata.annotations["nodemigrate.io/source-uid"] == "user-value" and .data.marker == "preserved" and (.metadata.ownerReferences[0] | has("uid") | not)' \
     <<< "$after_normalized" >/dev/null
 
+priority_source='{"apiVersion":"scheduling.k8s.io/v1","kind":"PriorityClass","metadata":{"name":"system-node-critical"},"value":2000001000}'
+priority_target='{"apiVersion":"scheduling.k8s.io/v1","kind":"PriorityClass","metadata":{"name":"system-node-critical"},"value":2000001000,"globalDefault":false}'
+[[ "$(jq -cS -f "$FILTER" <<< "$priority_source")" == "$(jq -cS -f "$FILTER" <<< "$priority_target")" ]] || {
+    echo "absent and false PriorityClass globalDefault values should have identical scheduling semantics" >&2
+    exit 1
+}
+priority_true="$(jq -cS -f "$FILTER" <<< "${priority_target/false/true}")"
+[[ "$priority_true" != "$(jq -cS -f "$FILTER" <<< "$priority_source")" ]] || {
+    echo "PriorityClass globalDefault=true was normalized away" >&2
+    exit 1
+}
+
+coredns_rbac_source='{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"system:coredns","labels":{"kubernetes.io/bootstrapping":"rbac-defaults","custom.example/preserve":"yes"},"annotations":{"rbac.authorization.kubernetes.io/autoupdate":"true","custom.example/preserve":"yes"}},"rules":[{"apiGroups":[""],"resources":["services"],"verbs":["list","watch"]}]}'
+coredns_rbac_target='{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"system:coredns","labels":{"custom.example/preserve":"yes"},"annotations":{"custom.example/preserve":"yes"}},"rules":[{"apiGroups":[""],"resources":["services"],"verbs":["list","watch"]}]}'
+[[ "$(jq -cS -f "$FILTER" <<< "$coredns_rbac_source")" == "$(jq -cS -f "$FILTER" <<< "$coredns_rbac_target")" ]] || {
+    echo "Kubernetes CoreDNS bootstrap metadata did not normalize across source and target defaults" >&2
+    exit 1
+}
+coredns_rbac_changed="${coredns_rbac_target/\"watch\"/\"get\"}"
+[[ "$(jq -cS -f "$FILTER" <<< "$coredns_rbac_source")" != "$(jq -cS -f "$FILTER" <<< "$coredns_rbac_changed")" ]] || {
+    echo "CoreDNS ClusterRole rules were normalized away with bootstrap metadata" >&2
+    exit 1
+}
+
 node_state="$(jq -cn '{items:[{metadata:{labels:{"operator.example/pool":"blue"},annotations:{"nodemigrate.io/source-uid":"operator-node-value"}},spec:{taints:[{key:"operator.example/dedicated",value:"migration",effect:"PreferNoSchedule"}]}}]}')"
 jq -e '
   all(.items[];
@@ -69,6 +93,8 @@ for transient in \
     '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"coredns-54bf7cdff9","namespace":"kube-system","ownerReferences":[{"kind":"Deployment","name":"coredns","controller":true}]}}' \
     '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"local-path-provisioner-69879d7dd7","namespace":"kube-system","ownerReferences":[{"kind":"Deployment","name":"local-path-provisioner","controller":true}]}}' \
     '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"metrics-server-77dbbf84b","namespace":"kube-system","ownerReferences":[{"kind":"Deployment","name":"metrics-server","controller":true}]}}' \
+    '{"apiVersion":"coordination.k8s.io/v1","kind":"Lease","metadata":{"name":"cilium-operator-resource-lock","namespace":"kube-system"},"spec":{"holderIdentity":"source","renewTime":"2026-09-27T00:00:00Z"}}' \
+    '{"apiVersion":"storage.k8s.io/v1","kind":"CSINode","metadata":{"name":"node-a","ownerReferences":[{"apiVersion":"v1","kind":"Node","name":"node-a","uid":"source-node-uid"}]},"spec":{"drivers":[{"name":"hostpath.csi.k8s.io","nodeID":"node-a"}]}}' \
     '{"apiVersion":"v1","kind":"Secret","type":"kubernetes.io/service-account-token","metadata":{"name":"token","namespace":"apps"}}'; do
     [[ -z "$(jq -cS -f "$FILTER" <<< "$transient")" ]] || {
         echo "transient object was included in the migratable snapshot" >&2
@@ -82,6 +108,7 @@ for durable in \
     '{"apiVersion":"v1","kind":"Endpoints","metadata":{"name":"custom-web","namespace":"apps","labels":{"endpoints.kubernetes.io/managed-by":"custom-endpoint-controller"}}}' \
     '{"apiVersion":"discovery.k8s.io/v1","kind":"EndpointSlice","metadata":{"name":"external-db-v4","namespace":"migration-apps","labels":{"kubernetes.io/service-name":"external-db","endpointslice.kubernetes.io/managed-by":"migration-operator"}},"addressType":"IPv4","endpoints":[{"addresses":["192.0.2.20"]}],"ports":[{"port":5432}]}' \
     '{"apiVersion":"coordination.k8s.io/v1","kind":"Lease","metadata":{"name":"migration-lock","namespace":"migration-apps"},"spec":{"holderIdentity":"migration-controller"}}' \
+    '{"apiVersion":"coordination.k8s.io/v1","kind":"Lease","metadata":{"name":"application-lock","namespace":"kube-system"},"spec":{"holderIdentity":"application-controller"}}' \
     '{"apiVersion":"cilium.io/v2","kind":"CiliumNode","metadata":{"name":"node-a"},"spec":{"addresses":[{"ip":"192.0.2.10","type":"InternalIP"}]}}' \
     '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"metrics-server-old","namespace":"kube-system"}}' \
     '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"web-old","namespace":"apps"}}' \

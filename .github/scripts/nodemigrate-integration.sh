@@ -1688,6 +1688,38 @@ verify_system_addon_rollouts() {
     done
 }
 
+verify_csi_node_registration() {
+    local node_names node node_json csinode_json deadline
+    node_names="$(kubectl get nodes -o json | jq -r '.items[].metadata.name')"
+    [[ -n "$node_names" ]] || {
+        echo "no Nodes are available for CSI registration checks" >&2
+        return 1
+    }
+    while IFS= read -r node; do
+        [[ -n "$node" ]] || continue
+        node_json="$(kubectl get node "$node" -o json)"
+        deadline=$((SECONDS + 120))
+        while true; do
+            if csinode_json="$(kubectl get csinode "$node" -o json 2>/dev/null)" \
+                && jq -e --arg node "$node" --arg uid "$(jq -r '.metadata.uid' <<<"$node_json")" '
+                  any(.spec.drivers[]?; .name == "hostpath.csi.k8s.io") and
+                  any(.metadata.ownerReferences[]?;
+                    .kind == "Node" and .name == $node and .uid == $uid
+                  )
+                ' <<<"$csinode_json" >/dev/null; then
+                break
+            fi
+            if (( SECONDS >= deadline )); then
+                echo "hostpath CSI driver did not register a CSINode owned by Node $node" >&2
+                kubectl get csinode "$node" -o yaml >&2 || true
+                return 1
+            fi
+            sleep 2
+        done
+    done <<<"$node_names"
+    echo "PASS: hostpath CSI registered on each Node and regenerated its CSINode owner reference"
+}
+
 capture_helm_release_state() {
     local output="${1:?missing Helm state output path}"
     local releases_json release name namespace chart app_version revision status
@@ -1882,6 +1914,7 @@ verify_stage() {
     fi
     echo "PASS: every namespace trust bundle matches the active API CA at stage $stage"
     kubectl wait --for=condition=Ready node --all --timeout=5m
+    verify_csi_node_registration
     if [[ -n "${NODEMIGRATE_EXPECTED_NODES:-}" ]]; then
         local expected_nodes actual_nodes
         expected_nodes="$(tr ',' '\n' <<<"$NODEMIGRATE_EXPECTED_NODES" | LC_ALL=C sort | paste -sd, -)"

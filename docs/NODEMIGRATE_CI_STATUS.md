@@ -15,6 +15,27 @@ new fixes.
 
 ## Most recent evidence
 
+Run [36307445772](https://github.com/centerionware/not-k8s/actions/runs/36307445772)
+at SHA `d92e814911416403bba8b9cf02940fc23be1d140` passed the five-node
+Docker/kubeadm/Cilium preflight and both utility/runtime builds. PVC identities,
+PV bindings, and StatefulSet data passed at source and nodestore in both lanes;
+both lanes reached `PASS stage=nodestore`. K3s then failed strict semantic
+parity on controller-owned Lease fields, default `PriorityClass.globalDefault`,
+and generated CSINode ownership. Upstream failed on those too, plus CoreDNS
+bootstrap RBAC metadata and `CSIDriver.spec.preventPodSchedulingIfMissing`.
+The last field is present in the Kubernetes 1.37.1 source API but missing from
+the target's release-1.34 schema, so it must remain a hard parity failure until
+API and scheduler support are added. Logs are saved at
+`/tmp/nodemigrate-36307445772/`.
+
+The harness now lifecycle-normalizes the known controller leases and
+Kubernetes default/bootstrap metadata, excludes node-generated `CSINode`
+objects from byte-for-byte parity, and checks that each Node has a newly
+registered hostpath CSI driver entry owned by its current Node UID. User
+application Leases, custom RBAC, enabled PriorityClass defaults, durable
+CSIDriver specs, and application rollout history remain strict. Local shell and
+snapshot-filter checks pass; dedicated runtime validation is pending.
+
 Run [36306098280](https://github.com/centerionware/not-k8s/actions/runs/36306098280)
 at SHA `39ceeb189ac619988ddc96815611b6e4d1848198` passed the five-node
 Docker/kubeadm/Cilium preflight and built both the utility and branch runtime.

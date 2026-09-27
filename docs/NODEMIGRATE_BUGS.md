@@ -36,6 +36,31 @@ Last updated: 2026-09-27
 
 ## Latest runtime findings
 
+Run [36307445772](https://github.com/centerionware/not-k8s/actions/runs/36307445772)
+at SHA `d92e814911416403bba8b9cf02940fc23be1d140` passed the five-node
+preflight and both utility/runtime builds. All StatefulSet PVC/PV/data checks
+passed again. Both lanes reached `PASS stage=nodestore`, then strict source
+object parity failed. The test's latest update classifies hash-specific system
+ReplicaSets, controller leader Leases, CoreDNS bootstrap RBAC metadata, default
+false PriorityClass values, and node-owned CSINode objects by their actual
+lifecycle; it preserves strict checks for user Leases, custom RBAC, true
+PriorityClass defaults, durable CSIDriver specs, and application rollout
+history. It also checks that hostpath CSI has re-registered on every target
+Node. Focused shell/filter checks pass; rerun these classifications against the
+live scenarios before treating them as settled.
+
+- **`nodeapiserver` / `nodescheduler`: Kubernetes 1.37 CSI scheduling field is
+  dropped by the 1.34 API schema.** The upstream lane installs Kubernetes
+  `v1.37.1`, while the target's upstream component remains `v1.34.11` and its
+  vendored OpenAPI/protobuf schema is `release-1.34`. The strict parity failure
+  identifies `/spec/preventPodSchedulingIfMissing` on
+  `CSIDriver/hostpath.csi.k8s.io`; that field was added for Kubernetes 1.37's
+  CSI-aware scheduling. The destination schema does not declare it, and the
+  target object loses it. Do not normalize this difference away. Support the
+  field and its scheduling behavior or otherwise align the target API/scheduler
+  version, then verify source, target, and returned-source object behavior.
+  No fix has been applied yet.
+
 Run [36306098280](https://github.com/centerionware/not-k8s/actions/runs/36306098280)
 at SHA `39ceeb189ac619988ddc96815611b6e4d1848198` passed the five-node
 Docker/kubeadm/Cilium preflight and built both the utility and branch runtime.
