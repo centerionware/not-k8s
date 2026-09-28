@@ -270,9 +270,32 @@ async fn listener_serves_a_real_discovery_and_crud_round_trip() {
         .json()
         .await
         .expect("decoding precision-bound CRD GET");
+    let create_revision = created_crd
+        .pointer("/metadata/resourceVersion")
+        .and_then(serde_json::Value::as_str)
+        .expect("created CRD should have a resourceVersion");
+    // Supplying a resourceVersion bypasses the watch cache and reads the
+    // same persisted snapshot directly. Comparing both paths distinguishes
+    // a storage/protobuf precision issue from a cache decode issue.
+    let persisted_crd: serde_json::Value = client
+        .get(format!(
+            "{crd_path}/{crd_name}?resourceVersion={create_revision}"
+        ))
+        .send()
+        .await
+        .expect("getting the precision-bound CRD at its create revision")
+        .error_for_status()
+        .expect("precision-bound CRD consistent GET should succeed")
+        .json()
+        .await
+        .expect("decoding precision-bound CRD consistent GET");
     let maximum_pointer =
         "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/priority/maximum";
-    for (stage, object) in [("create", &created_crd), ("read", &returned_crd)] {
+    for (stage, object) in [
+        ("create", &created_crd),
+        ("cached read", &returned_crd),
+        ("persisted read", &persisted_crd),
+    ] {
         let maximum = object
             .pointer(maximum_pointer)
             .and_then(serde_json::Value::as_f64)
