@@ -2643,13 +2643,11 @@ fn can_preserve_existing_crd(
     existing
         .types
         .as_ref()
-        .and_then(|type_meta| type_meta.kind.as_deref())
-        == Some("CustomResourceDefinition")
+        .is_some_and(|type_meta| type_meta.kind == "CustomResourceDefinition")
         && desired
             .types
             .as_ref()
-            .and_then(|type_meta| type_meta.kind.as_deref())
-            == Some("CustomResourceDefinition")
+            .is_some_and(|type_meta| type_meta.kind == "CustomResourceDefinition")
         && existing.data.get("spec") == desired.data.get("spec")
         && existing.metadata.labels == desired.metadata.labels
         && existing.metadata.annotations == desired.metadata.annotations

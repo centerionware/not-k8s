@@ -14,9 +14,14 @@ showed `DynamicObject.types` is optional, so the CRD no-rewrite predicate's
 direct `types.kind` access was invalid. The migration dispatch
 [36424227253](https://github.com/centerionware/not-k8s/actions/runs/36424227253)
 failed at the same compile step in Docker, K3s, and upstream; no migration
-runtime ran. The predicate now reads the optional TypeMeta before checking its
-kind. Both focused workflows need rerunning at the corrected SHA. No general
-build or full e2e was dispatched.
+runtime ran. The first correction then failed in
+[nodemigrate check 36424544812](https://github.com/centerionware/not-k8s/actions/runs/36424544812)
+and migration dispatch
+[36424565854](https://github.com/centerionware/not-k8s/actions/runs/36424565854)
+because `TypeMeta.kind` is a `String`, not an `Option<String>`. The predicate
+now guards optional TypeMeta and compares its kind string directly. The latest
+source still needs both focused workflows. No general build or full e2e was
+dispatched.
 
 Latest branch-runtime run
 [36420315264](https://github.com/centerionware/not-k8s/actions/runs/36420315264)

@@ -11,7 +11,13 @@ Last updated: 2026-09-28
   at SHA `b140e73d7e57fdafdcb9105767b9e6056954abb6` failed because
   `DynamicObject.types` is `Option<TypeMeta>`. The predicate now checks the
   optional TypeMeta before reading `kind`; no tests or migration lanes ran past
-  compilation on the failed SHA. CI verification of the correction is pending.
+  compilation on the failed SHA. Its first correction then failed in
+  [run 36424544812](https://github.com/centerionware/not-k8s/actions/runs/36424544812)
+  and migration dispatch
+  [36424565854](https://github.com/centerionware/not-k8s/actions/runs/36424565854)
+  because `TypeMeta.kind` is a `String`, not `Option<String>`. The predicate
+  now guards the optional TypeMeta and compares its kind directly. CI
+  verification of the current correction is pending.
 
 ## Latest branch-run findings
 

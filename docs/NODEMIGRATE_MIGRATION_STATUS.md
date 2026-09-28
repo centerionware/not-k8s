@@ -15,9 +15,14 @@ and branch-runtime migration dispatch
 [36424227253](https://github.com/centerionware/not-k8s/actions/runs/36424227253)
 failed compiling the new CRD predicate at SHA
 `b140e73d7e57fdafdcb9105767b9e6056954abb6`: `DynamicObject.types` is an
-`Option<TypeMeta>`. The predicate now checks the optional metadata before its
-kind. No unit test or migration runtime ran on that SHA; validation of the
-corrected source is pending. No general build or full e2e ran.
+`Option<TypeMeta>`. Its first correction then failed in nodemigrate run
+[36424544812](https://github.com/centerionware/not-k8s/actions/runs/36424544812)
+and migration dispatch
+[36424565854](https://github.com/centerionware/not-k8s/actions/runs/36424565854),
+because `TypeMeta.kind` is a `String`. The predicate now guards optional
+TypeMeta and directly compares that string. No unit tests or migration runtime
+ran on either failed SHA; validation of the current source is pending. No
+general build or full e2e ran.
 
 ## Latest integration result
 
