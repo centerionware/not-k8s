@@ -8,6 +8,24 @@ is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
 Latest branch-runtime run
+[36418026366](https://github.com/centerionware/not-k8s/actions/runs/36418026366)
+completed with failure at SHA `7e8337a08a73e6027ceaab5605eacd9acebaa0de`.
+All three lanes built nodemigrate and the combined branch
+`notk8s --features cri`; the five-node lane also built its image. Exact job
+results: Kubernetes `108913755010`, K3s `108913755239`, Docker
+`108913755246`; dispatch validation `108913756721` was skipped. Cilium KPR
+and five-node recovery passed, and the CSI verifier passed on the Node hosting
+the singleton plugin. The Docker fixture then failed because its standalone
+entrypoint did not set `NODEMIGRATE_KUBECTL_IMAGE` before creating RBAC Jobs.
+Both single-node lanes migrated source state into nodestore, then failed at
+the new CRD diagnostic because the target APIs do not recognize kubectl's
+`crd` short name. The probe now uses the full CRD resource name; the fixture
+derives its kubectl image from the active client version. No nodestore
+checkpoint, return migration, or CRD precision result was reached. Artifacts
+are saved under `/tmp/nodemigrate-artifacts-36418026366/`. A corrected focused
+rerun is pending; no general build or full e2e ran.
+
+Latest branch-runtime run
 [36414625541](https://github.com/centerionware/not-k8s/actions/runs/36414625541)
 completed with failure at SHA `b5bd5bded1e3016dbffebc6e68f3956f495c7883`.
 All three jobs built `nodemigrate` and the branch combined

@@ -10,6 +10,25 @@ compile or unit test does not mark a real migration path as verified.
 ## Latest integration result
 
 Branch-runtime run
+[36418026366](https://github.com/centerionware/not-k8s/actions/runs/36418026366)
+at SHA `7e8337a08a73e6027ceaab5605eacd9acebaa0de` compiled nodemigrate and the
+combined branch runtime (`notk8s --features cri`) in all three lanes; Docker
+also built its five-node image. The five-node cluster passed Cilium KPR,
+control-plane loss/recovery, and hostpath CSI registration on the Node running
+the singleton CSI plugin. Fixture setup then stopped because its standalone
+entrypoint left `NODEMIGRATE_KUBECTL_IMAGE` unset. K3s and upstream both
+completed source setup and forward import into nodestore, then failed while
+collecting their nodestore checkpoint: the added CRD precision probe used the
+unsupported `crd` kubectl short name. The probe now uses the fully qualified
+CRD resource, and the fixture derives its kubectl image from the running
+client. No nodestore checkpoint, return migration, or precision comparison
+was reached in this run. Artifacts are under
+`/tmp/nodemigrate-artifacts-36418026366/`. Corrected runtime verification is
+pending; no general build or full e2e ran.
+
+## Latest integration result
+
+Branch-runtime run
 [36414625541](https://github.com/centerionware/not-k8s/actions/runs/36414625541)
 at SHA `b5bd5bded1e3016dbffebc6e68f3956f495c7883` compiled nodemigrate and the
 branch combined runtime (`notk8s --features cri`) in all three lanes; the

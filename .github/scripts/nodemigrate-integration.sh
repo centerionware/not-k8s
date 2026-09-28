@@ -947,6 +947,16 @@ install_hostpath_driver() {
 
 install_workloads() {
     local stage=source
+    if [[ -z "${NODEMIGRATE_KUBECTL_IMAGE:-}" ]]; then
+        local kubectl_version
+        kubectl_version="$(kubectl version --client -o jsonpath='{.clientVersion.gitVersion}')"
+        [[ -n "$kubectl_version" ]] || {
+            echo "could not determine the kubectl image version for fixture Jobs" >&2
+            return 1
+        }
+        NODEMIGRATE_KUBECTL_IMAGE="registry.k8s.io/kubectl:$kubectl_version"
+        export NODEMIGRATE_KUBECTL_IMAGE
+    fi
     kubectl label nodes --all operator.example/pool=blue --overwrite
     kubectl annotate nodes --all nodemigrate.io/source-uid=operator-node-value --overwrite
     kubectl taint nodes --all operator.example/dedicated=migration:PreferNoSchedule --overwrite
@@ -2767,7 +2777,7 @@ capture_semantic_checkpoint() {
     chmod 0700 "$CHECKPOINT_DIR" "$stage_dir"
 
     for crd in ingressroutes.traefik.io ingressroutetcps.traefik.io; do
-        kubectl get crd "$crd" -o json | python3 -c '
+        kubectl get customresourcedefinitions.apiextensions.k8s.io "$crd" -o json | python3 -c '
 import json
 import sys
 

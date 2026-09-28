@@ -4,6 +4,25 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **Fixture checkpoint probe used an unsupported CRD short name.** In run
+  [36418026366](https://github.com/centerionware/not-k8s/actions/runs/36418026366),
+  both K3s and upstream reached forward import and most nodestore workload
+  checks, then `kubectl get crd` failed because the destination API did not
+  recognize the short name. Python consequently reported an empty-input JSON
+  decode error. The diagnostic now uses
+  `customresourcedefinitions.apiextensions.k8s.io`; no CRD precision conclusion
+  can be drawn from this run.
+
+- **Five-node fixture did not initialize its kubectl Job image.** The same
+  run passed Cilium KPR recovery and CSI registration on the actual plugin
+  Node, then hit an unset `NODEMIGRATE_KUBECTL_IMAGE` while creating fixture
+  RBAC Jobs. The normal `install_tools` path had set it, but the Docker
+  entrypoint calls the shared fixture directly. `install_workloads` now derives
+  the image tag from `kubectl version --client`; runtime verification is
+  pending.
+
+## Latest branch-run findings
+
 - **The five-node CSI assertion assumed a singleton plugin runs on every
   Node.** Run
   [36414625541](https://github.com/centerionware/not-k8s/actions/runs/36414625541)
