@@ -14,8 +14,9 @@ combined branch runtime in all lanes; Docker also built its five-node image.
 Upstream passed returned workload behavior but failed strict CRD numeric
 round-trip parity. K3s returned the node as Ready, then lost it from API
 discovery during the HostPath CSI reinstall. Docker passed topology and
-control-plane recovery checks, but its initial fixture exited 127. None
-completed the required full bidirectional gate. See the
+control-plane recovery checks, but its source checkpoint exited 127 because
+`python3` was missing from the node image; the image now installs it pending
+rerun. None completed the required full bidirectional gate. See the
 [CI status](NODEMIGRATE_CI_STATUS.md) for exact jobs and artifacts and the
 [bug tracker](NODEMIGRATE_BUGS.md) for unresolved causes.
 

@@ -23,6 +23,7 @@ RUN apt-get update \
         linux-tools-common \
         linux-tools-generic \
         openssl \
+        python3 \
         systemd \
         systemd-sysv \
         util-linux \

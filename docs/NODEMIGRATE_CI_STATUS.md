@@ -21,10 +21,11 @@ nodestore checkpoints and completed return migration, but the returned Node
 later disappeared from K3s discovery while the HostPath CSI driver was being
 reinstalled; StatefulSet PV topology and CSI registration then failed. The
 Docker five-node cluster reached five Ready Nodes and passed the control-plane
-loss/recovery checks, but the full fixture exited 127 during its initial
-source checks; the uploaded diagnostic log ends with kubectl requests falling
-back to `localhost:8080`, so the precise missing command/context still needs
-isolation. All three migration lanes failed; no bidirectional gate passed.
+loss/recovery checks, but the source checkpoint exited 127 because
+`python3` was missing from the node image (`nodemigrate-integration.sh:2826`).
+The five-node image now installs `python3`; the branch migration rerun must
+confirm the fixture reaches parity and migration stages. All three migration
+lanes failed; no bidirectional gate passed.
 Artifacts were downloaded once to
 `/tmp/nodemigrate-artifacts-36463585411/`. Exact jobs: upstream
 `109067982540`, K3s `109067983019`, Docker `109067983100`; validation was

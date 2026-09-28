@@ -23,13 +23,12 @@ Last updated: 2026-09-28
   return command reported success, so the loss occurs during or after test
   fixture reinstallation. Determine which process deletes the Node and retain
   its identity and scheduling state through the full returned-stage check.
-- **Docker five-node fixture exits 127 after topology recovery.** In the same
-  run, all five kubeadm nodes reached Ready with Cilium and the test passed its
-  control-plane-loss and recovery checks. The later fixture exited 127 before
-  completing the source checkpoint; the failure diagnostics included kubectl
-  requests falling back to `localhost:8080`, but did not identify the missing
-  command or call site. Make this failure print the failing command/context and
-  rerun the full simulated path.
+- **Docker five-node fixture lacked Python for source checkpoints.** In the
+  same run, all five kubeadm nodes reached Ready with Cilium and the test passed
+  its control-plane-loss and recovery checks. It then exited 127 at
+  `nodemigrate-integration.sh:2826` because `python3` was absent from the
+  Ubuntu node image. The five-node image now installs `python3`; rerun the full
+  simulated path before closing this bug.
 
 - **Returned PV identity repair creates an unsafe claim-reference window.** In
   upstream job `109054224944` of run

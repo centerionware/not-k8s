@@ -16,8 +16,9 @@ image. Upstream passed source, nodestore, and returned workload checks, then
 failed exact round-trip comparison on Traefik CRD numeric maxima. K3s
 completed return migration but the Node disappeared from API discovery during
 HostPath CSI setup. Docker's five-node Cilium topology and control-plane
-recovery checks passed, but its fixture exited 127 before its source
-checkpoint. No migration gate passed. Full evidence is recorded in the
+recovery checks passed, but the source checkpoint exited 127 because the node
+image lacked `python3`; the image now installs it pending rerun. No migration
+gate passed. Full evidence is recorded in the
 [CI status](NODEMIGRATE_CI_STATUS.md), with unresolved findings in the
 [bug tracker](NODEMIGRATE_BUGS.md).
 
