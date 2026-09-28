@@ -20,9 +20,16 @@ failed compiling the new CRD predicate at SHA
 and migration dispatch
 [36424565854](https://github.com/centerionware/not-k8s/actions/runs/36424565854),
 because `TypeMeta.kind` is a `String`. The predicate now guards optional
-TypeMeta and directly compares that string. No unit tests or migration runtime
-ran on either failed SHA; validation of the current source is pending. No
-general build or full e2e ran.
+TypeMeta and directly compares that string. The branch migration build at SHA
+`46428806c3490958bd76a033c9e443391f2694aa` compiled nodemigrate in both
+single-node lanes; run
+[36425151654](https://github.com/centerionware/not-k8s/actions/runs/36425151654)
+is still running through the combined runtime builds and migration checks. The
+matching test run
+[36425123437](https://github.com/centerionware/not-k8s/actions/runs/36425123437)
+failed compiling only the new unit-test JSON literals, which need `u64`
+suffixes; that correction is in the current worktree and must be pushed and
+tested. No general build or full e2e ran.
 
 ## Latest integration result
 

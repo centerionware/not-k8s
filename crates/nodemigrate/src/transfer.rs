@@ -3219,7 +3219,7 @@ mod tests {
             },
             "spec": {
                 "versions": [{
-                    "schema": {"maximum": 9223372036854775000}
+                    "schema": {"maximum": 9223372036854775000u64}
                 }]
             }
         }))
@@ -3238,7 +3238,7 @@ mod tests {
             },
             "spec": {
                 "versions": [{
-                    "schema": {"maximum": 9223372036854776000}
+                    "schema": {"maximum": 9223372036854776000u64}
                 }]
             }
         }))
@@ -3255,7 +3255,7 @@ mod tests {
             },
             "spec": {
                 "versions": [{
-                    "schema": {"maximum": 9223372036854775000}
+                    "schema": {"maximum": 9223372036854775000u64}
                 }]
             }
         }))

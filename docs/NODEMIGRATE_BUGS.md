@@ -17,7 +17,12 @@ Last updated: 2026-09-28
   [36424565854](https://github.com/centerionware/not-k8s/actions/runs/36424565854)
   because `TypeMeta.kind` is a `String`, not `Option<String>`. The predicate
   now guards the optional TypeMeta and compares its kind directly. CI
-  verification of the current correction is pending.
+  compiled nodemigrate in both single-node migration lanes, and run
+  [36425151654](https://github.com/centerionware/not-k8s/actions/runs/36425151654)
+  is still in progress. The focused test run
+  [36425123437](https://github.com/centerionware/not-k8s/actions/runs/36425123437)
+  found that large JSON test literals need `u64` suffixes; the literals are
+  fixed locally and test verification is pending.
 
 ## Latest branch-run findings
 

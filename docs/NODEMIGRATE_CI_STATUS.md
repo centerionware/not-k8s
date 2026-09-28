@@ -20,8 +20,15 @@ and migration dispatch
 [36424565854](https://github.com/centerionware/not-k8s/actions/runs/36424565854)
 because `TypeMeta.kind` is a `String`, not an `Option<String>`. The predicate
 now guards optional TypeMeta and compares its kind string directly. The latest
-source still needs both focused workflows. No general build or full e2e was
-dispatched.
+runtime binary builds compiled nodemigrate on both single-node lanes, but
+the test workflow
+[36425123437](https://github.com/centerionware/not-k8s/actions/runs/36425123437)
+failed compiling the new unit test because its large JSON number literals need
+`u64` suffixes. Those literals are fixed. Migration run
+[36425151654](https://github.com/centerionware/not-k8s/actions/runs/36425151654)
+is still running against the compiled runtime from the same behavioral source;
+its final result is pending. A new focused nodemigrate test run is needed for
+the literal correction. No general build or full e2e was dispatched.
 
 Latest branch-runtime run
 [36420315264](https://github.com/centerionware/not-k8s/actions/runs/36420315264)
