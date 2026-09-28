@@ -30,6 +30,14 @@ at the commit above, but they have not run in the migration fixture. The
 migration run remains paused while the repeated K3s returned-Node disappearance
 is unresolved.
 
+The current working change adds a returned-K3s audit gate: before CSI driver
+reinstallation, it checks the active service unit and requires post-return Node
+and Node-Lease audit records. Failure output now includes K3s service identity,
+service state, and K3s/kernel journals since return began. The focused mocked
+diagnostics check passes locally for valid records and for the missing-Node
+record failure path. This change is not yet in CI, and live audit coverage and
+the Node-loss actor remain unverified.
+
 Before another migration attempt, resolve the full set of confirmed defects
 already exposed by completed runs as one batch; do not dispatch after fixing
 only one. Continue code and saved-artifact investigation where a cause remains

@@ -14,17 +14,23 @@ Last updated: 2026-09-28
   return-migration service restart and the Node disappearance, so it cannot
   establish whether a DELETE occurred or identify the actor. The actor and
   mechanism remain unknown; do not paper over this by relaxing readiness or
-  storage checks. The fixture now configures K3s API auditing for Node and
-  `kube-node-lease` Lease mutations and prints that audit file on failure. The
-  local diagnostics check verifies both policy rules, but the audit path has
-  not yet been exercised by a new migration run. Keep migration retries paused
-  until this failure is understood and fixed.
+  storage checks. The fixture configures K3s API auditing for Node and
+  `kube-node-lease` Lease mutations and prints that audit file on failure. It
+  now also verifies immediately after return migration that the active K3s
+  unit retains both audit arguments and the audit stream contains Node and
+  Lease mutations newer than the return start time. A missing stream fails
+  before CSI fixture reinstallation. Failure collection includes K3s unit
+  state and K3s/kernel journals since migration start. The focused diagnostics
+  check covers valid Node/Lease events and rejects a stream missing Node
+  mutations; live audit and failure-actor evidence remain pending. Keep
+  migration retries paused until this failure is understood and fixed.
   The watcher now records Node UID and lifecycle timestamps in its change
   detector, and captures Node resource versions plus Node-Lease renewal times
   at its normal diagnostic cadence. This preserves identity/heartbeat evidence
   without making every Lease renewal trigger a full log capture; only shell
   syntax and the focused `check_nodemigrate_diagnostics.sh` script pass locally.
-  The check covers JSON diagnostics, not the live watcher or API audit path.
+  The check covers mocked JSON/audit diagnostics, not the live watcher or API
+  audit path.
   The captured event list also contains K3s `RemovingNode` events and repeated
   `Starting kubelet` events. Upstream NodeLifecycleController emits
   `RemovingNode` after its informer list no longer contains a Node that was in

@@ -27,6 +27,19 @@ esac
 STUB
 chmod +x "$TEST_DIR/kubectl"
 
+cat > "$TEST_DIR/systemctl" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == cat && "${2:-}" == k3s ]]; then
+    printf '%s\n' \
+        '--kube-apiserver-arg=audit-policy-file=/etc/rancher/k3s/nodemigrate-audit-policy.yaml' \
+        "--kube-apiserver-arg=audit-log-path=${NODEMIGRATE_K3S_AUDIT_LOG:?}"
+    exit 0
+fi
+echo "unexpected systemctl invocation: $*" >&2
+exit 2
+STUB
+chmod +x "$TEST_DIR/systemctl"
+
 export NODEMIGRATE_INTEGRATION_LIBRARY=true
 export GITHUB_WORKSPACE="$ROOT"
 export PATH="$TEST_DIR:/usr/bin:/bin"
@@ -45,6 +58,34 @@ grep -Fq 'namespaces: [kube-node-lease]' <<< "$audit_policy" || {
 }
 grep -Fq 'resources: [leases]' <<< "$audit_policy" || {
     echo "K3s audit policy does not capture Node Lease writes" >&2
+    exit 1
+}
+
+export NODEMIGRATE_K3S_AUDIT_LOG="$TEST_DIR/nodemigrate-audit.jsonl"
+MIGRATION_STARTED_AT=2026-09-28T19:10:00+00:00
+cat > "$NODEMIGRATE_K3S_AUDIT_LOG" <<'JSONL'
+{"requestReceivedTimestamp":"2026-09-28T19:10:03+00:00","verb":"delete","objectRef":{"resource":"nodes","name":"worker-1"},"user":{"username":"migration-admin"},"responseStatus":{"code":200}}
+{"requestReceivedTimestamp":"2026-09-28T19:10:04+00:00","verb":"update","objectRef":{"resource":"leases","namespace":"kube-node-lease","name":"worker-1"},"user":{"username":"system:node:worker-1"},"responseStatus":{"code":200}}
+JSONL
+output="$(verify_returned_k3s_audit 2>&1)" || {
+    echo "valid returned K3s audit events were rejected: $output" >&2
+    exit 1
+}
+grep -Fq 'PASS returned K3s audit captured 1 Node and 1 Lease mutation(s)' <<< "$output" || {
+    echo "returned K3s audit event counts were not reported: $output" >&2
+    exit 1
+}
+
+printf '%s\n' \
+    '{"requestReceivedTimestamp":"2026-09-28T19:10:04+00:00","verb":"update","objectRef":{"resource":"leases","namespace":"kube-node-lease","name":"worker-1"}}' \
+    > "$NODEMIGRATE_K3S_AUDIT_LOG"
+if verify_returned_k3s_audit >"$TEST_DIR/missing-node-audit.out" 2>&1; then
+    echo "returned K3s audit verification accepted a missing Node mutation" >&2
+    exit 1
+fi
+grep -Fq 'no Node API mutations since return migration began' "$TEST_DIR/missing-node-audit.out" || {
+    echo "missing returned Node audit event did not produce a clear failure" >&2
+    cat "$TEST_DIR/missing-node-audit.out" >&2
     exit 1
 }
 

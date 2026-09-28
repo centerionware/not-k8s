@@ -547,12 +547,24 @@ diagnostics() {
         echo "Migration integration failed at $(date -u +%FT%TZ), exit=$status"
         echo "source=$SOURCE_DIST kubeconfig=${CURRENT_KUBECONFIG:-unset}"
         if [[ "$SOURCE_DIST" == k3s ]]; then
-            local audit_log=/var/lib/rancher/k3s/server/logs/nodemigrate-audit.log
+            local audit_log="${NODEMIGRATE_K3S_AUDIT_LOG:-/var/lib/rancher/k3s/server/logs/nodemigrate-audit.log}"
             if [[ -f "$audit_log" ]]; then
                 echo "K3s node mutation audit log ($audit_log):"
                 cat "$audit_log" || true
             else
                 echo "K3s node mutation audit log is missing: $audit_log"
+            fi
+            echo "K3s service identity and state:"
+            systemctl show k3s -p ActiveState -p SubState -p MainPID -p InvocationID \
+                -p ExecMainStatus -p Result --no-pager || true
+            systemctl status k3s --no-pager --full || true
+            if [[ -n "$MIGRATION_STARTED_AT" ]]; then
+                echo "K3s service journal since migration start ($MIGRATION_STARTED_AT):"
+                journalctl -b -u k3s --since "$MIGRATION_STARTED_AT" \
+                    --no-pager -o short-iso-precise || true
+                echo "Kernel journal since migration start ($MIGRATION_STARTED_AT):"
+                journalctl -b -k --since "$MIGRATION_STARTED_AT" \
+                    --no-pager -o short-iso-precise || true
             fi
         fi
         if [[ -n "$CURRENT_KUBECONFIG" && -f "$CURRENT_KUBECONFIG" ]]; then
@@ -3081,6 +3093,80 @@ print(f"CRD precision checkpoint stage={stage} crd={expected_name} maximum={valu
     chmod 0600 "$stage_dir"/*.json "$stage_dir"/*.jsonl "$stage_dir"/*.sha256
 }
 
+verify_returned_k3s_audit() {
+    local audit_log="${NODEMIGRATE_K3S_AUDIT_LOG:-/var/lib/rancher/k3s/server/logs/nodemigrate-audit.log}"
+    local service_unit audit_policy
+    audit_policy=/etc/rancher/k3s/nodemigrate-audit-policy.yaml
+    service_unit="$(systemctl cat k3s)" || {
+        echo "could not inspect the returned K3s service unit for audit settings" >&2
+        return 1
+    }
+    grep -Fq -- "--kube-apiserver-arg=audit-policy-file=$audit_policy" <<< "$service_unit" \
+        && grep -Fq -- "--kube-apiserver-arg=audit-log-path=$audit_log" <<< "$service_unit" || {
+        echo "returned K3s service unit does not retain Node/Lease audit policy and log arguments" >&2
+        return 1
+    }
+    [[ -s "$audit_log" ]] || {
+        echo "returned K3s audit log is missing or empty: $audit_log" >&2
+        return 1
+    }
+    python3 - "$audit_log" "$MIGRATION_STARTED_AT" <<'PY'
+from datetime import datetime
+import json
+import sys
+
+path, since_text = sys.argv[1:]
+since = datetime.fromisoformat(since_text.replace("Z", "+00:00"))
+node_events = []
+lease_events = []
+malformed = []
+with open(path, encoding="utf-8") as audit_file:
+    for line_number, line in enumerate(audit_file, 1):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as error:
+            malformed.append((line_number, str(error)))
+            continue
+        timestamp = event.get("requestReceivedTimestamp")
+        object_ref = event.get("objectRef") or {}
+        if not timestamp:
+            continue
+        try:
+            event_time = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            malformed.append((line_number, f"invalid requestReceivedTimestamp {timestamp!r}"))
+            continue
+        if event_time < since:
+            continue
+        summary = {
+            "time": timestamp,
+            "verb": event.get("verb"),
+            "resource": object_ref.get("resource"),
+            "subresource": object_ref.get("subresource"),
+            "name": object_ref.get("name"),
+            "username": (event.get("user") or {}).get("username"),
+            "code": (event.get("responseStatus") or {}).get("code"),
+        }
+        if object_ref.get("resource") == "nodes":
+            node_events.append(summary)
+        if (object_ref.get("resource") == "leases"
+                and object_ref.get("namespace") == "kube-node-lease"):
+            lease_events.append(summary)
+
+if malformed:
+    print(f"K3s audit log contains {len(malformed)} malformed line(s): {malformed[:3]}", file=sys.stderr)
+    raise SystemExit(1)
+if not node_events:
+    print("K3s audit log has no Node API mutations since return migration began", file=sys.stderr)
+    raise SystemExit(1)
+if not lease_events:
+    print("K3s audit log has no kube-node-lease mutations since return migration began", file=sys.stderr)
+    raise SystemExit(1)
+print(f"PASS returned K3s audit captured {len(node_events)} Node and {len(lease_events)} Lease mutation(s)")
+print("Node mutation actors:", json.dumps(node_events, sort_keys=True))
+PY
+}
+
 capture_migratable_api_objects() {
     local output="$1"
     local summary_output="${output%.jsonl}-summary.jsonl"
@@ -3613,6 +3699,9 @@ main() {
     fi
     CURRENT_KUBECONFIG="$SOURCE_KUBECONFIG"
     export KUBECONFIG="$SOURCE_KUBECONFIG"
+    if [[ "$SOURCE_DIST" == k3s ]]; then
+        verify_returned_k3s_audit
+    fi
     assert_csi_device_volume_matches_source "$SOURCE_KUBECONFIG" after-return-migration
     KUBECONFIG="$SOURCE_KUBECONFIG" install_hostpath_driver /var/lib/kubelet true
     restore_csi_device_volume_after_fixture_reinstall "$SOURCE_KUBECONFIG" returned
