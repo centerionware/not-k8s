@@ -4,6 +4,34 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **`nodemigrate`: transient admission failure aborts reference repair.** In
+  branch-runtime run
+  [36373995554](https://github.com/centerionware/not-k8s/actions/runs/36373995554),
+  upstream return imported CRDs and began restoring objects, then failed while
+  repairing owner references on a cert-manager CertificateRequest because its
+  validating webhook Service was unavailable. The main object-apply phase
+  retries transient API errors, but the reference-repair phase applied once
+  and aborted. Reference repair now uses the same bounded transient retry
+  policy. The existing classifier regression verifies retryable HTTP 500 and
+  permanent HTTP 422 behavior; CI validation is pending.
+
+- **Migration fixture: wait for CNI and DNS before workload probes.** In run
+  `36373995554`, K3s return entered Cilium init-container reconciliation and
+  Pod/Service traffic failed with `no route to host`. The `emptyDir` fixture
+  then found a Running Pod whose container was exited and reported an exec
+  error, obscuring the earlier datapath failure. Each migration checkpoint
+  now waits for the Cilium DaemonSet and CoreDNS Deployment before workload
+  assertions, and prints their state when they do not become Ready. Runtime
+  validation is pending.
+
+- **Five-node migration preflight: duplicated cp-1 restart hid the failing check.**
+  Run `36373995554` passed the first kubeadm/Cilium recovery but stopped and
+  restarted cp-1 a second time; the second combined wait failed without naming
+  the failed predicate. The preflight now performs one failure-isolation and
+  recovery cycle, logs kubelet/API/all-node/Cilium readiness separately, and
+  captures cluster and node diagnostics on timeout. Shell validation passed;
+  runtime verification is pending.
+
 - **Migration CI: restarted five-node control plane was not fully ready before
   fixture setup.** In branch-runtime run
   [36371692313](https://github.com/centerionware/not-k8s/actions/runs/36371692313),

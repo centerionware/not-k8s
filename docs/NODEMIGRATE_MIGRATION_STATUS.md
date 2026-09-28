@@ -9,6 +9,25 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration result
 
+The latest run
+[36373995554](https://github.com/centerionware/not-k8s/actions/runs/36373995554)
+used branch runtime at `539ea445a7d7bc1c73e94ffe5c759eb5e9232751`. All three
+jobs compiled `nodemigrate` and `notk8s --features cri`, compiling every
+packaged runtime component crate. The upstream lane completed forward
+migration, retained API startup, and CRD import; reference repair then failed
+on a CertificateRequest because the cert-manager webhook Service refused the
+connection. The K3s lane completed forward migration and API/resource parity;
+returning from nodestore triggered Cilium init-container restarts, loss of Pod
+and Service networking, and an `emptyDir` exec against a container in
+`CONTAINER_EXITED` state. The fixture did not check Cilium/CoreDNS readiness
+before application probes. The five-node preflight recovered cp-1 after one
+failure-isolation cycle but repeated the same stop/start and failed its second
+recovery gate without per-check diagnostics. The new code retries transient
+errors while repairing imported references; the fixture now waits for Cilium
+and CoreDNS, and the Docker preflight performs one diagnosed recovery cycle.
+Verification of these changes is pending. No general build or general e2e
+workflow ran.
+
 The follow-up run
 [36371692313](https://github.com/centerionware/not-k8s/actions/runs/36371692313)
 finished at code SHA `dfa3325594be1b150f07576f0ecc2060f7554deb`. Focused

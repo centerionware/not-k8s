@@ -2187,6 +2187,18 @@ verify_stage() {
     fi
     echo "PASS: every namespace trust bundle matches the active API CA at stage $stage"
     kubectl wait --for=condition=Ready node --all --timeout=5m
+    if ! kubectl rollout status daemonset/cilium -n kube-system --timeout=5m; then
+        echo "Cilium did not become Ready before workload checks at stage $stage" >&2
+        kubectl get daemonset cilium -n kube-system -o wide >&2 || true
+        kubectl get pods -n kube-system -l k8s-app=cilium -o wide >&2 || true
+        return 1
+    fi
+    if ! kubectl rollout status deployment/coredns -n kube-system --timeout=5m; then
+        echo "CoreDNS did not become Ready before workload checks at stage $stage" >&2
+        kubectl get deployment coredns -n kube-system -o wide >&2 || true
+        kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide >&2 || true
+        return 1
+    fi
     verify_csi_node_registration
     if [[ -n "${NODEMIGRATE_EXPECTED_NODES:-}" ]]; then
         local expected_nodes actual_nodes

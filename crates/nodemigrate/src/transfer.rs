@@ -1156,8 +1156,30 @@ impl KubeApi {
                     changed = true;
                 }
                 if changed {
-                    apply_object(&client, &discovery, &value).await
-                        .with_context(|| format!("repairing references in {}", object.path.display()))?;
+                    for attempt in 0..IMPORT_RETRY_ATTEMPTS {
+                        match apply_object(&client, &discovery, &value).await {
+                            Ok(_) => break,
+                            Err(error)
+                                if retryable_import_error(&error, false)
+                                    && attempt + 1 < IMPORT_RETRY_ATTEMPTS =>
+                            {
+                                if attempt == 0 || (attempt + 1) % 6 == 0 {
+                                    eprintln!(
+                                        "nodemigrate: destination is temporarily unavailable while repairing references; retry {}/{} in {} seconds: {error:#}",
+                                        attempt + 1,
+                                        IMPORT_RETRY_ATTEMPTS - 1,
+                                        IMPORT_RETRY_DELAY.as_secs()
+                                    );
+                                }
+                                tokio::time::sleep(IMPORT_RETRY_DELAY).await;
+                            }
+                            Err(error) => {
+                                return Err(error).with_context(|| {
+                                    format!("repairing references in {}", object.path.display())
+                                });
+                            }
+                        }
+                    }
                 }
             }
             refresh_service_account_token_secrets(

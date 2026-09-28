@@ -7,6 +7,25 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+Latest branch-runtime run
+[36373995554](https://github.com/centerionware/not-k8s/actions/runs/36373995554)
+at SHA `539ea445a7d7bc1c73e94ffe5c759eb5e9232751` compiled both `nodemigrate`
+and the branch `notk8s --features cri` combined runtime in all three jobs; this
+compiles the packaged runtime component crates. K3s reached nodestore but
+failed its workload checkpoint while Cilium reinitialized and Pod/Service
+routing was unavailable; the fixture tried to exec into an exited container
+before checking CNI/CoreDNS readiness. Upstream passed forward migration and
+the nodestore checkpoint, then return import failed repairing a CertificateRequest
+while the cert-manager webhook was unavailable; reference repair did not retry
+transient API errors. The
+five-node preflight installed kubeadm/Cilium and recovered after control-plane
+loss, but its script restarted cp-1 twice and the second recovery check failed
+without identifying the failed predicate. The harness now uses one recovery
+cycle, reports each readiness result and collects diagnostics; fixture stages
+explicitly wait for Cilium and CoreDNS before workload checks; nodemigrate
+retries transient API failures during reference repair. These changes need a
+new migration run. No general build or general e2e workflow was dispatched.
+
 At fix SHA `dfa3325594be1b150f07576f0ecc2060f7554deb`, focused nodemigrate
 crate tests and packaging checks passed in
 [36371692594](https://github.com/centerionware/not-k8s/actions/runs/36371692594).

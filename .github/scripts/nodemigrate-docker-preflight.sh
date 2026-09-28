@@ -432,32 +432,12 @@ docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
     kubectl --request-timeout=20s get --raw=/readyz >/dev/null
 docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
     kubectl --request-timeout=20s get nodes -o wide
-docker start "$cp1" >/dev/null
-wait_systemd "$cp1"
-for _ in $(seq 1 120); do
-    if docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
-        kubectl --request-timeout=5s wait --for=condition=Ready node --all --timeout=5s >/dev/null 2>&1; then
-        break
-    fi
-    sleep 2
-done
-docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
-    kubectl --request-timeout=20s get nodes -o wide
-docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
-    kubectl get nodes -o json | jq -e '
-      (.items | length) == 5 and all(.items[]; any(.status.conditions[]?; .type == "Ready" and .status == "True"))
-    ' >/dev/null || fail "the five-node upstream cluster did not recover after cp-1 restart"
-
-echo "Stopping cp-1 to verify failure isolation"
-docker stop --time 2 "cp-1-${SUFFIX}" >/dev/null
 for node in cp-2 cp-3 worker-1 worker-2; do
     docker inspect --format '{{.State.Running}}' "${node}-${SUFFIX}" | grep -qx true \
         || fail "$node stopped when cp-1 was stopped"
 done
-docker start "cp-1-${SUFFIX}" >/dev/null
-wait_systemd "cp-1-${SUFFIX}"
-docker exec "cp-1-${SUFFIX}" systemctl is-active --quiet containerd \
-    || fail "cp-1 did not recover its CRI after restart"
+docker start "$cp1" >/dev/null
+wait_systemd "$cp1"
 echo "Waiting for cp-1 API, all five Nodes, and Cilium to recover before migration"
 cp1_recovered=false
 for _ in $(seq 1 180); do
@@ -473,9 +453,34 @@ for _ in $(seq 1 180); do
     fi
     sleep 2
 done
-[[ "$cp1_recovered" == true ]] \
-    || fail "cp-1 API, five-node readiness, and Cilium did not recover before migration"
-docker exec "cp-2-${SUFFIX}" env KUBECONFIG=/etc/kubernetes/admin.conf \
+if [[ "$cp1_recovered" != true ]]; then
+    kubelet_active=false
+    [[ "$(docker exec "$cp1" systemctl is-active kubelet 2>/dev/null || true)" == active ]] \
+        && kubelet_active=true
+    echo "Last recovery check: kubelet_active=$kubelet_active"
+    if docker exec "$cp1" env KUBECONFIG=/etc/kubernetes/admin.conf \
+        kubectl --request-timeout=5s get --raw=/readyz >/dev/null 2>&1; then
+        echo "Last recovery check: cp1_api_ready=true"
+    else
+        echo "Last recovery check: cp1_api_ready=false"
+    fi
+    if docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
+        kubectl --request-timeout=5s wait --for=condition=Ready node --all --timeout=5s >/dev/null 2>&1; then
+        echo "Last recovery check: all_nodes_ready=true"
+    else
+        echo "Last recovery check: all_nodes_ready=false"
+    fi
+    if docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
+        kubectl --request-timeout=5s rollout status daemonset/cilium -n kube-system --timeout=5s >/dev/null 2>&1; then
+        echo "Last recovery check: cilium_ready=true"
+    else
+        echo "Last recovery check: cilium_ready=false"
+    fi
+    echo "Collecting cluster and node diagnostics after cp-1 restart timeout"
+    collect_cluster_diagnostics
+    fail "cp-1 API, five-node readiness, and Cilium did not recover before migration"
+fi
+docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
     kubectl --request-timeout=20s get nodes -o wide
 
 echo "PASS: five Docker nodes ran a kubeadm 3-control-plane/2-worker cluster with Cilium, survived control-plane loss, and recovered all Nodes"
