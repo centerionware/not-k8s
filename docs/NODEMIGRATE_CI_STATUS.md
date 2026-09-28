@@ -51,6 +51,10 @@ downstream, and does not explain the removal. The explicit K3s service restart
 after the intentional replacement delete remains necessary. See the
 [upstream kubelet implementation](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubelet/kubelet_node_status.go)
 and [Lease controller](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/component-helpers/apimachinery/lease/controller.go).
+The `RemovingNode` event is emitted when the lifecycle controller's informer
+list no longer contains a previously known Node; it reports the observed
+disappearance, not an API delete by that controller. The writer remains
+unknown. See the [NodeLifecycleController event path](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/nodelifecycle/node_lifecycle_controller.go).
 
 ## Batch status before the next migration run
 

@@ -25,9 +25,12 @@ Last updated: 2026-09-28
   syntax and the focused `check_nodemigrate_diagnostics.sh` script pass locally.
   The check covers JSON diagnostics, not the live watcher or API audit path.
   The captured event list also contains K3s `RemovingNode` events and repeated
-  `Starting kubelet` events. That confirms the controller-removal path was
-  active, but does not establish why the Node stopped renewing or whether a
-  direct DELETE request preceded it. The return path now requires a new Ready
+  `Starting kubelet` events. Upstream NodeLifecycleController emits
+  `RemovingNode` after its informer list no longer contains a Node that was in
+  its prior known-node set; the event reports an observed disappearance and
+  does not mean that controller issued the delete. It does not establish why
+  the Node stopped renewing or whether a direct DELETE request preceded it.
+  The return path now requires a new Ready
   UID after it replaces an existing Node, preventing the old Ready object from
   satisfying cutover. Focused check
   [36481686171](https://github.com/centerionware/not-k8s/actions/runs/36481686171)
@@ -60,6 +63,9 @@ Last updated: 2026-09-28
   the initial replacement delete is intentional. The later disappearance is
   still unexplained. Sources: [Kubernetes v1.35 kubelet node status](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubelet/kubelet_node_status.go)
   and [Node Lease controller](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/component-helpers/apimachinery/lease/controller.go).
+  The `RemovingNode` event is generated while classifying informer-listed
+  Nodes, so it records the controller's observation rather than the API
+  deletion actor: [NodeLifecycleController](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/controller/nodelifecycle/node_lifecycle_controller.go).
 - **Empty CronJob status triggers repeated no-op writes.** The same K3s log
   records `system:serviceaccount:kube-system:cronjob-controller` patching the
   unchanged `migration-cron` status every few milliseconds. When a missing
