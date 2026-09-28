@@ -25,8 +25,12 @@ failed migrating four CSINodes because source objects omitted the required
 `spec.drivers` list; the importer now makes an omitted list explicitly empty.
 The logs also show the nodecontroller writing the unchanged empty status for
 `migration-cron` repeatedly at millisecond intervals; the controller now
-suppresses that no-op patch. The CSINode and CronJob code fixes await focused
-CI validation. The CRD numeric drift remains unfixed.
+suppresses that no-op patch. Focused check
+[36473759900](https://github.com/centerionware/not-k8s/actions/runs/36473759900)
+passed for `nodemigrate,nodecontroller` at SHA
+`32255054dcc65baeac828f2ec00acd1b54ba3208`, validating both fixes. This does
+not cover migration runtime behavior. The CRD numeric drift and K3s Node loss
+remain unresolved; no migration rerun has been dispatched.
 Artifacts were downloaded once to
 `/tmp/nodemigrate-artifacts-36468405459/`. Exact jobs: Docker
 `109084192913`, K3s `109084193351`, upstream `109084193399`; validation was

@@ -3425,8 +3425,8 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_crd_object_round_trip_preserves_large_schema_bound_json_integer() {
-        let source = serde_json::json!({
+    fn dynamic_crd_object_round_trip_preserves_large_schema_bound_numbers() {
+        let integer = serde_json::json!({
             "apiVersion": "apiextensions.k8s.io/v1",
             "kind": "CustomResourceDefinition",
             "metadata": {"name": "ingressroutes.traefik.io"},
@@ -3434,14 +3434,28 @@ mod tests {
                 "properties": {"spec": {"properties": {"routes": {"items": {
                     "properties": {"priority": {"maximum": 9_223_372_036_854_775_000_i64}}
                 }}}}}
+                }}}]}
+        });
+        let floating = serde_json::json!({
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": {"name": "ingressroutes.traefik.io"},
+            "spec": {"versions": [{"schema": {"openAPIV3Schema": {
+                "properties": {"spec": {"properties": {"routes": {"items": {
+                    "properties": {"priority": {
+                        "maximum": 9_223_372_036_854_775_000_i64 as f64
+                    }}
+                }}}}}
             }}}]}
         });
-        let dynamic: DynamicObject = serde_json::from_value(source.clone()).unwrap();
-        let round_tripped = serde_json::to_value(dynamic).unwrap();
-        assert_eq!(
-            round_tripped, source,
-            "DynamicObject conversion must not move a CRD bound to an adjacent double"
-        );
+        for source in [integer, floating] {
+            let dynamic: DynamicObject = serde_json::from_value(source.clone()).unwrap();
+            let round_tripped = serde_json::to_value(dynamic).unwrap();
+            assert_eq!(
+                round_tripped, source,
+                "DynamicObject conversion must not move a CRD bound to an adjacent double"
+            );
+        }
     }
 
     #[test]

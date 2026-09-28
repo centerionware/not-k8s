@@ -20,13 +20,17 @@ Last updated: 2026-09-28
   status and a default empty desired status compare unequal, the API can prune
   the empty patch and the next reconcile repeats it. `nodecontroller` now
   treats missing and default-empty status as equivalent and has a regression
-  for the no-op case; CI verification is pending.
+  for the no-op case. Both this regression and the CSINode importer regression
+  passed focused check
+  [36473759900](https://github.com/centerionware/not-k8s/actions/runs/36473759900)
+  at SHA `32255054dcc65baeac828f2ec00acd1b54ba3208`.
 - **CSINode imports omit the required empty driver list.** Docker preflight
   job `109084192913` in run `36468405459` received four 422 errors because the
   source CSINode objects lacked `spec.drivers`. The importer now materializes
   an empty list only when the source omits the field, preserving the source's
-  empty-driver meaning while satisfying the Kubernetes API schema. A focused
-  nodemigrate regression and migration verification are pending.
+  empty-driver meaning while satisfying the Kubernetes API schema. The focused
+  regression passed in run `36473759900`; full migration verification remains
+  pending.
 - **Round-trip import changes Traefik CRD numeric bounds.** Upstream
   job `109084193399` in run `36468405459` found Traefik `maximum` bounds
   serialized once as integer and once as floating-point numbers. Checking the

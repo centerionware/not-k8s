@@ -19,7 +19,10 @@ CSI setup; the captured API audit has no matching Node DELETE, leaving the
 actor and mechanism unresolved. Docker preflight rejected four CSINodes whose
 source omitted the required `spec.drivers`. The logs also expose a repeated
 empty CronJob status patch from nodecontroller. Code changes address omitted
-empty CSINode drivers and no-op CronJob status writes; focused CI is pending.
+empty CSINode drivers and no-op CronJob status writes; both focused regressions
+passed in
+[run 36473759900](https://github.com/centerionware/not-k8s/actions/runs/36473759900)
+at SHA `32255054dcc65baeac828f2ec00acd1b54ba3208`.
 The CRD precision and K3s Node-loss issues remain unresolved. Do not dispatch
 another migration run until both are fixed and the code changes have been
 validated.
