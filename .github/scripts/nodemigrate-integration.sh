@@ -435,7 +435,7 @@ stop_target_forward_watch() {
     touch "$TARGET_WATCH_STOP_FILE"
     wait "$TARGET_WATCH_PID" 2>/dev/null || true
     TARGET_WATCH_PID=""
-    echo "Target state captured during migration:"
+    echo "Target state captured by the migration watcher:"
     if [[ -s "$TARGET_WATCH_LOG" ]]; then
         cat "$TARGET_WATCH_LOG"
     else
@@ -2645,6 +2645,10 @@ metadata:
   namespace: migration-apps
 spec:
   restartPolicy: Never
+  tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
   containers:
   - name: verify
     image: busybox:1.36.1
@@ -3387,7 +3391,6 @@ main() {
     else
         return_migration_status=$?
     fi
-    stop_target_forward_watch
     if [[ "$return_migration_status" -ne 0 ]]; then
         echo "Return migration failed with status $return_migration_status; checking nodestore rollback"
         local attempt
@@ -3427,6 +3430,7 @@ main() {
     restore_csi_device_volume_after_fixture_reinstall "$SOURCE_KUBECONFIG" returned
     verify_stage returned "$SOURCE_KUBECONFIG"
     assert_round_trip_unchanged
+    stop_target_forward_watch
 }
 
 if [[ "$LIBRARY_MODE" != true ]]; then

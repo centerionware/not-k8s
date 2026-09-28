@@ -4,6 +4,39 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **Docker static-data checker could not schedule on its PV node.** Migration
+  run [36425151654](https://github.com/centerionware/not-k8s/actions/runs/36425151654)
+  built nodemigrate, the combined branch runtime, and the five-node image, then
+  timed out waiting for `migration-static-data-check`. The PV is pinned to
+  cp-1, whose control-plane taint the checker did not tolerate. A matching
+  `NoSchedule` toleration is now in the fixture; migration verification is
+  pending.
+
+- **K3s Node disappeared after return migration reported success.** Run
+  `36425151654` reached `Migration to K3s completed`, then later reported the
+  returned Node missing while checking the local PV and workloads. Available
+  evidence does not identify the actor or establish why it disappeared. Keep
+  this unresolved; the return-target state watcher now remains active through
+  returned-stage checks to capture the Node transition before any runtime
+  behavior is changed on an assumed cause.
+
+- **Return import changed Traefik CRD numeric schema bounds.** In upstream run
+  `36425151654`, source and nodestore retained `9223372036854775000`, while
+  strict returned-state parity observed `9223372036854776000`. Exact-object
+  preservation was insufficient because metadata differed. The importer now
+  compares CRD specs and, when equal, applies a metadata-only merge patch so
+  the schema is not round-tripped through a full-object write. The patch and
+  regression are pending focused CI and migration verification. Strict parity
+  remains enabled.
+
+- **Latest migration utility test passed.** Focused check
+  [36425866401](https://github.com/centerionware/not-k8s/actions/runs/36425866401)
+  passed at SHA `8b11b11f3f26546f0a08bdcaba99382bb2fdcb6b`, including
+  nodemigrate crate tests. It does not verify the current uncommitted CRD
+  metadata patch.
+
+## Latest branch-run findings
+
 - **CRD preservation predicate did not compile.** Nodmigrate run
   [36424188417](https://github.com/centerionware/not-k8s/actions/runs/36424188417)
   and migration run

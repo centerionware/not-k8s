@@ -7,6 +7,26 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+The focused nodemigrate check
+[36425866401](https://github.com/centerionware/not-k8s/actions/runs/36425866401)
+passed at SHA `8b11b11f3f26546f0a08bdcaba99382bb2fdcb6b`, including crate tests.
+Branch-runtime migration run
+[36425151654](https://github.com/centerionware/not-k8s/actions/runs/36425151654)
+at SHA `46428806c3490958bd76a033c9e443391f2694aa` completed with failures in
+all three lanes after nodemigrate and combined `notk8s --features cri` builds
+passed; Docker also built the five-node image. Docker timed out waiting for
+`migration-static-data-check`, which was blocked by cp-1's control-plane taint;
+a matching toleration is now in the fixture. K3s reported return migration
+complete, but the Node disappeared before later checks; the initiating actor
+is unknown. Upstream retained the Traefik CRD maximum in nodestore, but strict
+returned-state parity found it rounded by the return API. The importer now
+patches only CRD labels/annotations when the schema matches, avoiding a full
+schema rewrite; this change and the Docker fixture fix await a new migration
+run. The return-target watcher will now stay active through returned-stage
+workload and parity checks, so a Node loss after the migration command returns
+can appear in the captured state timeline. Artifacts from run `36425151654` are under
+`/tmp/nodemigrate-artifacts-36425151654/`. No regular build or full e2e ran.
+
 The automatic nodemigrate check
 [36424188417](https://github.com/centerionware/not-k8s/actions/runs/36424188417)
 failed at SHA `b140e73d7e57fdafdcb9105767b9e6056954abb6`: Rust compilation

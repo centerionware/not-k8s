@@ -7,6 +7,23 @@ This is the living implementation status record for the full scope in
 that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
+The focused nodemigrate check
+[36425866401](https://github.com/centerionware/not-k8s/actions/runs/36425866401)
+passed at SHA `8b11b11f3f26546f0a08bdcaba99382bb2fdcb6b`. Migration run
+[36425151654](https://github.com/centerionware/not-k8s/actions/runs/36425151654)
+compiled nodemigrate and the branch combined runtime in all lanes, but all
+three runtime lanes failed. Docker's static-data probe could not schedule on
+the tainted cp-1 PV node; its fixture now has a control-plane toleration. K3s
+reported completed return migration, then its Node was absent during later
+verification; the logs do not identify what removed it. Upstream returned
+Traefik CRD schema bounds with a real numeric difference. The current importer
+patches metadata alone when an existing CRD schema matches, so it does not
+round the schema through a full-object update. These changes await migration
+CI. The K3s Node lifecycle remains unresolved. No general build or full e2e
+ran. The return-target state watcher now continues through returned-stage
+workload and parity checks to capture a Node loss after nodemigrate reports
+success.
+
 ## Latest validation
 
 The nodemigrate check

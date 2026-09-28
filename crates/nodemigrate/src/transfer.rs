@@ -2529,11 +2529,38 @@ async fn apply_object(
             .await
             .with_context(|| format!("reading destination {type_meta}/{kind} {name}"))?;
         let result = if let Some(existing) = existing {
-            if can_preserve_existing_crd(&existing, &object) {
-                eprintln!(
-                    "nodemigrate: preserved unchanged CustomResourceDefinition {name} without rewriting its schema"
-                );
-                return Ok(existing);
+            if crd_schema_matches(&existing, &object) {
+                if can_preserve_existing_crd(&existing, &object) {
+                    eprintln!(
+                        "nodemigrate: preserved unchanged CustomResourceDefinition {name} without rewriting its schema"
+                    );
+                    return Ok(existing);
+                }
+
+                let patch = crd_metadata_merge_patch(&existing, &object);
+                match api
+                    .patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+                    .await
+                {
+                    Ok(applied) => {
+                        eprintln!(
+                            "nodemigrate: updated metadata on CustomResourceDefinition {name} without rewriting its schema"
+                        );
+                        return Ok(applied);
+                    }
+                    Err(kube::Error::Api(response))
+                        if response.code == 409 && attempt + 1 < WRITE_ATTEMPTS =>
+                    {
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!(
+                                "updating metadata on CustomResourceDefinition {name} without rewriting its schema"
+                            )
+                        });
+                    }
+                }
             }
             if source_was_running
                 && kind == "Pod"
@@ -2636,10 +2663,7 @@ async fn apply_object(
     bail!("destination kept changing {type_meta}/{kind} {name} during migration")
 }
 
-fn can_preserve_existing_crd(
-    existing: &DynamicObject,
-    desired: &DynamicObject,
-) -> bool {
+fn crd_schema_matches(existing: &DynamicObject, desired: &DynamicObject) -> bool {
     existing
         .types
         .as_ref()
@@ -2649,8 +2673,46 @@ fn can_preserve_existing_crd(
             .as_ref()
             .is_some_and(|type_meta| type_meta.kind == "CustomResourceDefinition")
         && existing.data.get("spec") == desired.data.get("spec")
+}
+
+fn can_preserve_existing_crd(existing: &DynamicObject, desired: &DynamicObject) -> bool {
+    crd_schema_matches(existing, desired)
         && existing.metadata.labels == desired.metadata.labels
         && existing.metadata.annotations == desired.metadata.annotations
+}
+
+fn crd_metadata_merge_patch(existing: &DynamicObject, desired: &DynamicObject) -> Value {
+    fn map_patch(
+        existing: Option<&BTreeMap<String, String>>,
+        desired: Option<&BTreeMap<String, String>>,
+    ) -> Value {
+        let mut patch = serde_json::Map::new();
+        if let Some(existing) = existing {
+            for key in existing.keys() {
+                if desired.is_none_or(|desired| !desired.contains_key(key)) {
+                    patch.insert(key.clone(), Value::Null);
+                }
+            }
+        }
+        if let Some(desired) = desired {
+            for (key, value) in desired {
+                if existing.and_then(|existing| existing.get(key)) != Some(value) {
+                    patch.insert(key.clone(), Value::String(value.clone()));
+                }
+            }
+        }
+        Value::Object(patch)
+    }
+
+    serde_json::json!({
+        "metadata": {
+            "labels": map_patch(existing.metadata.labels.as_ref(), desired.metadata.labels.as_ref()),
+            "annotations": map_patch(
+                existing.metadata.annotations.as_ref(),
+                desired.metadata.annotations.as_ref(),
+            ),
+        }
+    })
 }
 
 fn pod_status_is_terminal_or_exited(pod: &DynamicObject) -> bool {
@@ -3181,7 +3243,8 @@ fn export_directory() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        can_preserve_existing_crd, custom_resource_gvks, is_source_custom_resource,
+        can_preserve_existing_crd, crd_metadata_merge_patch, crd_schema_matches,
+        custom_resource_gvks, is_source_custom_resource,
         kubeconfig_root_ca,
         namespace_ca_bundle_matches, node_scheduling_patch, object_rank, object_skip_reason,
         object_type_label, parse_cilium_kube_proxy_replacement, persistent_host_paths,
@@ -3214,7 +3277,10 @@ mod tests {
             "kind": "CustomResourceDefinition",
             "metadata": {
                 "name": "ingressroutes.traefik.io",
-                "labels": {"app.kubernetes.io/managed-by": "Helm"},
+                "labels": {
+                    "app.kubernetes.io/managed-by": "Helm",
+                    "obsolete": "remove"
+                },
                 "annotations": {"meta.helm.sh/release-name": "traefik"}
             },
             "spec": {
@@ -3251,7 +3317,7 @@ mod tests {
             "metadata": {
                 "name": "ingressroutes.traefik.io",
                 "labels": {"app.kubernetes.io/managed-by": "other"},
-                "annotations": {"meta.helm.sh/release-name": "traefik"}
+                "annotations": {"meta.helm.sh/release-name": "traefik-moved"}
             },
             "spec": {
                 "versions": [{
@@ -3260,7 +3326,21 @@ mod tests {
             }
         }))
         .unwrap();
+        assert!(crd_schema_matches(&existing, &changed_metadata));
         assert!(!can_preserve_existing_crd(&existing, &changed_metadata));
+        let metadata_patch = crd_metadata_merge_patch(&existing, &changed_metadata);
+        assert_eq!(
+            metadata_patch.pointer("/metadata/labels/app.kubernetes.io~1managed-by"),
+            Some(&serde_json::json!("other"))
+        );
+        assert_eq!(
+            metadata_patch.pointer("/metadata/labels/obsolete"),
+            Some(&Value::Null)
+        );
+        assert_eq!(
+            metadata_patch.pointer("/metadata/annotations/meta.helm.sh~1release-name"),
+            Some(&serde_json::json!("traefik-moved"))
+        );
     }
 
     #[test]
