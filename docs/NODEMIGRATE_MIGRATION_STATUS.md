@@ -9,6 +9,22 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration result
 
+Branch-runtime migration run
+[36369153385](https://github.com/centerionware/not-k8s/actions/runs/36369153385)
+at SHA `1d37976d` completed the five-node Docker preflight and both builds.
+Both Cilium KPR round trips still failed. K3s passed retained API readiness,
+then full API discovery timed out on all 20 probes; the same log shows Cilium
+Service traffic failing with `no route to host`. Upstream returned API
+readiness, accepted all 55 CRDs, and completed the protected API import, but
+the returned Node disappeared after initially reporting Ready and workloads
+became unschedulable. The integration sets `NODEMIGRATE_REPLACE_NODE=true`;
+the return path deleted the registered Node after activating the target and
+did not restart kubelet. The current branch now restarts the retained service
+after deleting a replacement Node so it can register again. This change has
+not yet been migration-tested. Identity records were skipped as intended, but
+that did not make either round trip pass. See the [CI record](NODEMIGRATE_CI_STATUS.md)
+and [bug tracker](NODEMIGRATE_BUGS.md) for exact component findings.
+
 Branch-runtime run
 [36335580680](https://github.com/centerionware/not-k8s/actions/runs/36335580680)
 at SHA `f186930d7333a0b1c96967f2418b9be18b1155d6` passed the Docker

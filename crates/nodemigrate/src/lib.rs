@@ -902,11 +902,33 @@ fn migrate_to_existing(
     } else {
         None
     };
+    let node_was_replaced = observed_replacement_state.is_some();
     let replacement_state = reverse_node_replacement_state(
         destination_node_exists,
         observed_replacement_state,
         source_node_state,
     );
+    if node_was_replaced {
+        eprintln!(
+            "nodemigrate: restarting retained {} service to register the replacement node",
+            target.service_name
+        );
+        if let Err(error) = service::restart(target) {
+            return Err(rollback_reverse_migration(
+                source,
+                target,
+                previous_service,
+                export.as_ref(),
+                host_path_snapshot.as_ref(),
+                error.context("restarting the retained service after Node replacement"),
+                &recovery_location,
+            ));
+        }
+        eprintln!(
+            "nodemigrate: retained {} restart command returned",
+            target.service_name
+        );
+    }
     eprintln!("nodemigrate: waiting for returned node {returning_node_name} to become Ready");
     if let Err(error) = wait_for_node(&target_api, &returning_node_name) {
         return Err(rollback_reverse_migration(

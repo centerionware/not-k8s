@@ -19,6 +19,32 @@ retained-API readiness or either round trip. It did not enable general build or
 e2e workflows.
 
 Latest branch-runtime run
+[36369153385](https://github.com/centerionware/not-k8s/actions/runs/36369153385)
+at SHA `1d37976d` used `runtime_source=branch` and `cilium_kpr=true`. The
+nodemigrate and branch `notk8s` release builds passed; the latter compiles all
+seven default runtime components. Docker five-node preflight passed. The K3s
+lane completed forward migration and return API readiness, then all 20 full
+discovery probes timed out and the utility restored nodestore. The upstream
+lane completed forward migration, returned API readiness after one refused
+connection, and applied all 55 CRDs on return. The returned node was Ready in
+early snapshots, but later snapshots had no Node and all workloads became
+unschedulable; rollback restored the source. The fixture explicitly enables
+same-name replacement, and the return path deleted the Node after starting the
+retained service without restarting kubelet. A focused fix now restarts the
+retained service after deleting a replacement Node; migration validation is
+pending.
+Both runs skipped 18–21 source `CiliumIdentity` records as destination-rebuilt
+runtime state, confirming the exporter change is active. This did not resolve
+either round trip: K3s discovery still stalls, while upstream return Cilium
+readiness still fails. The upstream log also contains identity allocator
+collision warnings; their relationship to the readiness failure is unproven.
+Focused nodemigrate checks passed in
+[36369153229](https://github.com/centerionware/not-k8s/actions/runs/36369153229),
+and quick-check for the other modified runtime crates passed in
+[36369712853](https://github.com/centerionware/not-k8s/actions/runs/36369712853).
+Artifacts are in `/tmp/nodemigrate-36369153385/`.
+
+Previous branch-runtime run
 [36366505575](https://github.com/centerionware/not-k8s/actions/runs/36366505575)
 at SHA `50b2805f` passed nodemigrate and branch-runtime builds; Docker
 kubeadm/Cilium preflight passed. K3s passed direct core Namespace readiness,

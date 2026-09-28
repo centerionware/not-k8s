@@ -53,6 +53,42 @@ Last updated: 2026-09-28
   it does not yet prove that it caused the later API discovery timeout or
   failed Service probes.
 
+## Latest branch-runtime run findings
+
+- **K3s return: full destination discovery still times out after core API readiness.**
+  In branch-runtime run
+  [36369153385](https://github.com/centerionware/not-k8s/actions/runs/36369153385),
+  the direct Namespace readiness request succeeded, but all 20 ten-second
+  `Discovery::run()` probes timed out. Cilium diagnostics from the same lane
+  show Service ClusterIP and Pod-IP probes failing with `no route to host`,
+  including API-backed workload endpoints. This points to the Cilium Service
+  datapath as a likely shared factor, but the log does not identify which
+  discovery request stalled, so the direct cause remains unconfirmed. Add
+  per-endpoint discovery timing/status diagnostics before changing migration
+  semantics or retry duration.
+
+- **Upstream return: replacement deletes the live Node and never re-registers it.**
+  In the same run, reverse import accepted all 55 CRDs and finished applying
+  the API export. The returned node was Ready in snapshots just after service
+  startup, then later snapshots had no Node and reported `no nodes available
+  to schedule pods`. `NODEMIGRATE_REPLACE_NODE=true` is set by this fixture;
+  `migrate_to_existing()` activates the retained service, imports state, then
+  deletes the same-name Node and waits for readiness without restarting the
+  kubelet. That sequence matches the observed Node disappearance. The branch
+  now restarts the retained service after a Node deletion to trigger fresh
+  registration. Earlier snapshots also show a Cilium agent initialization
+  delay and Service probes failing `no route to host`, which remain separate
+  networking signals to recheck after the registration fix.
+
+- **Cilium identity skip is active but is not a migration pass.** Run
+  [36369153385](https://github.com/centerionware/not-k8s/actions/runs/36369153385)
+  confirms the exporter skipped 18–21 `CiliumIdentity` records in both
+  directions while keeping declarative policies migratable. Both migrations
+  still failed as described above. Identity allocator collision warnings also
+  appeared during the upstream nodestore stage; their cause and connection to
+  final node readiness have not been established. Keep the classification
+  change, but do not treat it as a datapath fix.
+
 ## Current fixture finding
 
 - **Branch runtime runs 36352851628 and 36355485146 exposed return-path defects.**

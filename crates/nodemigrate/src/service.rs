@@ -950,6 +950,33 @@ pub fn activate(installation: &Installation) -> Result<()> {
     )
 }
 
+/// Restart the retained cluster service after deleting this host's old Node
+/// object. A kubelet that was already registered may not recreate a Node after
+/// its API object is deleted until the kubelet process registers again.
+pub fn restart(installation: &Installation) -> Result<()> {
+    let manager = installation
+        .service_manager
+        .context("target service manager could not be identified")?;
+    ensure!(
+        installation.distribution != crate::request::Distribution::Nodestore,
+        "restarting an existing nodestore target requires restoring its full stack"
+    );
+    restart_named(manager, &installation.service_name)
+}
+
+fn restart_named(manager: ServiceManager, name: &str) -> Result<()> {
+    match manager {
+        ServiceManager::Systemd => checked("systemctl", &["restart", &format!("{name}.service")]),
+        ServiceManager::OpenRc => checked("rc-service", &[name, "restart"]),
+        ServiceManager::SysVInit => checked("service", &[name, "restart"]),
+        ServiceManager::Runit => {
+            let dir = runit_service_dir(name)
+                .with_context(|| format!("could not find runit service directory for {name}"))?;
+            checked("sv", &["restart", &dir.to_string_lossy()])
+        }
+    }
+}
+
 fn restore_named(manager: ServiceManager, service: &ServiceState) -> Result<()> {
     let name = service.name.as_str();
     match manager {
