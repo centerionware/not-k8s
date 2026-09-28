@@ -22,6 +22,22 @@ probes passed. These three failures are unresolved; no bidirectional migration
 gate has passed. Run artifacts are saved once under
 `/tmp/nodemigrate-artifacts-36434878771/`. No regular build or full e2e ran.
 
+Follow-up run
+[36459506591](https://github.com/centerionware/not-k8s/actions/runs/36459506591)
+at SHA `da02155289d2bfdf02cbe32d0885b941f5f8542a` compiled nodemigrate and
+the combined branch runtime for K3s and upstream, and also compiled the Docker
+five-node runtime/image. Cilium KPR was enabled and the full five-node round
+trip was requested. K3s again failed to bring HostPath CSI Ready after return.
+Upstream passed the returned workload checkpoint but produced `ClaimMisbound`
+events for fixture PVCs and then failed mounting the existing StatefulSet CSI
+volume because its ID was missing from the driver's catalog. Docker failed
+before migration because its Cilium check read Helm overrides and missed the
+effective default for `cni.confPath`; the current branch now checks merged
+values. A focused code fix orders PVC import before PV import and maps the PV's
+claim reference before its initial write to avoid temporarily publishing a PV
+without its claim UID. That proposed fix needs focused tests and a full
+migration rerun before it is confirmed. No required round-trip gate has passed.
+
 The focused nodemigrate check
 [36425866401](https://github.com/centerionware/not-k8s/actions/runs/36425866401)
 passed at SHA `8b11b11f3f26546f0a08bdcaba99382bb2fdcb6b`. Migration run

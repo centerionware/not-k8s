@@ -4,6 +4,32 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **Returned PV identity repair creates an unsafe claim-reference window.** In
+  upstream job `109054224944` of run
+  [36459506591](https://github.com/centerionware/not-k8s/actions/runs/36459506591),
+  every fixture PVC emitted `ClaimMisbound` after return import. The retained
+  StatefulSet PV references the source PVC UID, but the importer removes
+  `spec.claimRef.uid` for the initial PV write and repairs it in a later pass.
+  The HostPath CSI driver subsequently reported that the original volume ID
+  was missing from its catalog. This identifies `nodemigrate`'s PV import
+  ordering/reference rewrite as the path to fix; the exact causal link from the
+  transient ref removal to CSI catalog loss still requires runtime proof. The
+  importer now orders PVCs before PVs and maps a known PVC UID before the first
+  PV write. Focused nodemigrate tests and a migration rerun are pending.
+- **Docker's Cilium assertion inspected Helm overrides, not effective values.**
+  Run `36459506591` logged `ipam.mode=kubernetes`, KPR `true`, and
+  `cni.binPath=/opt/cni/bin`, while `cni.confPath` was omitted from stored
+  overrides because the fixture uses the chart default. The fixture now checks
+  `helm get values --all`; a rerun must confirm the merged default path and
+  reach the migration checks.
+- **K3s return cannot start HostPath CSI within five minutes.** The same run's
+  K3s job reports a successful return, but HostPath CSI never becomes Ready.
+  Nodelet logged Pod reconciliation timeouts for CoreDNS and the CSI plugin,
+  and API logs contain Cilium peer certificate failures. This points toward
+  nodelet/Cilium recovery after the service handoff, but does not yet isolate
+  the failing transition. Track under `nodelet`, Cilium configuration/trust,
+  and `nodemigrate` host-state handoff; do not relax the readiness assertion.
+
 - **Migration run 36434878771: returned HostPath CSI and Docker Cilium state
   checks fail.** At SHA `4f844b4311284e93fa6c8883c7858ae87122ee8a`, all three
   lanes compiled nodemigrate and combined branch `notk8s --features cri`; this

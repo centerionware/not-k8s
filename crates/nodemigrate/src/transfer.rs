@@ -1063,13 +1063,7 @@ impl KubeApi {
                         &fs::read(&object.path)
                             .with_context(|| format!("reading {}", object.path.display()))?
                     ).context("decoding protected migration object")?;
-                    let mut initial = value.clone();
-                    if let Some(metadata) = initial.pointer_mut("/metadata").and_then(Value::as_object_mut) {
-                        metadata.remove("ownerReferences");
-                    }
-                    if let Some(claim_ref) = initial.pointer_mut("/spec/claimRef").and_then(Value::as_object_mut) {
-                        claim_ref.remove("uid");
-                    }
+                    let initial = prepare_initial_import_object(&value, &uid_map);
                     if attempt == 0 {
                         source_crd_apis.extend(custom_resource_gvks(&initial));
                     }
@@ -3212,8 +3206,37 @@ fn object_rank(object: &Value) -> u8 {
         "PriorityClass" | "StorageClass" => 2,
         "ServiceAccount" => 3,
         "Secret" => 4,
-        _ => 5,
+        // Bind claims before their volumes so import can remap a PV's
+        // claimRef UID before the PV write reaches the destination binder.
+        "PersistentVolumeClaim" => 5,
+        "PersistentVolume" => 6,
+        _ => 7,
     }
+}
+
+fn prepare_initial_import_object(value: &Value, uid_map: &HashMap<String, String>) -> Value {
+    let mut initial = value.clone();
+    if let Some(metadata) = initial
+        .pointer_mut("/metadata")
+        .and_then(Value::as_object_mut)
+    {
+        metadata.remove("ownerReferences");
+    }
+    if initial.get("kind").and_then(Value::as_str) == Some("PersistentVolume") {
+        if let Some(claim_ref) = initial
+            .pointer_mut("/spec/claimRef")
+            .and_then(Value::as_object_mut)
+        {
+            if let Some(source_uid) = claim_ref.get("uid").and_then(Value::as_str) {
+                if let Some(destination_uid) = uid_map.get(source_uid) {
+                    claim_ref.insert("uid".to_string(), Value::String(destination_uid.clone()));
+                } else {
+                    claim_ref.remove("uid");
+                }
+            }
+        }
+    }
+    initial
 }
 
 fn export_directory() -> Result<PathBuf> {
@@ -3260,7 +3283,7 @@ mod tests {
         kubeconfig_root_ca,
         namespace_ca_bundle_matches, node_scheduling_patch, object_rank, object_skip_reason,
         object_type_label, parse_cilium_kube_proxy_replacement, persistent_host_paths,
-        pod_status_is_terminal_or_exited,
+        pod_status_is_terminal_or_exited, prepare_initial_import_object,
         preserve_discovered_type_meta, remapped_node_owner_references, restore_cni_path_backups,
         retryable_import_error, same_group_kind, sanitize, service_account_token_secret_patch,
         service_account_token_secret_value, skip_kind_reason, skip_object,
@@ -3452,10 +3475,50 @@ mod tests {
     fn cluster_scoped_pod_dependencies_are_imported_before_workloads() {
         let priority_class = serde_json::json!({"kind": "PriorityClass"});
         let storage_class = serde_json::json!({"kind": "StorageClass"});
+        let pvc = serde_json::json!({"kind": "PersistentVolumeClaim"});
+        let pv = serde_json::json!({"kind": "PersistentVolume"});
         let pod = serde_json::json!({"kind": "Pod"});
 
         assert!(object_rank(&priority_class) < object_rank(&pod));
         assert!(object_rank(&storage_class) < object_rank(&pod));
+        assert!(object_rank(&pvc) < object_rank(&pv));
+        assert!(object_rank(&pv) < object_rank(&pod));
+    }
+
+    #[test]
+    fn initial_pv_import_remaps_claim_uid_before_the_volume_write() {
+        let source_uid = "nodestore-pvc-uid";
+        let destination_uid = "retained-cluster-pvc-uid";
+        let uid_map = HashMap::from([(source_uid.to_string(), destination_uid.to_string())]);
+        let source_pv = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "PersistentVolume",
+            "metadata": {
+                "name": "data",
+                "ownerReferences": [{"uid": "obsolete-owner"}]
+            },
+            "spec": {"claimRef": {"name": "data", "uid": source_uid}}
+        });
+
+        let initial = prepare_initial_import_object(&source_pv, &uid_map);
+
+        assert_eq!(initial["spec"]["claimRef"]["uid"], destination_uid);
+        assert!(initial["metadata"].get("ownerReferences").is_none());
+        assert_eq!(source_pv["spec"]["claimRef"]["uid"], source_uid);
+    }
+
+    #[test]
+    fn initial_pv_import_clears_an_unmapped_claim_uid_for_later_repair() {
+        let source_pv = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "PersistentVolume",
+            "metadata": {"name": "data"},
+            "spec": {"claimRef": {"name": "data", "uid": "not-imported"}}
+        });
+
+        let initial = prepare_initial_import_object(&source_pv, &HashMap::new());
+
+        assert!(initial.pointer("/spec/claimRef/uid").is_none());
     }
 
     #[test]

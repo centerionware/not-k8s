@@ -35,6 +35,27 @@ This proves compilation only; migration checkpoints provide the runtime
 evidence. General `build.yml` and full e2e remain excluded by the user-directed
 nodemigrate policy.
 
+Follow-up run
+[36459506591](https://github.com/centerionware/not-k8s/actions/runs/36459506591)
+at SHA `da02155289d2bfdf02cbe32d0885b941f5f8542a` used
+`runtime_source=branch`, `cilium_kpr=true`, and
+`five_node_migration=true`. All nodemigrate, combined-runtime, and Docker node
+image builds passed. K3s passed source and nodestore checkpoints and reported
+return success, but HostPath CSI did not become Ready within five minutes.
+Upstream migrated back and passed `stage=returned`, then emitted `ClaimMisbound`
+for all fixture PVCs and failed to mount the StatefulSet volume because its
+retained ID was missing from the HostPath CSI volume catalog. The Docker lane
+failed before migration: Helm's effective-value diagnostic showed IPAM
+`kubernetes`, KPR `true`, and `cni.binPath=/opt/cni/bin`, but no
+`cni.confPath` in stored overrides. This confirms the assertion must read merged
+chart values; the current branch does so with `helm get values --all`.
+Artifacts were downloaded once to
+`/tmp/nodemigrate-artifacts-36459506591/`. Job IDs: K3s `109054224745`, Docker
+`109054224801`, upstream `109054224944`; all failed after the allowed branch
+builds passed. The active PR head is newer than this tested SHA. Follow-up
+focused nodemigrate checks and a new branch migration run are pending. No
+general build or full e2e ran.
+
 The focused nodemigrate check
 [36425866401](https://github.com/centerionware/not-k8s/actions/runs/36425866401)
 passed at SHA `8b11b11f3f26546f0a08bdcaba99382bb2fdcb6b`, including crate tests.
