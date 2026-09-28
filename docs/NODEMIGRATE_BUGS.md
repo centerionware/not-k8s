@@ -11,13 +11,13 @@ Last updated: 2026-09-28
   then saw an empty Node list from 19:11:33 onward. K3s subsequently reported
   the Node missing and could not satisfy PV NodeAffinity or register the
   HostPath CSI driver. The captured audit stream ends at 19:10:04, before the
-  return-migration service restart and the Node disappearance; it contains no
-  evidence about that transition. The actor and mechanism remain unknown; do
-  not paper over this by relaxing readiness or storage checks, and do not
-  rerun migration until the cause is addressed. The fixture now configures
-  K3s API auditing for Node mutations and prints that audit file on failure;
-  this is diagnostic instrumentation, not a fix, and has not yet been exercised
-  by a new migration run.
+  return-migration service restart and the Node disappearance, so it cannot
+  establish whether a DELETE occurred or identify the actor. The actor and
+  mechanism remain unknown; do not paper over this by relaxing readiness or
+  storage checks. The fixture now configures K3s API auditing for Node
+  mutations and prints that audit file on failure; this diagnostic change has
+  not yet been exercised by a new migration run. Keep migration retries paused
+  until this failure is understood and fixed.
 - **Empty CronJob status triggers repeated no-op writes.** The same K3s log
   records `system:serviceaccount:kube-system:cronjob-controller` patching the
   unchanged `migration-cron` status every few milliseconds. When a missing
@@ -40,11 +40,16 @@ Last updated: 2026-09-28
   serialized once as integer and once as floating-point numbers. Checking the
   adjacent IEEE-754 values showed they are different `double` values, so JSON
   parity must remain strict. A proposed normalization was reverted. Focused
-  `DynamicObject` integer and float serde round trips passed in
-  [36474893777](https://github.com/centerionware/not-k8s/actions/runs/36474893777)
-  at SHA `2c9865bda8c8011aedc4bbb6fd3481b6a2a42d71`; that boundary preserves
-  both representations. Continue tracing through the API response/storage and
-  return import path. No fix is pending yet.
+  `DynamicObject` tests passed in
+  [36474893777](https://github.com/centerionware/not-k8s/actions/runs/36474893777),
+  but a listener regression then showed that JSON-decoding a persisted HTTP
+  read changed the value by one ULP. Enabling `serde_json/float_roundtrip`
+  across the workspace fixes this parser boundary. Codec and listener
+  regressions passed focused CI
+  [36479715060](https://github.com/centerionware/not-k8s/actions/runs/36479715060)
+  for `nodeapiserver,nodemigrate` at SHA `e253e25c`. Runtime migration parity
+  remains unverified; keep it strict and verify it after the K3s Node-loss
+  failure is resolved.
 
 - **Round-trip import changes Traefik CRD numeric bounds.** Upstream job
   `109067982540` in run

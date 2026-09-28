@@ -13,15 +13,17 @@ Latest branch migration run
 at SHA `fe2ca534a3f48a841eaf03f8436fc1343bdb1d8d` passed nodemigrate and
 combined-runtime builds in every migration lane and built the Docker node
 image. Upstream reached returned-stage checks, then failed parity on a real
-Traefik CRD `double` value change between adjacent IEEE-754 values. Docker
-preflight found omitted `CSINode.spec.drivers` fields rejected by the
+Traefik CRD `double` value change between adjacent IEEE-754 values. A focused
+listener regression traced the adjacent value to JSON float parsing; the
+workspace now enables exact float round-tripping and focused
+`nodeapiserver,nodemigrate` check 36479715060 passed. Docker preflight found
+omitted `CSINode.spec.drivers` fields rejected by the
 destination. The logs also revealed a nodecontroller no-op CronJob status patch
-loop. Fixes for the CSINode and CronJob cases are pending focused CI. K3s again
-lost the returned Node after it was Ready; no matching Node DELETE was
-captured, so its cause remains unresolved and no further migration run should
-start yet. Focused regressions for the CSINode and CronJob fixes passed in
+loop. Focused regressions for the CSINode and CronJob cases passed in
 [run 36473759900](https://github.com/centerionware/not-k8s/actions/runs/36473759900)
-at `32255054`; no migration gate passed. Full evidence is recorded in the
+at `32255054`. K3s again lost the returned Node after it was Ready; the audit
+capture ends before that transition, so whether a DELETE occurred and its cause
+remain unresolved. No migration gate passed. Full evidence is recorded in the
 [CI status](NODEMIGRATE_CI_STATUS.md), with unresolved findings in the
 [bug tracker](NODEMIGRATE_BUGS.md).
 
@@ -42,7 +44,7 @@ has passed.
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Failed reverse cutovers now stop the partial retained target, restore local PV payloads, and restart the prior nodestore stack. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The required fixture extends existing coverage with ConfigMaps, CRDs/custom resources, Deployments, StatefulSets, DaemonSets, Jobs/CronJobs, Helm chart releases and managed objects, Ingress/Gateway API, RBAC, networking, storage, admission, and every listable discovered resource. Normalized source object content remains a strict equality gate; destination-only runtime identities are now reported separately and do not mask missing or changed source objects. The latest upstream lane still has unresolved source-identity changes including CoreDNS, system RBAC, and system PriorityClasses. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | Run 36468405459: real CRD double precision drift, omitted empty CSINode driver lists, repeated empty CronJob status patches, and K3s returned Node loss. CSINode and CronJob fixes passed focused CI in run 36473759900; CRD precision and Node loss remain unresolved. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | Run 36468405459 found CRD double precision drift, omitted empty CSINode driver lists, repeated empty CronJob status patches, and K3s returned Node loss. CSINode/CronJob fixes passed in 36473759900; exact JSON float parsing passed focused `nodeapiserver,nodemigrate` check 36479715060. Runtime parity remains unverified; K3s Node loss is unresolved. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement and new control-plane joins | Replacement ordering and Raft learner catch-up guard implemented; a new joined control plane is now promoted after Kubernetes Node readiness. Focused validation for this new-member path is pending; runtime scenario remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |

@@ -7,6 +7,15 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+Latest focused component verification
+[36479715060](https://github.com/centerionware/not-k8s/actions/runs/36479715060)
+at SHA `e253e25c` passed `nodeapiserver` and `nodemigrate` quick-checks. This
+includes the exact-float codec regression and the listener test covering cached
+and revision-pinned CRD reads. The shared workspace enables
+`serde_json/float_roundtrip`, correcting JSON float parsing that changed a
+large CRD bound by one ULP. This is component-level evidence only; no migration
+lane was run.
+
 Latest branch-runtime run
 [36468405459](https://github.com/centerionware/not-k8s/actions/runs/36468405459)
 at SHA `fe2ca534a3f48a841eaf03f8436fc1343bdb1d8d` used the branch-built
@@ -18,8 +27,9 @@ checking the adjacent IEEE-754 values: these are different doubles and remain
 a real parity failure. K3s reported the returned Node Ready, and the
 watcher saw it at 19:11:04, 19:11:12, and 19:11:19 UTC; from 19:11:33 UTC
 onward the Node list was empty. K3s logs then reported `node not found` and
-node-authorizer relationship failures. No matching Node DELETE request was
-present in captured API audit events, so the deleting actor remains unknown.
+node-authorizer relationship failures. The captured audit stream ends before
+return migration and does not cover the Node disappearance, so whether a
+DELETE occurred and its actor are unknown.
 HostPath CSI could not register or satisfy PV NodeAffinity. Docker preflight
 failed migrating four CSINodes because source objects omitted the required
 `spec.drivers` list; the importer now makes an omitted list explicitly empty.
@@ -29,8 +39,9 @@ suppresses that no-op patch. Focused check
 [36473759900](https://github.com/centerionware/not-k8s/actions/runs/36473759900)
 passed for `nodemigrate,nodecontroller` at SHA
 `32255054dcc65baeac828f2ec00acd1b54ba3208`, validating both fixes. This does
-not cover migration runtime behavior. The CRD numeric drift and K3s Node loss
-remain unresolved; no migration rerun has been dispatched.
+not cover migration runtime behavior. The JSON parsing fix addresses the CRD
+numeric drift at the component boundary; migration parity remains unverified.
+K3s Node loss remains unresolved, and no migration rerun has been dispatched.
 Artifacts were downloaded once to
 `/tmp/nodemigrate-artifacts-36468405459/`. Exact jobs: Docker
 `109084192913`, K3s `109084193351`, upstream `109084193399`; validation was
@@ -40,12 +51,13 @@ migration, so it does not cover the Node disappearance and cannot identify its
 actor. A separate focused test at SHA
 `2c9865bda8c8011aedc4bbb6fd3481b6a2a42d71` passed integer and floating JSON
 number serde round trips through `DynamicObject` in
-[run 36474893777](https://github.com/centerionware/not-k8s/actions/runs/36474893777);
-the CRD drift lies later in the API/export/import path. The fixture now enables
-K3s audit events for Node mutations and includes that log in failure
+[run 36474893777](https://github.com/centerionware/not-k8s/actions/runs/36474893777).
+The listener regression localized the remaining issue to exact JSON float
+parsing; focused component verification above covers the fix. The fixture now
+enables K3s audit events for Node mutations and includes that log in failure
 diagnostics; this is not runtime-verified and does not resolve the Node loss.
-Do not dispatch another migration run until the known runtime failures are
-fixed together.
+Do not dispatch another migration run until the K3s Node-loss failure is
+understood and fixed.
 
 Latest branch-runtime run
 [36463585411](https://github.com/centerionware/not-k8s/actions/runs/36463585411)

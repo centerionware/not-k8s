@@ -15,17 +15,19 @@ runtime lanes failed. Upstream reached returned-stage checks, then failed
 strict parity on CRD `double` bounds that changed between adjacent IEEE-754
 values; this remains a real numeric difference and no normalization is allowed.
 K3s saw the returned Node become Ready and then disappear during the HostPath
-CSI setup; the captured API audit has no matching Node DELETE, leaving the
-actor and mechanism unresolved. Docker preflight rejected four CSINodes whose
-source omitted the required `spec.drivers`. The logs also expose a repeated
+CSI setup; the captured audit ends before this transition, so it cannot show
+whether a Node DELETE occurred or identify an actor. Docker preflight rejected
+four CSINodes whose source omitted the required `spec.drivers`. The logs also expose a repeated
 empty CronJob status patch from nodecontroller. Code changes address omitted
 empty CSINode drivers and no-op CronJob status writes; both focused regressions
 passed in
 [run 36473759900](https://github.com/centerionware/not-k8s/actions/runs/36473759900)
 at SHA `32255054dcc65baeac828f2ec00acd1b54ba3208`.
-The CRD precision and K3s Node-loss issues remain unresolved. Do not dispatch
-another migration run until both are fixed and the code changes have been
-validated.
+The JSON float parsing defect passed focused component verification in
+[36479715060](https://github.com/centerionware/not-k8s/actions/runs/36479715060)
+at SHA `e253e25c`; migration parity remains unverified. K3s Node loss is still
+unresolved. Do not dispatch another migration run until that failure is
+understood and fixed.
 See the [CI status](NODEMIGRATE_CI_STATUS.md) and
 [bug tracker](NODEMIGRATE_BUGS.md).
 
