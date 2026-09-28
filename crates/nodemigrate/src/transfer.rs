@@ -2640,8 +2640,16 @@ fn can_preserve_existing_crd(
     existing: &DynamicObject,
     desired: &DynamicObject,
 ) -> bool {
-    existing.types.kind.as_deref() == Some("CustomResourceDefinition")
-        && desired.types.kind.as_deref() == Some("CustomResourceDefinition")
+    existing
+        .types
+        .as_ref()
+        .and_then(|type_meta| type_meta.kind.as_deref())
+        == Some("CustomResourceDefinition")
+        && desired
+            .types
+            .as_ref()
+            .and_then(|type_meta| type_meta.kind.as_deref())
+            == Some("CustomResourceDefinition")
         && existing.data.get("spec") == desired.data.get("spec")
         && existing.metadata.labels == desired.metadata.labels
         && existing.metadata.annotations == desired.metadata.annotations

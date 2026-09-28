@@ -7,6 +7,17 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+The automatic nodemigrate check
+[36424188417](https://github.com/centerionware/not-k8s/actions/runs/36424188417)
+failed at SHA `b140e73d7e57fdafdcb9105767b9e6056954abb6`: Rust compilation
+showed `DynamicObject.types` is optional, so the CRD no-rewrite predicate's
+direct `types.kind` access was invalid. The migration dispatch
+[36424227253](https://github.com/centerionware/not-k8s/actions/runs/36424227253)
+failed at the same compile step in Docker, K3s, and upstream; no migration
+runtime ran. The predicate now reads the optional TypeMeta before checking its
+kind. Both focused workflows need rerunning at the corrected SHA. No general
+build or full e2e was dispatched.
+
 Latest branch-runtime run
 [36420315264](https://github.com/centerionware/not-k8s/actions/runs/36420315264)
 at SHA `de890b701d61130b3e6ce9922ffc5597e4342121` built nodemigrate and the

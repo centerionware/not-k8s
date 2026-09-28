@@ -7,6 +7,18 @@ This is the living implementation status record for the full scope in
 that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
+## Latest validation
+
+The nodemigrate check
+[36424188417](https://github.com/centerionware/not-k8s/actions/runs/36424188417)
+and branch-runtime migration dispatch
+[36424227253](https://github.com/centerionware/not-k8s/actions/runs/36424227253)
+failed compiling the new CRD predicate at SHA
+`b140e73d7e57fdafdcb9105767b9e6056954abb6`: `DynamicObject.types` is an
+`Option<TypeMeta>`. The predicate now checks the optional metadata before its
+kind. No unit test or migration runtime ran on that SHA; validation of the
+corrected source is pending. No general build or full e2e ran.
+
 ## Latest integration result
 
 Branch-runtime run

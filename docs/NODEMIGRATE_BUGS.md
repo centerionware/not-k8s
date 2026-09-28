@@ -4,6 +4,17 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **CRD preservation predicate did not compile.** Nodmigrate run
+  [36424188417](https://github.com/centerionware/not-k8s/actions/runs/36424188417)
+  and migration run
+  [36424227253](https://github.com/centerionware/not-k8s/actions/runs/36424227253)
+  at SHA `b140e73d7e57fdafdcb9105767b9e6056954abb6` failed because
+  `DynamicObject.types` is `Option<TypeMeta>`. The predicate now checks the
+  optional TypeMeta before reading `kind`; no tests or migration lanes ran past
+  compilation on the failed SHA. CI verification of the correction is pending.
+
+## Latest branch-run findings
+
 - **Kubectl client version probe used an unsupported output format.** In
   [run 36420315264](https://github.com/centerionware/not-k8s/actions/runs/36420315264),
   Docker passed the Cilium KPR, five-node recovery, and plugin-node CSI checks,
