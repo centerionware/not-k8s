@@ -8,7 +8,15 @@ separate living documents below.
 
 ## Current state
 
-Latest branch migration run
+Active batch migration run
+[36490156839](https://github.com/centerionware/not-k8s/actions/runs/36490156839)
+at SHA `624442f622a6f8c44b72c9288ca5dbc32d5fbfa9` uses branch-built runtime,
+Cilium KPR, both single-node source lanes, and the isolated 3-control-plane/
+2-worker upstream round trip. Results are pending. It compiles `nodemigrate`
+and the combined `notk8s --features cri` runtime as part of migration tests; no
+general build or full e2e was run.
+
+Latest completed branch migration run
 [36468405459](https://github.com/centerionware/not-k8s/actions/runs/36468405459)
 at SHA `fe2ca534a3f48a841eaf03f8436fc1343bdb1d8d` passed nodemigrate and
 combined-runtime builds in every migration lane and built the Docker node
@@ -32,7 +40,9 @@ existing same-name Node. Focused `nodemigrate` check
 [36481686171](https://github.com/centerionware/not-k8s/actions/runs/36481686171)
 passed at SHA `eb650b223a0503e135d4ff50b317d159b39bb2b4`. This protects against
 accepting a stale object, but K3s later emitted `RemovingNode`; the reason for
-that runtime behavior remains unresolved and migration reruns stay paused.
+that runtime behavior remains unresolved. The current audit-enabled batch run
+is intended to validate the accumulated fixes and provide returned-stage
+Node/Lease actor evidence if the Node disappears again.
 
 Latest branch migration run
 [36459506591](https://github.com/centerionware/not-k8s/actions/runs/36459506591)
@@ -55,7 +65,7 @@ has passed.
 | Existing nodestore member replacement and new control-plane joins | Replacement ordering and Raft learner catch-up guard implemented; a new joined control plane is now promoted after Kubernetes Node readiness. Focused validation for this new-member path is pending; runtime scenario remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest run [36459506591](https://github.com/centerionware/not-k8s/actions/runs/36459506591) compiled all changed packaged components through combined `notk8s --features cri`; both lanes failed during runtime checks. The claim-reference fix and corrected effective-values check need a rerun. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Active run [36490156839](https://github.com/centerionware/not-k8s/actions/runs/36490156839) uses branch runtime and Cilium KPR in both single-node lanes; the isolated 3-control-plane/2-worker upstream round trip runs concurrently. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory round-trip gates remain not passed: one-node K3s+Cilium and 3-control-plane + 2-worker upstream Kubernetes with Cilium and joined replacement. The five-node Docker preflight in run 36335580680 passed, but it did not migrate the five-node cluster. Neither round trip has passed all source/target/return parity and behavior checks. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Run [36355485146](https://github.com/centerionware/not-k8s/actions/runs/36355485146) passed the five-node Cilium/KPR setup and control-plane-loss recovery. Its migration fixture then failed because the hostpath setup script was missing after `cp-1` restart; the script is now copied after restart. Full five-node migration remains unverified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |

@@ -22,8 +22,10 @@ Last updated: 2026-09-28
   before CSI fixture reinstallation. Failure collection includes K3s unit
   state and K3s/kernel journals since migration start. The focused diagnostics
   check covers valid Node/Lease events and rejects a stream missing Node
-  mutations; live audit and failure-actor evidence remain pending. Keep
-  migration retries paused until this failure is understood and fixed.
+  mutations; live audit and failure-actor evidence remain pending. Batch run
+  [36490156839](https://github.com/centerionware/not-k8s/actions/runs/36490156839)
+  validates the accumulated fixes with this audit gate enabled. The Node-loss
+  issue remains open until its returned-stage evidence is reviewed.
   The watcher now records Node UID and lifecycle timestamps in its change
   detector, and captures Node resource versions plus Node-Lease renewal times
   at its normal diagnostic cadence. This preserves identity/heartbeat evidence

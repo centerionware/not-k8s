@@ -7,6 +7,19 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+## Active migration batch
+
+Run [36490156839](https://github.com/centerionware/not-k8s/actions/runs/36490156839)
+is running at SHA `624442f622a6f8c44b72c9288ca5dbc32d5fbfa9` with
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+It covers both single-node source lanes (K3s and upstream Kubernetes) plus the
+isolated kubeadm 3-control-plane/2-worker round trip. Jobs: Docker
+`109156567171`, Kubernetes `109156567491`, K3s `109156567684`; the pull-request
+validation job was skipped for this dispatch. The workflow compiles
+`nodemigrate` and the combined `notk8s --features cri` runtime as part of these
+migration lanes; no standalone build or full e2e was dispatched. The watcher
+log is `/tmp/nodemigrate-36490156839-watch.log`.
+
 ## Latest PR validation
 
 Commit `10e84728cf5e6c2d67939d776eb560255e452671` passed the automatic PR
@@ -26,9 +39,8 @@ PodTemplate and a live ReplicationController. Each stage checks the preserved
 PodTemplate spec and confirms that the controller maintains exactly one Ready
 owned Pod whose command ran. These assertions passed shell syntax,
 diagnostics, API-inventory, whitespace checks, and the automatic PR validation
-at the commit above, but they have not run in the migration fixture. The
-migration run remains paused while the repeated K3s returned-Node disappearance
-is unresolved.
+at the commit above, but they have not run in the migration fixture. Their
+first full fixture execution is in active run 36490156839.
 
 Commit `10e84728` adds a returned-K3s audit gate: before CSI driver
 reinstallation, it checks the active service unit and requires post-return Node
@@ -39,10 +51,11 @@ record failure path. CI crate tests and validation passed, but did not execute
 the live audit assertion. Live audit coverage and the Node-loss actor remain
 unverified.
 
-Before another migration attempt, resolve the full set of confirmed defects
-already exposed by completed runs as one batch; do not dispatch after fixing
-only one. Continue code and saved-artifact investigation where a cause remains
-unknown, and do not use a migration run only to discover that cause.
+Before any further retry after run 36490156839, resolve the full set of
+confirmed defects exposed by completed runs as one batch; do not dispatch after
+fixing only one. This active run validates that batch and the audit gate. Do
+not treat it as a pass or make a runtime change based on the Node-loss
+downstream symptoms alone.
 
 Latest focused nodemigrate verification
 [36481686171](https://github.com/centerionware/not-k8s/actions/runs/36481686171)
@@ -68,7 +81,8 @@ completed does not recreate a subsequently missing Node; it continues trying
 to update that Node. Its Lease controller has a separate missing-Lease
 recovery path. This confirms the later `node not found` messages are
 downstream, and does not explain the removal. The explicit K3s service restart
-after the intentional replacement delete remains necessary. See the
+after the intentional replacement delete remains necessary. Run 36490156839
+is the first batch run with returned-stage audit verification. See the
 [upstream kubelet implementation](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubelet/kubelet_node_status.go)
 and [Lease controller](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/component-helpers/apimachinery/lease/controller.go).
 The `RemovingNode` event is emitted when the lifecycle controller's informer
@@ -92,10 +106,9 @@ unknown. See the [NodeLifecycleController event path](https://github.com/kuberne
   not been tested; keep strict parity enabled.
 - Migration fixture: Python availability and effective Cilium Helm values
   checks have been corrected in the fixture. Their complete five-node path is
-  not covered by the latest Docker preflight, which stopped at the CSINode
-  import failure.
+  being exercised in active run 36490156839.
 - `nodemigrate`/K3s: the repeated Node loss is still unresolved and blocks a
-  migration retry. The fixture audits writes to Nodes and `kube-node-lease`
+  success claim. The active batch run now requires and records writes to Nodes and `kube-node-lease`
   Leases, and records Node UIDs, resource versions, creation/deletion
   timestamps, and Lease holder/renewal state in its target watcher.
   `bash -n`, `check_nodemigrate_diagnostics.sh` (including static policy
