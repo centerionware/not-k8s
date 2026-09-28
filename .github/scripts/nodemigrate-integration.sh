@@ -2235,10 +2235,15 @@ verify_stage() {
     local nginx_pod eviction_response pdb_deadline
     pdb_deadline=$((SECONDS + 120))
     while (( SECONDS < pdb_deadline )); do
-        if kubectl get poddisruptionbudget migration-nginx -n migration-apps -o json 2>/dev/null | jq -e '
+        if kubectl get pods -n migration-apps -l app=migration-nginx -o json 2>/dev/null | jq -e '
+          [.items[] | select(.metadata.deletionTimestamp == null and
+            .status.phase == "Running" and
+            any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | length == 1
+        ' >/dev/null \
+            && kubectl get poddisruptionbudget migration-nginx -n migration-apps -o json 2>/dev/null | jq -e '
           .spec.minAvailable == 1 and
           .spec.selector.matchLabels.app == "migration-nginx" and
-          (.status.currentHealthy // 0) >= 1 and
+          (.status.currentHealthy // 0) == 1 and
           (.status.desiredHealthy // 0) == 1 and
           (.status.disruptionsAllowed // 0) == 0
         ' >/dev/null; then
@@ -2249,7 +2254,7 @@ verify_stage() {
     kubectl get poddisruptionbudget migration-nginx -n migration-apps -o json | jq -e '
       .spec.minAvailable == 1 and
       .spec.selector.matchLabels.app == "migration-nginx" and
-      (.status.currentHealthy // 0) >= 1 and
+      (.status.currentHealthy // 0) == 1 and
       (.status.desiredHealthy // 0) == 1 and
       (.status.disruptionsAllowed // 0) == 0
     ' >/dev/null || {
@@ -2257,8 +2262,20 @@ verify_stage() {
         kubectl describe poddisruptionbudget migration-nginx -n migration-apps >&2 || true
         return 1
     }
+    kubectl get pods -n migration-apps -l app=migration-nginx -o json | jq -e '
+      [.items[] | select(.metadata.deletionTimestamp == null and
+        .status.phase == "Running" and
+        any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | length == 1
+    ' >/dev/null || {
+        echo "nginx must have exactly one non-terminating Ready Pod for the minAvailable=1 eviction check at stage $stage" >&2
+        kubectl get pods -n migration-apps -l app=migration-nginx -o wide >&2 || true
+        return 1
+    }
     nginx_pod="$(kubectl get pods -n migration-apps -l app=migration-nginx -o json \
-        | jq -r '[.items[] | select(.status.phase == "Running") | .metadata.name][0] // empty')"
+        | jq -r '[.items[] | select(.metadata.deletionTimestamp == null and
+            .status.phase == "Running" and
+            any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+            | .metadata.name][0] // empty')"
     [[ -n "$nginx_pod" ]] || {
         echo "No running nginx pod is available for the eviction subresource check at stage $stage" >&2
         return 1
@@ -2267,7 +2284,13 @@ verify_stage() {
         '{apiVersion:"policy/v1",kind:"Eviction",metadata:{name:$name,namespace:"migration-apps"}}')"
     if eviction_response="$(printf '%s\n' "$eviction_request" \
         | kubectl create --raw "/api/v1/namespaces/migration-apps/pods/$nginx_pod/eviction" -f - 2>&1)"; then
-        echo "Pod eviction unexpectedly succeeded despite minAvailable=1 at stage $stage" >&2
+        echo "Pod eviction unexpectedly succeeded despite minAvailable=1 at stage $stage: $eviction_response" >&2
+        echo "PDB state at failed eviction:" >&2
+        kubectl get poddisruptionbudget migration-nginx -n migration-apps -o yaml >&2 || true
+        echo "Selected Pod state at failed eviction: $nginx_pod" >&2
+        kubectl get pod "$nginx_pod" -n migration-apps -o yaml >&2 || true
+        echo "All matching Pods at failed eviction:" >&2
+        kubectl get pods -n migration-apps -l app=migration-nginx -o wide >&2 || true
         return 1
     fi
     grep -Eiq 'too[[:space:]]*many[[:space:]]*requests|429' <<< "$eviction_response" || {

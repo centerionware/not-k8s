@@ -458,6 +458,25 @@ docker start "cp-1-${SUFFIX}" >/dev/null
 wait_systemd "cp-1-${SUFFIX}"
 docker exec "cp-1-${SUFFIX}" systemctl is-active --quiet containerd \
     || fail "cp-1 did not recover its CRI after restart"
+echo "Waiting for cp-1 API, all five Nodes, and Cilium to recover before migration"
+cp1_recovered=false
+for _ in $(seq 1 180); do
+    if docker exec "cp-1-${SUFFIX}" systemctl is-active --quiet kubelet \
+        && docker exec "cp-1-${SUFFIX}" env KUBECONFIG=/etc/kubernetes/admin.conf \
+        kubectl --request-timeout=5s get --raw=/readyz >/dev/null 2>&1 \
+        && docker exec "cp-2-${SUFFIX}" env KUBECONFIG=/etc/kubernetes/admin.conf \
+            kubectl --request-timeout=5s wait --for=condition=Ready node --all --timeout=5s >/dev/null 2>&1 \
+        && docker exec "cp-2-${SUFFIX}" env KUBECONFIG=/etc/kubernetes/admin.conf \
+            kubectl --request-timeout=5s rollout status daemonset/cilium -n kube-system --timeout=5s >/dev/null 2>&1; then
+        cp1_recovered=true
+        break
+    fi
+    sleep 2
+done
+[[ "$cp1_recovered" == true ]] \
+    || fail "cp-1 API, five-node readiness, and Cilium did not recover before migration"
+docker exec "cp-2-${SUFFIX}" env KUBECONFIG=/etc/kubernetes/admin.conf \
+    kubectl --request-timeout=20s get nodes -o wide
 
 echo "PASS: five Docker nodes ran a kubeadm 3-control-plane/2-worker cluster with Cilium, survived control-plane loss, and recovered all Nodes"
 echo "PASS: Docker isolation checks confirmed distinct namespaces, CRI/BPF support, separate storage, and inter-node reachability"

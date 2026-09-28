@@ -7,6 +7,21 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+At fix SHA `dfa3325594be1b150f07576f0ecc2060f7554deb`, focused nodemigrate
+crate tests and packaging checks passed in
+[36371692594](https://github.com/centerionware/not-k8s/actions/runs/36371692594).
+Branch-runtime migration run
+[36371692313](https://github.com/centerionware/not-k8s/actions/runs/36371692313)
+is terminal failure. Both single-node jobs and the five-node job compiled
+`nodemigrate`; all three compiled the branch `notk8s` combined binary with CRI,
+which compiles the packaged runtime component crates, including branch fixes.
+The upstream lane returned a Ready replacement Node and completed API import,
+then failed the PDB eviction assertion. The K3s lane still times out in full
+destination discovery. Five-node Docker isolation and control-plane recovery
+passed, but the migration fixture failed because the restarted `cp-1` API was
+not ready when its fixture setup began. No general build or general e2e
+workflow was dispatched. Follow-up harness fixes are pending migration CI.
+
 Release-backed migration run
 [36351022258](https://github.com/centerionware/not-k8s/actions/runs/36351022258)
 at branch SHA `55978b86`, with `runtime_source=release` and

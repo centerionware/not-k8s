@@ -1,6 +1,6 @@
 # nodemigrate implementation and integration status
 
-Last updated: 2026-09-27
+Last updated: 2026-09-28
 
 This is the living implementation status record for the full scope in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). Capability marks describe code
@@ -8,6 +8,27 @@ that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration result
+
+The follow-up run
+[36371692313](https://github.com/centerionware/not-k8s/actions/runs/36371692313)
+finished at code SHA `dfa3325594be1b150f07576f0ecc2060f7554deb`. Focused
+nodemigrate crate tests passed at that SHA in
+[36371692594](https://github.com/centerionware/not-k8s/actions/runs/36371692594).
+All migration lanes compiled `nodemigrate` and the branch `notk8s` combined
+binary with CRI, including the modified runtime components. The upstream lane
+completed return API import, restarted the retained kubelet service, and
+observed the replacement Node become Ready; it then failed because the fixture
+eviction of an nginx Pod succeeded while the PDB check had observed
+`disruptionsAllowed=0`. The log shows old and replacement nginx Pods during
+rollout, so the harness currently may race an overlapping or terminating Pod;
+the fixture now waits for exactly one non-terminating Ready replica and records
+PDB/Pod/response details if eviction is unexpectedly accepted. K3s still fails
+all 20 full discovery probes after return readiness. The five-node Kubernetes
+and Cilium preflight recovered after control-plane loss, but full migration
+fixture setup failed when `cp-1`'s API endpoint was still refusing connections;
+the preflight now waits for the restarted API, all Nodes, and Cilium before
+starting migration. These fixes await another branch-runtime run. No general
+build or e2e gate was run.
 
 Branch-runtime migration run
 [36369153385](https://github.com/centerionware/not-k8s/actions/runs/36369153385)

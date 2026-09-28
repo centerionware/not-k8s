@@ -285,21 +285,23 @@ instructions in `AGENTS.md` for nodemigrate work:
   fixes made here are included in migration testing. Testing is not limited to
   the released `v0.8.0` runtime; `v0.8.0` is an optional regression baseline
   and must not block branch-fix validation.
-- Compile the specific changed components required by the migration test in
-  the dedicated CI workflow. This includes `nodemigrate` and the branch runtime
-  components exercised by the scenario. These test builds are authorized and
-  do not constitute the general build gate.
+- The branch-runtime migration workflow builds `notk8s` with CRI support. That
+  combined binary compiles all runtime components it packages, including
+  modified component crates; no separate component build is required to prove
+  those crates compile for this migration test. It also builds `nodemigrate`.
+  These targeted test builds are authorized and do not constitute the general
+  build gate.
 
 - Do not run the repository's general `build.yml` gate for this objective.
 - Do not run the repository's general e2e gate for this objective.
 - Do not run local Cargo builds, Cargo tests, or local e2e on the development
   host.
 - For nodemigrate Rust changes, use the targeted `nodemigrate checks`
-  workflow, which compiles and tests only the `nodemigrate` crate. If
-  `nodebootstrap` or `nodestore` changes, use `quick-check.yml` with the
-  corresponding `components=nodebootstrap` or `components=nodestore` input.
-  Run the focused checks for every changed crate. These runs are allowed and
-  are not a general build gate.
+  workflow, which compiles and tests only the `nodemigrate` crate. Runtime
+  crate compilation is covered by the branch `notk8s` build in the dedicated
+  migration workflow. Run focused quick-check only when a changed behavior or
+  regression specifically needs that crate's unit/integration tests. Such runs
+  are allowed and are not a general build gate.
 - The dedicated `nodemigrate-integration.yml` workflow is the migration
   runtime test. Its build steps compile binaries for that test, including
   branch-built fixes, and are explicitly allowed. The user has authorized the

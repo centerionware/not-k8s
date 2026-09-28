@@ -4,6 +4,30 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **Migration CI: restarted five-node control plane was not fully ready before
+  fixture setup.** In branch-runtime run
+  [36371692313](https://github.com/centerionware/not-k8s/actions/runs/36371692313),
+  the five-node kubeadm/Cilium recovery preflight passed, but later fixture
+  installation used cp-1's API while it was still refusing connections. The
+  preflight now waits for cp-1's kubelet and API, all five Ready Nodes, and the
+  Cilium DaemonSet before migration begins. `bash -n` passed; rerun pending.
+
+- **Migration fixture: PDB eviction assertion raced nginx rollout.** In the
+  upstream lane of run `36371692313`, return import and replacement Node
+  registration succeeded, but an nginx eviction succeeded even though the
+  fixture had just observed `disruptionsAllowed=0`. Diagnostics show old and
+  replacement nginx Pods during rollout. The fixture now waits for exactly one
+  non-terminating Ready replica before validating the PDB and choosing the
+  eviction target; an unexpected success prints the PDB, selected Pod, all
+  matching Pods, and response for diagnosis. This remains a harness hypothesis
+  until the focused migration rerun establishes the actual budget and Pod
+  state at request time.
+
+- **K3s return discovery and Cilium Service networking still fail.** Run
+  `36371692313` reproduced all 20 destination-discovery timeouts after return
+  API readiness; Cilium Service traffic also reports `no route to host`. The
+  full cause and any required runtime change remain unverified.
+
 - **`nodelet`: stale CRI records can make Pod exec/status select the wrong runtime object.**
   Run [36357521280](https://github.com/centerionware/not-k8s/actions/runs/36357521280)
   failed both single-node lanes' first `stage=nodestore` non-root `emptyDir`
