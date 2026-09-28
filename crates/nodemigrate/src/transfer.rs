@@ -3548,7 +3548,10 @@ mod tests {
         });
         let normalized = prepare_initial_import_object(&source, &HashMap::new());
         assert_eq!(normalized.pointer("/spec/drivers"), Some(&serde_json::json!([])));
-        assert_eq!(source.pointer("/spec/drivers"), Some(&Value::Null));
+        assert_eq!(
+            source.pointer("/spec/drivers"),
+            Some(&serde_json::Value::Null)
+        );
     }
 
     #[test]

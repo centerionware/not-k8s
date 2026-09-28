@@ -17,10 +17,12 @@ versus target default-zero `spec.minReadySeconds`. Docker import failed because
 a source CSINode had `spec.drivers: null`; absent `spec` was already handled,
 but null was not. Docker diagnostics also revealed that the replacement API
 certificate omitted the source kubeconfig DNS endpoint `cp-1`. All three
-findings are fixed together in the current working branch and need focused CI
-validation before another migration run. All three lanes stopped before the
-return leg. See the [CI status](NODEMIGRATE_CI_STATUS.md) for exact job IDs and
-saved logs.
+findings are fixed together on the branch. The first focused validation at
+SHA `5ecbdd7bff9004b4a6da43ebe3155a18f6da0758` caught a missing test-only
+`serde_json::Value` qualification; that compile correction is pushed and
+awaiting focused revalidation. No new migration run has started. All three
+lanes stopped before the return leg. See the [CI status](NODEMIGRATE_CI_STATUS.md)
+for exact job IDs and saved logs.
 
 Latest completed migration run
 [36468405459](https://github.com/centerionware/not-k8s/actions/runs/36468405459)

@@ -42,17 +42,27 @@ before the next migration batch.
 
 ## Latest PR validation
 
-Commit `10e84728cf5e6c2d67939d776eb560255e452671` passed the automatic PR
-checks: [`nodemigrate checks` run 36489610979](https://github.com/centerionware/not-k8s/actions/runs/36489610979),
-[`Nodemigrate tests` run 36489610972](https://github.com/centerionware/not-k8s/actions/runs/36489610972),
-and [commit convention run 36489606038](https://github.com/centerionware/not-k8s/actions/runs/36489606038).
-The `nodemigrate checks` run completed `Test nodemigrate` in 1m22s, and the
-focused `Nodemigrate tests` validation passed. Migration and build jobs were
-skipped by their path policies. Local `bash -n`,
-`check_nodemigrate_diagnostics.sh`, `check_nodemigrate_api_inventory.sh`, and
-`git diff --check` also passed. These checks do not execute the migration
-integration workflow, general build, or full e2e, and do not verify the K3s
-Node-loss fix or live K3s audit behavior.
+Commit `5ecbdd7bff9004b4a6da43ebe3155a18f6da0758` passed
+[`Nodemigrate tests` run 36497300618](https://github.com/centerionware/not-k8s/actions/runs/36497300618)
+validation, including shell syntax, snapshot jq, Helm-state, API-inventory, and
+diagnostic checks. [`nodemigrate checks` run
+36497300854](https://github.com/centerionware/not-k8s/actions/runs/36497300854)
+passed packaging and crate detection but its `Test nodemigrate` step failed to
+compile because the new CSINode null regression referenced an unimported
+`Value` alias. The assertion now uses `serde_json::Value::Null`; the fix needs
+another focused validation. The same commit's [convention run
+36497298639](https://github.com/centerionware/not-k8s/actions/runs/36497298639)
+and [nodemigrate release check
+36497300745](https://github.com/centerionware/not-k8s/actions/runs/36497300745)
+passed. The CI failure log is saved once at
+`/tmp/nodemigrate-36497300854.log`. No migration, general build, or full e2e
+ran for this PR event.
+
+For commit `5ecbdd7b`, local `check_nodemigrate_snapshot_filter.sh`,
+`check_nodemigrate_diagnostics.sh`, `check_nodemigrate_api_inventory.sh`,
+shell syntax checks, and `git diff --check` passed. `rustfmt --check` reports
+existing formatting drift in these files on both the branch and its parent;
+the patch leaves that baseline unchanged.
 
 The migration fixture includes a core/v1 PodTemplate and live
 ReplicationController. Run 364936 confirmed the source and nodestore stages
@@ -70,11 +80,11 @@ the live audit assertion. Live audit coverage and the Node-loss actor remain
 unverified.
 
 Before another migration run, resolve the full set of confirmed defects
-exposed by run 36490156839 as one batch; do not dispatch after fixing only
-one. The fixes are now together in the working branch and need focused CI
-validation before the next migration run. Do not treat run 36490156839 as a
-pass or make a runtime change based on the Node-loss downstream symptoms
-alone.
+exposed by run 36493677637 as one batch; do not dispatch after fixing only one.
+The grouped fixes and focused-test compile correction are on the branch; the
+corrected source requires focused CI validation before another migration run.
+Do not treat run 36493677637 as a pass or make a runtime change based on the
+Node-loss downstream symptoms alone.
 
 Latest focused nodemigrate verification
 [36481686171](https://github.com/centerionware/not-k8s/actions/runs/36481686171)
