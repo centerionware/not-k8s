@@ -4,6 +4,37 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **Migration discovery must survive transient API 503s during CRD readiness.**
+  In run [36390001684](https://github.com/centerionware/not-k8s/actions/runs/36390001684),
+  K3s returned HTTP 503 from API discovery after accepting all 59 imported CRDs
+  while Cilium components restarted. CRD readiness used a one-shot per-group
+  discovery call and failed immediately. It now uses the aggregate-first
+  compatibility path and retries transient discovery failures within the
+  bounded CRD readiness deadline. The retry fix needs another K3s+Cilium
+  migration run.
+
+- **Five-node static hostPath fixture must schedule on its PV node.** The same
+  run's source setup pinned `migration-static-pv` to `cp-1`, but the
+  `migration-seed` Pod did not tolerate the control-plane `NoSchedule` taint and
+  remained Pending for ten minutes. The fixture Pod now tolerates that taint;
+  five-node preflight verification is pending.
+
+- **CRD schema numeric bound changed during migration.** The
+  upstream return in run `36390001684` reported Traefik `maximum` values as
+  `9223372036854775000` and `9223372036854776000`. These map to adjacent
+  float64 values, so this is a real schema change, not formatting. API
+  inventory stays strict; trace the value through export, nodestore, and
+  nodeapiserver CRD storage before changing comparison behavior.
+
+- **CSI ControllerRevision sequence advances during harness reinstall.** Upstream return in
+  run `36390001684` changed `/revision` on the existing
+  `default/csi-hostpath-socat-574cd475f4` ControllerRevision. The harness
+  reinstalls the fixture CSI components after cutover. The field-level
+  inventory reported `/revision` as the only changed field for this object;
+  comparison now excludes only that controller-assigned sequence while
+  checking the original payload and other source fields strictly. The rule
+  still needs runtime verification.
+
 - **`nodemigrate`: aggregated discovery retry wrapped `anyhow::Error` twice.**
   At branch SHA `f8cc4777` both targeted crate testing and every migration job
   failed at compile time with E0277 in `wait_for_discovery`; no migration

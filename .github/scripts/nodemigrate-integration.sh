@@ -1436,6 +1436,10 @@ metadata:
   namespace: migration-apps
 spec:
   restartPolicy: Never
+  tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
   initContainers:
   - name: seed-volumes
     image: busybox:1.36.1
@@ -2816,10 +2820,11 @@ capture_migratable_api_objects() {
             normalized="$(jq -cS -f "$ROOT/.github/scripts/nodemigrate-snapshot-normalize.jq" \
                 <<< "$object_json")"
             [[ -n "$normalized" ]] || continue
-            python3 -c '
+            PYTHONPATH="$ROOT/.github/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
 import hashlib
 import json
 import sys
+from nodemigrate_api_inventory import normalize_api_object
 
 def walk(value, path, result):
     if isinstance(value, dict) and value:
@@ -2834,7 +2839,8 @@ def walk(value, path, result):
         result[path or "/"] = hashlib.sha256(canonical.encode()).hexdigest()
 
 raw = sys.stdin.read().removesuffix("\n")
-obj = json.loads(raw)
+obj = normalize_api_object(json.loads(raw))
+raw = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 fields = {}
 walk(obj, "", fields)
 version = obj.get("apiVersion", "")

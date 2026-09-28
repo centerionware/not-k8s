@@ -5,6 +5,8 @@ ROOT="$(git rev-parse --show-toplevel)"
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf "$temporary_directory"' EXIT
 
+python3 "$ROOT/.github/scripts/nodemigrate_api_inventory.py" --self-test
+
 cat > "$temporary_directory/expected.txt" <<'RESOURCES'
 deployments.apps
 widgets.example.io

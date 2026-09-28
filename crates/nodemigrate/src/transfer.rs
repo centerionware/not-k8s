@@ -2668,10 +2668,25 @@ async fn wait_for_custom_resource_apis(
     timeout: std::time::Duration,
 ) -> Result<Vec<(String, String, String)>> {
     let started = std::time::Instant::now();
-    let mut discovery = Discovery::new(client.clone())
-        .run()
-        .await
-        .context("discovering destination APIs after applying source CustomResourceDefinitions")?;
+    let mut last_error = None;
+    let mut discovery = loop {
+        match discover_apis(client).await {
+            Ok(discovery) => break discovery,
+            Err(error) => {
+                let error = error.context(
+                    "discovering destination APIs after applying source CustomResourceDefinitions",
+                );
+                eprintln!("nodemigrate: destination CRD discovery probe failed: {error:#}");
+                last_error = Some(error);
+                let remaining = timeout.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    return Err(last_error.expect("an error was recorded"))
+                        .context("destination API discovery did not recover after CRD import");
+                }
+                tokio::time::sleep(DISCOVERY_RETRY_DELAY.min(remaining)).await;
+            }
+        }
+    };
     let mut missing = missing_custom_resource_apis(&discovery, expected);
     if !missing.is_empty() {
         eprintln!(
@@ -2680,11 +2695,31 @@ async fn wait_for_custom_resource_apis(
         );
     }
     while !missing.is_empty() && started.elapsed() < timeout {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        discovery = discover_apis(&client).await.context(
-            "refreshing destination API discovery for imported CustomResourceDefinitions",
-        )?;
-        missing = missing_custom_resource_apis(&discovery, expected);
+        let remaining = timeout.saturating_sub(started.elapsed());
+        tokio::time::sleep(std::time::Duration::from_secs(3).min(remaining)).await;
+        match discover_apis(client).await {
+            Ok(current) => {
+                discovery = current;
+                missing = missing_custom_resource_apis(&discovery, expected);
+                last_error = None;
+            }
+            Err(error) => {
+                let error = error.context(
+                    "refreshing destination API discovery for imported CustomResourceDefinitions",
+                );
+                eprintln!("nodemigrate: destination CRD discovery probe failed: {error:#}");
+                last_error = Some(error);
+            }
+        }
+    }
+    if missing.is_empty() {
+        return Ok(missing);
+    }
+    if started.elapsed() >= timeout {
+        if let Some(error) = last_error {
+            return Err(error)
+                .context("destination API discovery kept failing while waiting for imported CRDs");
+        }
     }
     Ok(missing)
 }

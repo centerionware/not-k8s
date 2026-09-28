@@ -7,11 +7,32 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
-Latest validation attempt at SHA `f8cc4777d8356e70a91752f959839b1e3f549583`
+Latest branch-runtime run
+[36390001684](https://github.com/centerionware/not-k8s/actions/runs/36390001684)
+at SHA `d30bce2e144fd2be134120b6261515b5a55a96e5` built nodemigrate and the
+combined branch `notk8s --features cri` binary in every lane. The focused
+nodemigrate checks passed at
+[36389980702](https://github.com/centerionware/not-k8s/actions/runs/36389980702).
+All three migration lanes failed: upstream completed the return behavior checks
+but strict inventory found two Traefik CRD schema bounds changed by one float64
+step, plus an existing CSI ControllerRevision whose controller-owned
+`revision` sequence advanced. CRD parity remains strict and the numeric change
+is unresolved; inventory now excludes only that ControllerRevision sequence
+field while keeping its payload strict.
+K3s returned to the retained API and applied 59 CRDs, then a discovery probe
+received HTTP 503 while Cilium Envoy and the Cilium agent were restarting. CRD
+discovery now uses the aggregate-first fallback and retries transient failures
+within its existing deadline. The five-node setup passed kubeadm/Cilium and
+control-plane recovery, but `migration-seed` could not schedule because its
+static PV was pinned to tainted `cp-1`; the fixture now tolerates that control
+plane taint. All three fixes await another migration run. Logs are saved at
+`/tmp/nodemigrate-{docker,k3s,kubernetes}-36390001684.log`. No general build or
+full e2e was dispatched.
+
+Previous validation attempt at SHA `f8cc4777d8356e70a91752f959839b1e3f549583`
 failed before running tests: `nodemigrate` and each migration lane hit the same
 compile error in `wait_for_discovery`, which wrapped an `anyhow::Error` with
-`Error::new`. The error is now given context directly; the correction is
-pending a rerun. Utility test log:
+`Error::new`. The error was corrected by adding context directly. Utility test log:
 `/tmp/nodemigrate-tests-36389588658.log`; migration build log:
 `/tmp/nodemigrate-kubernetes-36389615059.log`. Runs:
 [nodemigrate checks 36389588658](https://github.com/centerionware/not-k8s/actions/runs/36389588658)
