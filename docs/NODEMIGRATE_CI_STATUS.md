@@ -86,12 +86,16 @@ confirmation is pending. Run artifacts were downloaded once to
 `108970088143`; dispatch validation was skipped. No regular build or full e2e
 ran. See the bug tracker for component attribution and follow-up.
 
-The migration-build rule is explicit: each lane compiles branch-built
-`notk8s --features cri`, which compiles all changed component crates packaged
-in that combined runtime. Do not add separate redundant component builds.
-This proves compilation only; migration checkpoints provide the runtime
-evidence. General `build.yml` and full e2e remain excluded by the user-directed
-nodemigrate policy.
+The migration-build rule is explicit: each migration lane compiles branch-built
+`notk8s --features cri` and `nodemigrate` from its exact commit, even when the
+selected migration runtime is the latest regular release. The runtime-source
+input selects which binary is used for migration; it does not skip compiling
+branch changes. `notk8s --features cri` compiles all packaged runtime
+components and nodelet's CRI implementation, so do not add redundant
+component-by-component builds. The workflow PR path filter also includes every
+packaged component crate and the workspace manifests. This proves compilation
+only; migration checkpoints provide runtime evidence. General `build.yml` and
+full e2e remain excluded by the user-directed nodemigrate policy.
 
 Follow-up run
 [36459506591](https://github.com/centerionware/not-k8s/actions/runs/36459506591)

@@ -44,6 +44,15 @@ on:
       - '.github/nodemigrate/**'
       - '.github/workflows/nodemigrate-integration.yml'
       - 'crates/nodemigrate/**'
+      - 'crates/nodeapiserver/**'
+      - 'crates/nodebootstrap/**'
+      - 'crates/nodecontroller/**'
+      - 'crates/nodelet/**'
+      - 'crates/nodeproxy/**'
+      - 'crates/nodescheduler/**'
+      - 'crates/nodestore/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'docs/NODEMIGRATE.md'
       - 'docs/NODEMIGRATION_GOAL.md'
       - 'docs/NODEMIGRATE_BUGS.md'
@@ -157,7 +166,6 @@ jobs:
         run: cargo build --release -p nodemigrate
 
       - name: Build branch runtime
-        if: inputs.runtime_source == 'branch'
         run: cargo build --release --features cri -p notk8s
 
       - name: Fetch latest runtime

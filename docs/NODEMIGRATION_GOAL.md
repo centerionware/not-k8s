@@ -1,6 +1,6 @@
 # nodemigrate full migration goal
 
-Last updated: 2026-09-27
+Last updated: 2026-09-28
 
 This document defines the complete intended scope and acceptance criteria for
 the standalone `nodemigrate` utility. It is the task-specific authority for
@@ -102,6 +102,28 @@ bump the regular release version. This is a target, not publication authority.
   backups and the high probability of data loss, then require the exact input
   `yes` to continue. Noninteractive migration commands write the same warning
   to their logs and continue without waiting for input.
+
+## Migration build and validation rules
+
+- Every migration lane builds the branch's `nodemigrate` utility and runs
+  `cargo build --release --features cri -p notk8s` from the exact tested
+  commit before migration. This applies even when the migration itself uses
+  the latest regular release binary as its runtime; the release-vs-branch
+  selection chooses the binary used during migration, not whether branch
+  changes are compiled.
+- Building the combined `notk8s` binary compiles the packaged component crates
+  selected by its default features plus `cri` (including `nodelet`'s CRI
+  implementation). Do not duplicate that compile with separate component
+  builds. `nodemigrate` remains a standalone binary and is built separately.
+- PR path filters for the migration workflow include every packaged component
+  crate and the workspace manifests, so changes to a runtime component or its
+  dependencies run the migration workflow's validation path. Full migration
+  lanes remain explicitly dispatched; do not run the general full e2e or
+  regular build gates for this utility unless the user changes that policy.
+- Run focused quick-checks for changed migration/runtime crates when a change
+  needs unit-level validation. The migration round trip supplies runtime
+  evidence; successful compilation alone does not establish migration
+  behavior.
 
 ## End-to-end acceptance scenarios
 
