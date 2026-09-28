@@ -4,6 +4,35 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **`nodemigrate`: stale generated EndpointSlices broke returned Traefik
+  traffic.** In run
+  [36381052266](https://github.com/centerionware/not-k8s/actions/runs/36381052266),
+  upstream return import and Node registration completed; both Traefik route
+  probes returned 504 with nginx and Traefik Pods Ready. The protected reverse
+  export contained 11 EndpointSlices carrying this project's
+  `endpointslice.kubernetes.io/managed-by=nodecontroller` label. The exporter
+  skipped Kubernetes' two standard manager labels but not `nodecontroller`,
+  so destination-rebuilt slices were replaced by stale pod IPs. nodemigrate
+  now classifies `nodecontroller` slices as controller-managed and has a
+  regression for that label. Quick-check and migration verification are
+  pending.
+
+- **K3s fixture raced Cilium sandbox replacement at the `emptyDir` check.**
+  Run `36381052266` passed the Cilium and CoreDNS rollouts, then `kubectl exec`
+  hit `CONTAINER_EXITED` for the selected API-Ready probe Pod during Cilium
+  sandbox churn. Diagnostics show the replacement Pod/container being created
+  shortly after the probe failed. The fixture now requires a Ready Pod with a
+  running container ID and retries only transient runtime-exec failures while
+  it re-reads Pod state; persistent failures still fail with Pod diagnostics.
+  Verification is pending.
+
+- **Five-node preflight image lacked tools required by its fixture.** The same
+  run passed five-node isolation, kubeadm+Cilium setup, cp-1 loss/recovery, and
+  Cilium rollout after the shared-mount fix, then the source hostpath installer
+  failed at `git clone` because `git` was absent from the node image. The image
+  now includes `git` and `cri-tools` for fixture setup and CRI diagnostics.
+  Docker preflight verification is pending.
+
 - **K3s fixture chose a Running Pod with no running container.** In branch
   run [36377385003](https://github.com/centerionware/not-k8s/actions/runs/36377385003),
   forward migration and 119-resource parity passed, but return rollback left

@@ -12,6 +12,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         ethtool \
+        git \
         gpg \
         iproute2 \
         iptables \
@@ -41,7 +42,7 @@ RUN apt-get update \
         > /etc/apt/sources.list.d/kubernetes.list \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        kubeadm kubelet kubectl \
+        cri-tools kubeadm kubelet kubectl \
     && apt-mark hold kubeadm kubelet kubectl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*

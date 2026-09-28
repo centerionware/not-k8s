@@ -8,6 +8,31 @@ is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
 Latest branch-runtime run
+[36381052266](https://github.com/centerionware/not-k8s/actions/runs/36381052266)
+at SHA `74352dbd90ffa3df71ff5adb208adf93c9dad1f7` is terminal failure. The
+targeted `nodemigrate` quick-check passed at
+[36381051939](https://github.com/centerionware/not-k8s/actions/runs/36381051939).
+All three migration jobs built `nodemigrate` and branch `notk8s --features cri`,
+including the packaged runtime components. The upstream lane completed the
+return import and Node registration; the source-running standalone Pod was
+recreated and Ready, but Traefik ingress and Gateway requests returned 504.
+The reverse export contained 11 EndpointSlices managed by this project's
+`nodecontroller`; the importer treated that manager label as user-owned and
+restored stale endpoints. nodemigrate now skips that controller-managed label
+so the destination can recalculate it. K3s failed its nodestore checkpoint
+when Cilium sandbox churn left a stale Ready Pod whose CRI container had
+exited; the fixture now requires an API-reported running container and retries
+that specific transient exec failure while it refreshes Pod status. The
+five-node kubeadm/Cilium isolation and cp-1 recovery passed after the shared
+mount fix, but fixture installation stopped because the node image lacks
+`git`; `git` and `cri-tools` are now included. A targeted nodemigrate
+quick-check and a new branch-runtime migration run are pending for these fixes.
+No general build or full e2e workflow was dispatched. Saved logs:
+`/tmp/nodemigrate-docker-36381052266.log`,
+`/tmp/nodemigrate-k3s-36381052266.log`, and
+`/tmp/nodemigrate-kubernetes-36381052266.log`.
+
+Latest branch-runtime run
 [36377385003](https://github.com/centerionware/not-k8s/actions/runs/36377385003)
 at SHA `d2a7e06abeed8ce349fd8c53795809486004c876` is terminal failure. Each
 lane built `nodemigrate` and branch `notk8s --features cri`, including the

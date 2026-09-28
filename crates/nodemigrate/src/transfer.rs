@@ -2835,7 +2835,9 @@ fn regenerated_endpoint_skip_reason(object: &Value, kind: &str) -> Option<SkipRe
             } else if matches!(
                 label_value(object, "endpointslice.kubernetes.io/managed-by"),
                 Some(
-                    "endpointslice-controller.k8s.io" | "endpointslicemirroring-controller.k8s.io"
+                    "endpointslice-controller.k8s.io"
+                        | "endpointslicemirroring-controller.k8s.io"
+                        | "nodecontroller"
                 )
             ) {
                 Some(SkipReason::ControllerManagedEndpoints)
@@ -3919,13 +3921,25 @@ current-context: test
                 }
             }),
             serde_json::json!({
+                "apiVersion": "discovery.k8s.io/v1",
+                "kind": "EndpointSlice",
+                "metadata": {
+                    "name": "web-nodecontroller",
+                    "namespace": "apps",
+                    "labels": {
+                        "kubernetes.io/service-name": "web",
+                        "endpointslice.kubernetes.io/managed-by": "nodecontroller"
+                    }
+                }
+            }),
+            serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
                 "metadata": {"name": "node-a", "namespace": "kube-node-lease"}
             }),
         ];
         for (index, object) in cases.into_iter().enumerate() {
-            let expected_reason = if index == 5 {
+            let expected_reason = if index == 6 {
                 SkipReason::NodeHeartbeatLease
             } else if index == 1 || index == 3 {
                 SkipReason::ApiServiceRouting

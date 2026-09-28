@@ -2233,22 +2233,43 @@ verify_stage() {
         return 1
     }
     kubectl rollout status -n migration-apps deployment/migration-emptydir-nonroot --timeout=5m
-    emptydir_pod="$(kubectl get pods -n migration-apps -l app=migration-emptydir-nonroot \
-        -o json | jq -r '
-          [.items[] | select(.metadata.deletionTimestamp == null and
-            .status.phase == "Running" and
-            any(.status.conditions[]?; .type == "Ready" and .status == "True") and
-            ((.status.containerStatuses // []) | length) > 0 and
-            all(.status.containerStatuses[]; .ready == true))]
-          | sort_by(.metadata.creationTimestamp) | last.metadata.name // empty
-        ' )"
-    [[ -n "$emptydir_pod" ]] || {
-        echo "no Ready non-root emptyDir probe Pod is available at stage $stage" >&2
+    local emptydir_pod marker_output marker_ready=false
+    for _ in $(seq 1 30); do
+        emptydir_pod="$(kubectl get pods -n migration-apps -l app=migration-emptydir-nonroot \
+            -o json | jq -r '
+              [.items[] | select(.metadata.deletionTimestamp == null and
+                .status.phase == "Running" and
+                any(.status.conditions[]?; .type == "Ready" and .status == "True") and
+                ((.status.containerStatuses // []) | length) > 0 and
+                all(.status.containerStatuses[];
+                  .ready == true and (.state.running | type == "object") and
+                  ((.containerID // "") | length) > 0))]
+              | sort_by(.metadata.creationTimestamp) | last.metadata.name // empty
+            ' )"
+        if [[ -n "$emptydir_pod" ]]; then
+            if marker_output="$(kubectl exec -n migration-apps "$emptydir_pod" -- cat /tmp/marker 2>&1)"; then
+                [[ "$marker_output" == emptydir-write-ok ]] || {
+                    echo "non-root emptyDir marker has unexpected contents at stage $stage in Pod $emptydir_pod: $marker_output" >&2
+                    return 1
+                }
+                marker_ready=true
+                break
+            fi
+            case "$marker_output" in
+                *"CONTAINER_EXITED"*|*"unable to upgrade connection"*|*"container not found"*)
+                    echo "emptyDir probe Pod $emptydir_pod changed during runtime exec at stage $stage; retrying after Pod status refresh" >&2
+                    ;;
+                *)
+                    echo "non-root emptyDir exec failed at stage $stage in Pod $emptydir_pod: $marker_output" >&2
+                    return 1
+                    ;;
+            esac
+        fi
+        sleep 2
+    done
+    [[ "$marker_ready" == true ]] || {
+        echo "no stable Ready non-root emptyDir probe Pod could be read at stage $stage" >&2
         kubectl get pods -n migration-apps -l app=migration-emptydir-nonroot -o wide >&2 || true
-        return 1
-    }
-    [[ "$(kubectl exec -n migration-apps "$emptydir_pod" -- cat /tmp/marker)" == emptydir-write-ok ]] || {
-        echo "non-root emptyDir marker is not writable at stage $stage" >&2
         return 1
     }
     echo "PASS non-root read-only-rootfs emptyDir write at stage=$stage"
