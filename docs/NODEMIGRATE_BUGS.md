@@ -139,7 +139,13 @@ Last updated: 2026-09-28
   ordering/reference rewrite as the path to fix; the exact causal link from the
   transient ref removal to CSI catalog loss still requires runtime proof. The
   importer now orders PVCs before PVs and maps a known PVC UID before the first
-  PV write. Focused nodemigrate tests and a migration rerun are pending.
+  PV write. Unit regressions assert PVC-before-PV ordering, remapping a known
+  claim UID before the initial PV write, and clearing an unmapped UID for
+  later repair. They passed `cargo test -p nodemigrate` in
+  [run 36486806547](https://github.com/centerionware/not-k8s/actions/runs/36486806547)
+  at SHA `899143621b5aaf944a3ce0ab50ef97f4f547bd92`. The cross-component CSI
+  data handoff and the causal link to the missing volume catalog still require
+  migration runtime verification.
 - **Docker's Cilium assertion inspected Helm overrides, not effective values.**
   Run `36459506591` logged `ipam.mode=kubernetes`, KPR `true`, and
   `cni.binPath=/opt/cni/bin`, while `cni.confPath` was omitted from stored

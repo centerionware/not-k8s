@@ -65,9 +65,11 @@ unknown. See the [NodeLifecycleController event path](https://github.com/kuberne
   focused CI in run `36473759900`.
 - `nodemigrate`: the missing `CSINode.spec.drivers` default has a regression
   and passed focused CI in run `36473759900`. PV import now orders PVCs before
-  PVs and maps known claim UIDs before the first PV write; that code is in the
-  current branch, but the saved runtime evidence does not isolate the claim
-  handoff from other return-stage behavior.
+  PVs and maps known claim UIDs before the first PV write. Ordering and UID
+  remapping regressions passed the complete `nodemigrate` crate test in
+  [run 36486806547](https://github.com/centerionware/not-k8s/actions/runs/36486806547)
+  at SHA `899143621b5aaf944a3ce0ab50ef97f4f547bd92`. Runtime storage handoff
+  and payload parity remain unverified.
 - `nodeapiserver`/`nodemigrate`: exact floating-point JSON round trips passed
   focused CI in run `36479715060`. Runtime parity after that parser fix has
   not been tested; keep strict parity enabled.

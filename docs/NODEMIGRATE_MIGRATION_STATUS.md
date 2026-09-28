@@ -76,10 +76,13 @@ events for fixture PVCs and then failed mounting the existing StatefulSet CSI
 volume because its ID was missing from the driver's catalog. Docker failed
 before migration because its Cilium check read Helm overrides and missed the
 effective default for `cni.confPath`; the current branch now checks merged
-values. A focused code fix orders PVC import before PV import and maps the PV's
-claim reference before its initial write to avoid temporarily publishing a PV
-without its claim UID. That proposed fix needs focused tests and a full
-migration rerun before it is confirmed. No required round-trip gate has passed.
+values. A code fix orders PVC import before PV import and maps the PV's claim
+reference before its initial write to avoid temporarily publishing a PV without
+its claim UID. Ordering and remapping unit regressions passed the complete
+nodemigrate crate test in [run 36486806547](https://github.com/centerionware/not-k8s/actions/runs/36486806547)
+at SHA `899143621b5aaf944a3ce0ab50ef97f4f547bd92`. A migration rerun is still
+required to verify the CSI catalog/data handoff. No required round-trip gate
+has passed.
 
 The focused nodemigrate check
 [36425866401](https://github.com/centerionware/not-k8s/actions/runs/36425866401)
