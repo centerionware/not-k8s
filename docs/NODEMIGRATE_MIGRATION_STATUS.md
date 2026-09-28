@@ -10,6 +10,28 @@ compile or unit test does not mark a real migration path as verified.
 ## Latest integration result
 
 Branch-runtime run
+[36411280751](https://github.com/centerionware/not-k8s/actions/runs/36411280751)
+at SHA `14bbe10d8b15dc87fd6ac91b8bdef5d13c6db648` built nodemigrate and the
+branch combined runtime (`notk8s --features cri`) in every migration lane,
+therefore building all packaged components modified on this branch. The
+five-node job also built its node image. Docker preflight fixed the CoreDNS
+forwarding loop, but Cilium then failed to resolve `cp-1` while bringing up
+the API connection. The fixture now passes Cilium cp-1's reachable IP directly.
+K3s returned the replacement Node as Ready and completed the migration, but
+the post-return hostpath CSI deployment did not become ready amid repeated
+Cilium and Node readiness churn; the logs do not identify the initiating
+actor. Upstream reached returned-stage checks, then strict parity again found
+Traefik CRD schema `priority.maximum` values changed from
+`9223372036854775000` to `9223372036854776000`. This remains a real mismatch;
+the responsible hop has not been isolated. Focused nodemigrate crate tests
+passed at this SHA in
+[36411280754](https://github.com/centerionware/not-k8s/actions/runs/36411280754).
+Artifacts are saved under `/tmp/nodemigrate-artifacts-36411280751/`. The
+focused follow-up is pending; no general build or full e2e ran.
+
+## Latest integration result
+
+Branch-runtime run
 [36407648434](https://github.com/centerionware/not-k8s/actions/runs/36407648434)
 at SHA `7309de99f5d653961d8e4ce2a331b655d07924ee` built nodemigrate, the branch
 combined runtime (`notk8s --features cri`), and the five-node image, then failed

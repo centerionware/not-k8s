@@ -4,6 +4,33 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **Cilium bootstrap cannot depend on CoreDNS to resolve the API host.** In
+  five-node Docker run
+  [36411280751](https://github.com/centerionware/not-k8s/actions/runs/36411280751),
+  the resolver-file change removed CoreDNS's loop, but Cilium still tried to
+  resolve `cp-1` through the upstream resolver before CoreDNS could serve
+  cluster DNS. The fixture now gives Cilium cp-1's reachable IP as
+  `k8sServiceHost`; runtime verification is pending.
+
+- **K3s return completed, but hostpath CSI did not converge afterward.** In
+  run `36411280751`, nodemigrate reported the returned Node Ready and migration
+  complete. The follow-up hostpath deployment then exceeded five minutes
+  waiting for readiness while Cilium agent/Envoy health and Node/Pod state
+  churned. Kubelet logged missing Node and re-imported Pod relationship
+  messages, and CSI reported volume IDs absent from its volume list. These are
+  observed symptoms; the available logs do not establish a single cause or
+  which actor changed the Node/Pods. Preserve this as unresolved until a run
+  captures the transition at the failure boundary.
+
+- **Traefik CRD schema bound still changes on round trip.** Upstream run
+  `36411280751` again found `priority.maximum` changing from
+  `9223372036854775000` to `9223372036854776000` after return. This is a real
+  numeric value difference and strict parity remains enabled. The current
+  checkpoints need inspection to isolate whether export, nodestore transfer,
+  or API storage changes it.
+
+## Latest branch-run findings
+
 - **CSINode registration trails replacement Node readiness.** In migration run
   [36397547121](https://github.com/centerionware/not-k8s/actions/runs/36397547121),
   K3s imported all CRDs and returned the Node to Ready, but the CSI registrar

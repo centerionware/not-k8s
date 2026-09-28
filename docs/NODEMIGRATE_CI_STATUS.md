@@ -8,6 +8,27 @@ is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
 Latest branch-runtime run
+[36411280751](https://github.com/centerionware/not-k8s/actions/runs/36411280751)
+completed with failure at SHA `14bbe10d8b15dc87fd6ac91b8bdef5d13c6db648`.
+Every migration lane built `nodemigrate` and the branch combined
+`notk8s --features cri`, compiling all packaged components changed in this
+branch; the five-node lane also built its node image. Docker preflight
+`108891820491` fixed the CoreDNS loop but Cilium still could not resolve
+`cp-1` before CoreDNS was available. Its API host is now set to cp-1's
+reachable IP. K3s `108891821084` completed return migration and reported the
+replacement Node Ready, but post-return hostpath CSI did not become ready amid
+Cilium/Node readiness churn; the logs do not establish which actor caused the
+Node/Pod changes. Upstream Kubernetes `108891820709` reached returned-stage
+checks, then strict parity again found Traefik CRD `priority.maximum` values
+change from `9223372036854775000` to `9223372036854776000`; parity remains
+strict and the responsible migration hop is not yet isolated. Focused
+nodemigrate crate tests passed at the same SHA in
+[36411280754](https://github.com/centerionware/not-k8s/actions/runs/36411280754).
+Artifacts were downloaded once to `/tmp/nodemigrate-artifacts-36411280751/`.
+The Cilium address correction and latest findings are pending a focused
+migration rerun. No general build or full e2e workflow was dispatched.
+
+Latest branch-runtime run
 [36407648434](https://github.com/centerionware/not-k8s/actions/runs/36407648434)
 completed with failure at tested SHA `7309de99f5d653961d8e4ce2a331b655d07924ee`.
 All three migration jobs built `nodemigrate` and the branch combined

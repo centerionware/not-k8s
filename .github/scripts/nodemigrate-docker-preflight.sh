@@ -430,7 +430,10 @@ for node in "${NODES[@]}"; do
 done
 
 echo "Installing Helm and Cilium in the five-node upstream cluster"
-if ! docker exec --env NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" "$cp1" bash -ec '
+if ! docker exec \
+    --env NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" \
+    --env NODEMIGRATE_CILIUM_API_HOST="$cp1_ip" \
+    "$cp1" bash -ec '
     curl -fsSL https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz -o /tmp/helm.tgz
     tar -xzf /tmp/helm.tgz -C /tmp
     install -m0755 /tmp/linux-amd64/helm /usr/local/bin/helm
@@ -443,7 +446,7 @@ if ! docker exec --env NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" "$cp1" bash -ec '
         --set cni.binPath=/opt/cni/bin \
         --set kubeProxyReplacement="$NODEMIGRATE_CILIUM_KPR" \
         --set operator.replicas=1 \
-        --set k8sServiceHost=cp-1 \
+        --set k8sServiceHost="$NODEMIGRATE_CILIUM_API_HOST" \
         --set k8sServicePort=6443 \
         --wait --timeout 10m
     kubectl rollout status daemonset/cilium -n kube-system --timeout=10m
