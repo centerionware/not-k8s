@@ -114,7 +114,10 @@ Last updated: 2026-09-28
   `Discovery::run()` returned HTTP 503 before namespace import, causing
   rollback. Initial destination discovery now retries for up to five minutes,
   with each probe capped at ten seconds and failures logged. Focused
-  `nodemigrate` validation and live return verification are pending. The
+  `nodemigrate` quick-check passed at SHA `801b3275` in
+  [run 36366260390](https://github.com/centerionware/not-k8s/actions/runs/36366260390).
+  The first quick-check at SHA `78d2869b` found a missing delay constant; it
+  was added before the passing rerun. Live return verification is pending. The
   upstream lane in that run passed discovery and CRD application but could not
   reach the cert-manager webhook while importing a CertificateRequest; that
   workload-networking failure remains separate.

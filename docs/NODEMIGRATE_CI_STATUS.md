@@ -28,8 +28,12 @@ lane's readiness probe recovered after one connection-refused attempt and all
 55 CRD apply requests passed. Its CertificateRequest import failed because the
 cert-manager webhook ClusterIP timed out. Both lanes failed and rolled back.
 The importer now retries initial API discovery for up to five minutes, with a
-ten-second deadline per probe; focused and live validation are pending.
-Artifacts are in `/tmp/nodemigrate-36363999391/`.
+ten-second deadline per probe. Its focused nodemigrate quick-check initially
+failed at SHA `78d2869b` because the retry-delay constant was missing; that was
+corrected at SHA `801b3275`, where quick-check
+[36366260390](https://github.com/centerionware/not-k8s/actions/runs/36366260390)
+passed. Live validation is pending. Artifacts are in
+`/tmp/nodemigrate-36363999391/`.
 
 Previous branch-runtime run
 [36361932369](https://github.com/centerionware/not-k8s/actions/runs/36361932369)
