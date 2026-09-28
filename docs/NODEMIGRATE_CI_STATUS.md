@@ -42,6 +42,14 @@ UIDs because the node authorizer could not find the Node-to-Pod relationship.
 Those authorization errors follow the missing Node and do not identify what
 removed it. The K3s audit data does not cover the interval, so the runtime
 cause remains unknown and another migration run is not queued.
+Upstream Kubernetes v1.35 source shows that a kubelet whose registration has
+completed does not recreate a subsequently missing Node; it continues trying
+to update that Node. Its Lease controller has a separate missing-Lease
+recovery path. This confirms the later `node not found` messages are
+downstream, and does not explain the removal. The explicit K3s service restart
+after the intentional replacement delete remains necessary. See the
+[upstream kubelet implementation](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubelet/kubelet_node_status.go)
+and [Lease controller](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/component-helpers/apimachinery/lease/controller.go).
 
 ## Batch status before the next migration run
 

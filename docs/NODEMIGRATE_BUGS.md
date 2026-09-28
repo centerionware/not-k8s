@@ -50,6 +50,16 @@ Last updated: 2026-09-28
   HostPath CSI rollout issue. The configured Node-mutation audit must identify
   whether the API object is deleted or the K3s control plane loses it before
   changing Node lifecycle behavior.
+  Upstream Kubernetes v1.35 source confirms `registerWithAPIServer()` returns
+  immediately after the kubelet's first successful registration, while
+  `syncNodeStatus()` continues to update the existing Node. A running kubelet
+  therefore does not recreate a Node that disappears later. Its Lease
+  controller has a separate missing-Lease recovery path, which does not
+  establish a Node-loss cause. This confirms the post-loss `node not found`
+  errors are expected aftermath and that the explicit service restart after
+  the initial replacement delete is intentional. The later disappearance is
+  still unexplained. Sources: [Kubernetes v1.35 kubelet node status](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubelet/kubelet_node_status.go)
+  and [Node Lease controller](https://github.com/kubernetes/kubernetes/blob/v1.35.0/staging/src/k8s.io/component-helpers/apimachinery/lease/controller.go).
 - **Empty CronJob status triggers repeated no-op writes.** The same K3s log
   records `system:serviceaccount:kube-system:cronjob-controller` patching the
   unchanged `migration-cron` status every few milliseconds. When a missing
