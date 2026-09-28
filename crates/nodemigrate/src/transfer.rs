@@ -113,6 +113,7 @@ const IMPORT_RETRY_ATTEMPTS: u32 = 60;
 const IMPORT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 const DISCOVERY_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 const DISCOVERY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const DISCOVERY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 #[derive(Debug, Clone)]
 pub struct KubeApi {
     kubeconfig: PathBuf,
