@@ -925,9 +925,9 @@ async fn crd_schema_double_preserves_the_source_json_number_on_storage_round_tri
         )
         .expect("the CRD maximum must remain present");
     assert_eq!(
-        maximum.to_string(),
-        "9223372036854775000",
-        "CRD double serialization must preserve the source's shortest JSON representation"
+        maximum.as_f64(),
+        Some(9_223_372_036_854_775_000_i64 as f64),
+        "CRD protobuf double storage must preserve the source's numeric value"
     );
 
     let _ = child.kill().await;

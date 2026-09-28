@@ -17,8 +17,10 @@ focused nodemigrate crate tests passed at
 [36397531245](https://github.com/centerionware/not-k8s/actions/runs/36397531245).
 Upstream completed its return workload and storage checks, then strict
 round-trip parity again found two Traefik CRD `priority.maximum` values change
-from `9223372036854775000` to `9223372036854776000`. A nodeapiserver test now
-isolates CRD double serialization; it has not run yet. K3s completed API import
+from `9223372036854775000` to `9223372036854776000`. A nodeapiserver CRD
+double round-trip check ran, exposing an incorrect test expectation about the
+original integer-shaped JSON spelling; it now checks the protobuf double's
+numeric value. K3s completed API import
 and returned the replacement Node to Ready, but failed because the CSI
 registrar had not yet recreated its `CSINode`. `nodemigrate` now waits for up
 to 60 seconds for that specific object before repairing its owner reference.

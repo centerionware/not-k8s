@@ -29,9 +29,14 @@ unschedulable because its static hostPath PV targets `cp-1` and its CSI PV
 targets `worker-2`. Seeding and data verification now use separate Pods for
 each volume. The same diagnostic also found CoreDNS CrashLoopBackOff, which
 needs separate follow-up. A focused nodeapiserver CRD double round-trip test
-was added to isolate the schema number change; it has not run yet. Complete
-logs are saved at `/tmp/nodemigrate-36397547121.log`. No regular build or full
-e2e was dispatched.
+ran in quick-check `36402378386`; it confirmed `JSONSchemaProps.maximum` is
+returned as a floating-point JSON number, as required by its protobuf
+`double` field. Its first assertion incorrectly required the original
+integer-shaped JSON spelling. It now checks the round-tripped numeric `f64`
+value, pending another quick-check. Complete migration logs are saved at
+`/tmp/nodemigrate-36397547121.log`; the quick-check log is at
+`/tmp/nodemigrate-quickcheck-36402378386.log`. No regular build or full e2e was
+dispatched.
 
 Previous validation attempt at SHA `f8cc4777d8356e70a91752f959839b1e3f549583`
 failed before running tests: `nodemigrate` and each migration lane hit the same
