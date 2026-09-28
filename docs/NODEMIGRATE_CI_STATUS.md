@@ -9,10 +9,16 @@ this objective.
 
 Latest branch-runtime run
 [36402381606](https://github.com/centerionware/not-k8s/actions/runs/36402381606)
-is still running at tested SHA `8ce9b2691f0c639f10017f55edfa23fd094ad500`.
-Its k3s and Kubernetes jobs have built nodemigrate and combined branch
-`notk8s --features cri`; the five-node job has built nodemigrate, combined
-`notk8s`, and the node image. Runtime migration and probe steps remain active.
+completed with failure at tested SHA `8ce9b2691f0c639f10017f55edfa23fd094ad500`.
+All three migration jobs built `nodemigrate` and the branch combined
+`notk8s --features cri`; the five-node job also built its node image. The k3s
+return reached Node Ready, then failed returned-stage checks; Kubernetes
+completed workload/storage checks and failed strict CRD numeric parity; the
+five-node lane failed its source NetworkPolicy allow probe while CoreDNS was
+CrashLoopBackOff. Exact job results: k3s `108863045006`, Kubernetes
+`108863045296`, Docker preflight `108863045252`. Full artifacts are saved once
+under `/tmp/nodemigrate-artifacts-36402381606/`, with job logs under
+`/tmp/nodemigrate-{k3s,kubernetes,docker}-36402381606.log`.
 The corrected focused nodeapiserver quick-check passed at SHA `4c718dc0` in
 [36403498362](https://github.com/centerionware/not-k8s/actions/runs/36403498362)
 and includes the CRD protobuf-double round-trip regression. The earlier
@@ -27,17 +33,18 @@ branch workflow validation passed at
 [36397531246](https://github.com/centerionware/not-k8s/actions/runs/36397531246);
 commit convention passed at
 [36397528336](https://github.com/centerionware/not-k8s/actions/runs/36397528336).
-The upstream migration completed return workload and storage checks, then
-strict parity found the same two Traefik CRD `priority.maximum` changes from
-`9223372036854775000` to `9223372036854776000`; parity remains strict. K3s
-completed protected API import and the replacement Node reached Ready, but its
-`CSINode` had not been recreated when owner-reference repair ran. The code now
-waits up to 60 seconds for this specific CSI registration object. Docker's
-five-node fixture reached workload setup, where a single seed Pod was
-unschedulable because its static hostPath PV targets `cp-1` and its CSI PV
-targets `worker-2`. Seeding and data verification now use separate Pods for
-each volume. The same diagnostic also found CoreDNS CrashLoopBackOff, which
-needs separate follow-up. The earlier quick-check log is at
+Kubernetes reached `PASS stage=returned`, then strict parity confirmed two
+Traefik CRD `priority.maximum` changes from `9223372036854775000` to
+`9223372036854776000`; this is an actual `float64` value difference and strict
+parity remains in force. K3s imported state and reported the replacement Node
+Ready, but returned-stage
+verification later observed the Node missing; the captured logs do not
+establish what removed it. The CSI wait and separate static/CSI fixture Pods
+are in the tested SHA. The five-node source workload failed its NetworkPolicy
+allow probe with CoreDNS in CrashLoopBackOff; captured diagnostics lack
+CoreDNS container output, so its cause is unknown. Follow-up diagnostics now
+collect current and previous CoreDNS logs and capture Node/Lease state plus
+K3s/kubelet journals on readiness failure. The earlier quick-check log is at
 `/tmp/nodemigrate-quickcheck-36402378386.log`. Complete migration logs for
 run `36397547121` are saved at `/tmp/nodemigrate-36397547121.log`. No regular
 build or full e2e was dispatched.

@@ -45,6 +45,16 @@ failure_diagnostics() {
         node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf kubectl get pods -A -o wide || true
         node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf \
             kubectl get events -A --sort-by=.lastTimestamp | tail -n 120 || true
+        for pod in $(node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf \
+            kubectl get pods -n kube-system -l k8s-app=kube-dns -o name 2>/dev/null); do
+            echo "CoreDNS diagnostics: $pod"
+            node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf \
+                kubectl describe -n kube-system "$pod" || true
+            node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf \
+                kubectl logs -n kube-system "$pod" --all-containers --tail=120 || true
+            node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf \
+                kubectl logs -n kube-system "$pod" --all-containers --previous --tail=120 || true
+        done
         node cp-1 env KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig \
             kubectl get nodes -o wide || true
     fi

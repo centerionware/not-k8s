@@ -337,6 +337,12 @@ collect_cluster_diagnostics() {
             kubectl logs "$pod" -n kube-system --all-containers --tail=120 || true
             kubectl logs "$pod" -n kube-system --all-containers --previous --tail=120 || true
         done
+        for pod in $(kubectl get pods -n kube-system -l k8s-app=kube-dns -o name 2>/dev/null); do
+            echo "CoreDNS diagnostics: $pod"
+            kubectl describe "$pod" -n kube-system || true
+            kubectl logs "$pod" -n kube-system --all-containers --tail=120 || true
+            kubectl logs "$pod" -n kube-system --all-containers --previous --tail=120 || true
+        done
     ' || true
     collect_node_diagnostics
 }

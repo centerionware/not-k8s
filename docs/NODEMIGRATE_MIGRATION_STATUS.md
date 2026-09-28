@@ -11,10 +11,15 @@ compile or unit test does not mark a real migration path as verified.
 
 Branch-runtime run
 [36402381606](https://github.com/centerionware/not-k8s/actions/runs/36402381606)
-is still running at tested SHA `8ce9b2691f0c639f10017f55edfa23fd094ad500`.
-The k3s and Kubernetes lanes have built nodemigrate and combined branch
-`notk8s --features cri`; the five-node lane has built nodemigrate, combined
-`notk8s`, and its node image. Runtime migration and probe steps remain active.
+completed with failure at tested SHA `8ce9b2691f0c639f10017f55edfa23fd094ad500`.
+All lanes built nodemigrate and the branch combined runtime (`notk8s --features
+cri`); the five-node lane also built its node image. Kubernetes reached
+`PASS stage=returned` before strict CRD `float64` value parity failed. K3s
+returned the replacement Node as Ready but later verification found no Node;
+the initiating deletion is unconfirmed. The five-node source fixture failed
+its NetworkPolicy allow probe with CoreDNS crash-looping, and diagnostics did
+not capture the container failure output. Follow-up diagnostics now capture
+CoreDNS logs plus Node/Lease and service journal state.
 The corrected focused nodeapiserver check passed at SHA `4c718dc0` in
 [36403498362](https://github.com/centerionware/not-k8s/actions/runs/36403498362).
 The preceding completed branch-runtime failure at SHA

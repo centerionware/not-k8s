@@ -2230,7 +2230,19 @@ verify_stage() {
         return 1
     fi
     echo "PASS: every namespace trust bundle matches the active API CA at stage $stage"
-    kubectl wait --for=condition=Ready node --all --timeout=5m
+    if ! kubectl wait --for=condition=Ready node --all --timeout=5m; then
+        echo "Node readiness failed at stage=$stage; collecting replacement and lease diagnostics" >&2
+        kubectl get nodes -o wide >&2 || true
+        kubectl get nodes -o yaml >&2 || true
+        kubectl get leases -n kube-node-lease -o yaml >&2 || true
+        kubectl get events -A --field-selector involvedObject.kind=Node \
+            --sort-by=.metadata.creationTimestamp >&2 || true
+        for service in k3s kubelet; do
+            systemctl status "$service" --no-pager --full >&2 || true
+            journalctl -u "$service" -b --no-pager -n 400 >&2 || true
+        done
+        return 1
+    fi
     if ! kubectl rollout status daemonset/cilium -n kube-system --timeout=5m; then
         echo "Cilium did not become Ready before workload checks at stage $stage" >&2
         kubectl get daemonset cilium -n kube-system -o wide >&2 || true

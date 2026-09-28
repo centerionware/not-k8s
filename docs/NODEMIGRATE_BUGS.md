@@ -288,6 +288,34 @@ Last updated: 2026-09-28
 
 ## Latest branch-runtime run findings
 
+- **Strict CRD parity found changed numeric values after a full Kubernetes
+  round trip.** Run [36402381606](https://github.com/centerionware/not-k8s/actions/runs/36402381606)
+  reached `PASS stage=returned`, then reported the Traefik CRD schema boundary
+  changing from `9223372036854775000` to `9223372036854776000` on two CRDs.
+  These spellings represent different IEEE-754 `float64` values, so this is a
+  real change and the parity assertion stays strict. The owner is the migration
+  JSON transfer or nodeapiserver typed/protobuf storage path; isolate the first
+  conversion that changes the value and add an HTTP-level regression. Relevant
+  artifact: `/tmp/nodemigrate-artifacts-36402381606/kubernetes/nodemigrate-kubernetes.log`.
+
+- **K3s return loses the Node after reporting it Ready.** In the same run,
+  nodemigrate completed protected API import, waited for the replacement Node
+  to become Ready, and returned success. Later returned-stage diagnostics
+  recorded `Node ... Not Found`, including failed PV affinity lookups and
+  EndpointSlice updates. Current logs do not prove which controller or process
+  removed it. The owner is not yet identified; next run diagnostics record
+  Node/Lease state and the K3s/kubelet journal when readiness fails. Artifact:
+  `/tmp/nodemigrate-artifacts-36402381606/k3s/nodemigrate-k3s.log`.
+
+- **Five-node source NetworkPolicy allow probe fails while CoreDNS crash-loops.**
+  In run [36402381606](https://github.com/centerionware/not-k8s/actions/runs/36402381606),
+  the Docker/kubeadm/Cilium fixture created the allow Job, but it did not reach
+  its successful condition. CoreDNS Pods were `CrashLoopBackOff`; captured
+  diagnostics did not include their container logs, so DNS is a correlated
+  signal, not yet a confirmed cause. The harness now captures current and
+  previous CoreDNS logs from cp-1 with its admin kubeconfig. Artifact:
+  `/tmp/nodemigrate-artifacts-36402381606/docker/nodemigrate-docker-preflight.log`.
+
 - **K3s return: full destination discovery still times out after core API readiness.**
   In branch-runtime run
   [36369153385](https://github.com/centerionware/not-k8s/actions/runs/36369153385),
