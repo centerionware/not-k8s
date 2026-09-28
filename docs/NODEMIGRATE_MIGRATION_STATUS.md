@@ -22,7 +22,13 @@ round the schema through a full-object update. These changes await migration
 CI. The K3s Node lifecycle remains unresolved. No general build or full e2e
 ran. The return-target state watcher now continues through returned-stage
 workload and parity checks to capture a Node loss after nodemigrate reports
-success.
+success. Focused test run
+[36429944327](https://github.com/centerionware/not-k8s/actions/runs/36429944327)
+failed compiling the metadata-patch regression because its `Value::Null`
+assertion was not qualified in the test module; the reference is fixed, with a
+focused rerun pending. Migration run
+[36430036471](https://github.com/centerionware/not-k8s/actions/runs/36430036471)
+is testing this commit across the enabled topologies.
 
 ## Latest validation
 

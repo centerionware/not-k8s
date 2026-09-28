@@ -35,6 +35,13 @@ Last updated: 2026-09-28
   nodemigrate crate tests. It does not verify the current uncommitted CRD
   metadata patch.
 
+- **CRD metadata-patch test needed a qualified JSON null value.** Focused run
+  [36429944327](https://github.com/centerionware/not-k8s/actions/runs/36429944327)
+  at SHA `de520706339fce833e6ff1099d760ad8f1ca71ee` compiled the library, then
+  failed compiling the new unit test because `Value::Null` was not imported in
+  the test module. The assertion now uses `serde_json::Value::Null`; a focused
+  rerun is pending.
+
 ## Latest branch-run findings
 
 - **CRD preservation predicate did not compile.** Nodmigrate run

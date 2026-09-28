@@ -24,7 +24,14 @@ patches only CRD labels/annotations when the schema matches, avoiding a full
 schema rewrite; this change and the Docker fixture fix await a new migration
 run. The return-target watcher will now stay active through returned-stage
 workload and parity checks, so a Node loss after the migration command returns
-can appear in the captured state timeline. Artifacts from run `36425151654` are under
+can appear in the captured state timeline. Focused nodemigrate run
+[36429944327](https://github.com/centerionware/not-k8s/actions/runs/36429944327)
+at SHA `de520706339fce833e6ff1099d760ad8f1ca71ee` caught a test-only compile
+error: the new assertion referenced `Value::Null` outside its import scope.
+It is now fully qualified; focused rerun is pending. Migration run
+[36430036471](https://github.com/centerionware/not-k8s/actions/runs/36430036471)
+is running the same SHA across K3s, upstream, and five-node Docker. Artifacts
+from prior run `36425151654` are under
 `/tmp/nodemigrate-artifacts-36425151654/`. No regular build or full e2e ran.
 
 The automatic nodemigrate check

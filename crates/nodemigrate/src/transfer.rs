@@ -3335,7 +3335,7 @@ mod tests {
         );
         assert_eq!(
             metadata_patch.pointer("/metadata/labels/obsolete"),
-            Some(&Value::Null)
+            Some(&serde_json::Value::Null)
         );
         assert_eq!(
             metadata_patch.pointer("/metadata/annotations/meta.helm.sh~1release-name"),
