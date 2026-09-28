@@ -26,7 +26,9 @@ started K3s, but all 20 retained-API probes exceeded the ten-second timeout
 while `ready()` performed full API discovery; the five-minute retry then
 rolled back to nodestore. Post-rollback fixture exec failed with
 `CONTAINER_EXITED`. The new implementation directly lists core Namespaces to
-avoid discovery fan-out; focused CI is pending. The upstream lane failed
+avoid discovery fan-out; focused nodemigrate quick-check
+[36363774087](https://github.com/centerionware/not-k8s/actions/runs/36363774087)
+passed at SHA `2884eeaa`. The upstream lane failed
 importing `CertificateRequest migration-test-1` with HTTP 500. Five-node
 Docker preflight failed at `Probe kubeadm nodes`. The nodelet quick-check
 [36361932310](https://github.com/centerionware/not-k8s/actions/runs/36361932310)

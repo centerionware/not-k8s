@@ -102,7 +102,9 @@ Last updated: 2026-09-28
   shows all 20 probes expiring while `ready()` performs discovery of every API
   group before listing Namespaces. The bounded retry then rolls back after five
   minutes. Readiness now checks the core Namespace API directly, avoiding full
-  discovery; focused `nodemigrate` CI and a live return run are pending. Logs:
+  discovery; focused `nodemigrate` quick-check passed at SHA `2884eeaa` in
+  [run 36363774087](https://github.com/centerionware/not-k8s/actions/runs/36363774087).
+  A live return run is pending. Logs:
   `/tmp/nodemigrate-36361932369/nodemigrate-k3s-36361932369/nodemigrate-k3s.log`.
 
 - **`nodemigrate`: later cluster nodes reused the first node's protected

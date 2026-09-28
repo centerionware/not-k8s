@@ -34,7 +34,9 @@ separate living documents below.
   with API HTTP 500. Five-node Docker preflight failed in its kubeadm probe.
   Focused nodelet quick-check [36361932310](https://github.com/centerionware/not-k8s/actions/runs/36361932310)
   passed at the same SHA. The readiness probe now lists a core Namespace
-  directly; focused nodemigrate validation is pending. Full e2e and general
+  directly; focused nodemigrate quick-check
+  [36363774087](https://github.com/centerionware/not-k8s/actions/runs/36363774087)
+  passed at SHA `2884eeaa`. Full e2e and general
   build workflows were not run. Logs are in
   `/tmp/nodemigrate-36361932369/`.
 
