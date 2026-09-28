@@ -1309,6 +1309,49 @@ spec:
             cpu: 1m
             memory: 1Mi
 ---
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: migration-pod-template
+  namespace: migration-apps
+template:
+  metadata:
+    labels:
+      app: migration-pod-template
+  spec:
+    restartPolicy: Never
+    containers:
+    - name: check
+      image: busybox:1.36.1
+      command: ["sh", "-c", "echo pod-template-workload-running"]
+      resources:
+        requests:
+          cpu: 1m
+          memory: 1Mi
+---
+apiVersion: v1
+kind: ReplicationController
+metadata:
+  name: migration-replication-controller
+  namespace: migration-apps
+spec:
+  replicas: 1
+  selector:
+    app: migration-replication-controller
+  template:
+    metadata:
+      labels:
+        app: migration-replication-controller
+    spec:
+      containers:
+      - name: check
+        image: busybox:1.36.1
+        command: ["sh", "-c", "echo replication-controller-workload-running; sleep 36000"]
+        resources:
+          requests:
+            cpu: 1m
+            memory: 1Mi
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -2484,6 +2527,59 @@ verify_stage() {
         | jq -r '[.status.desiredNumberScheduled, .status.numberReady] | @tsv')"
     [[ "$actual_daemon_nodes" == "$expected_daemon_nodes"$'\t'"$expected_daemon_nodes" ]] || {
         echo "DaemonSet migration-daemon is not ready on every node at stage $stage: expected=$expected_daemon_nodes/$expected_daemon_nodes actual=$actual_daemon_nodes" >&2
+        return 1
+    }
+    kubectl get podtemplate migration-pod-template -n migration-apps -o json | jq -e '
+      .template.metadata.labels.app == "migration-pod-template" and
+      .template.spec.restartPolicy == "Never" and
+      .template.spec.containers[0].image == "busybox:1.36.1" and
+      .template.spec.containers[0].command == ["sh", "-c", "echo pod-template-workload-running"]
+    ' >/dev/null || {
+        echo "PodTemplate workload data changed at stage $stage" >&2
+        return 1
+    }
+    kubectl wait -n migration-apps \
+        --for=jsonpath='{.status.readyReplicas}'=1 \
+        replicationcontroller/migration-replication-controller --timeout=5m
+    kubectl get replicationcontroller migration-replication-controller -n migration-apps -o json | jq -e '
+      .spec.replicas == 1 and
+      .spec.selector.app == "migration-replication-controller" and
+      (.status.readyReplicas // 0) == 1
+    ' >/dev/null || {
+        echo "ReplicationController did not preserve or reconcile its single replica at stage $stage" >&2
+        kubectl get replicationcontroller migration-replication-controller -n migration-apps -o yaml >&2 || true
+        kubectl get pods -n migration-apps -l app=migration-replication-controller -o wide >&2 || true
+        return 1
+    }
+    local replication_controller_pod
+    replication_controller_pod="$(kubectl get pods -n migration-apps -l app=migration-replication-controller -o json | jq -r '
+      [.items[] | select(.metadata.deletionTimestamp == null and
+        .status.phase == "Running" and
+        any(.status.conditions[]?; .type == "Ready" and .status == "True") and
+        any(.metadata.ownerReferences[]?;
+          .kind == "ReplicationController" and .name == "migration-replication-controller"))]
+      | .[0].metadata.name // empty
+    ')"
+    [[ -n "$replication_controller_pod" ]] || {
+        echo "ReplicationController-owned workload is not Ready at stage $stage" >&2
+        kubectl get pods -n migration-apps -l app=migration-replication-controller -o yaml >&2 || true
+        return 1
+    }
+    kubectl get pods -n migration-apps -l app=migration-replication-controller -o json | jq -e '
+      [.items[] | select(.metadata.deletionTimestamp == null and
+        .status.phase == "Running" and
+        any(.status.conditions[]?; .type == "Ready" and .status == "True") and
+        any(.metadata.ownerReferences[]?;
+          .kind == "ReplicationController" and .name == "migration-replication-controller"))]
+      | length == 1
+    ' >/dev/null || {
+        echo "ReplicationController-owned workload is not Ready at stage $stage" >&2
+        kubectl get pods -n migration-apps -l app=migration-replication-controller -o yaml >&2 || true
+        return 1
+    }
+    kubectl logs -n migration-apps "$replication_controller_pod" | grep -F \
+        'replication-controller-workload-running' >/dev/null || {
+        echo "ReplicationController workload did not execute at stage $stage" >&2
         return 1
     }
     kubectl get customresourcedefinitions.apiextensions.k8s.io ciliumendpoints.cilium.io

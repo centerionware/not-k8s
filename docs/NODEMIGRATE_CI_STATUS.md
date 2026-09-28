@@ -22,6 +22,14 @@ this commit. These checks do not run the migration integration workflow,
 general build, or full e2e, and do not verify the K3s Node-loss fix or live K3s
 audit behavior.
 
+The current working change extends the workload fixture with a core/v1
+PodTemplate and a live ReplicationController. Each stage checks the preserved
+PodTemplate spec and confirms that the controller maintains exactly one Ready
+owned Pod whose command ran. These assertions have passed shell syntax,
+diagnostics, API-inventory, and whitespace checks locally, but are not yet
+covered by PR CI or a migration run. The migration run remains paused while
+the repeated K3s returned-Node disappearance is unresolved.
+
 Before another migration attempt, resolve the full set of confirmed defects
 already exposed by completed runs as one batch; do not dispatch after fixing
 only one. Continue code and saved-artifact investigation where a cause remains
