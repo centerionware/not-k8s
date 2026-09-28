@@ -10,10 +10,14 @@ Last updated: 2026-09-28
   the watcher saw the returned Node at 19:11:04, 19:11:12, and 19:11:19 UTC,
   then saw an empty Node list from 19:11:33 onward. K3s subsequently reported
   the Node missing and could not satisfy PV NodeAffinity or register the
-  HostPath CSI driver. No matching Node DELETE request appears in the captured
-  audit events. The actor and mechanism remain unknown; do not paper over this
-  by relaxing the readiness or storage checks, and do not rerun migration
-  until the cause is addressed.
+  HostPath CSI driver. The captured audit stream ends at 19:10:04, before the
+  return-migration service restart and the Node disappearance; it contains no
+  evidence about that transition. The actor and mechanism remain unknown; do
+  not paper over this by relaxing readiness or storage checks, and do not
+  rerun migration until the cause is addressed. The fixture now configures
+  K3s API auditing for Node mutations and prints that audit file on failure;
+  this is diagnostic instrumentation, not a fix, and has not yet been exercised
+  by a new migration run.
 - **Empty CronJob status triggers repeated no-op writes.** The same K3s log
   records `system:serviceaccount:kube-system:cronjob-controller` patching the
   unchanged `migration-cron` status every few milliseconds. When a missing
@@ -35,9 +39,12 @@ Last updated: 2026-09-28
   job `109084193399` in run `36468405459` found Traefik `maximum` bounds
   serialized once as integer and once as floating-point numbers. Checking the
   adjacent IEEE-754 values showed they are different `double` values, so JSON
-  parity must remain strict. A proposed normalization was reverted. Trace the
-  number through source export, `DynamicObject`, nodestore, and return import to
-  identify where it changes; no fix is pending yet.
+  parity must remain strict. A proposed normalization was reverted. Focused
+  `DynamicObject` integer and float serde round trips passed in
+  [36474893777](https://github.com/centerionware/not-k8s/actions/runs/36474893777)
+  at SHA `2c9865bda8c8011aedc4bbb6fd3481b6a2a42d71`; that boundary preserves
+  both representations. Continue tracing through the API response/storage and
+  return import path. No fix is pending yet.
 
 - **Round-trip import changes Traefik CRD numeric bounds.** Upstream job
   `109067982540` in run

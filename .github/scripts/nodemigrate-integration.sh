@@ -524,6 +524,15 @@ diagnostics() {
         stop_target_forward_watch || true
         echo "Migration integration failed at $(date -u +%FT%TZ), exit=$status"
         echo "source=$SOURCE_DIST kubeconfig=${CURRENT_KUBECONFIG:-unset}"
+        if [[ "$SOURCE_DIST" == k3s ]]; then
+            local audit_log=/var/lib/rancher/k3s/server/logs/nodemigrate-audit.log
+            if [[ -f "$audit_log" ]]; then
+                echo "K3s node mutation audit log ($audit_log):"
+                cat "$audit_log" || true
+            else
+                echo "K3s node mutation audit log is missing: $audit_log"
+            fi
+        fi
         if [[ -n "$CURRENT_KUBECONFIG" && -f "$CURRENT_KUBECONFIG" ]]; then
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get nodes -o wide || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe nodes || true
@@ -712,9 +721,23 @@ install_source() {
         if [[ "$cilium_kpr" == true ]]; then
             kube_proxy_flag="--disable-kube-proxy"
         fi
+        install -d -m 0755 /etc/rancher/k3s
+        cat > /etc/rancher/k3s/nodemigrate-audit-policy.yaml <<'EOF'
+apiVersion: audit.k8s.io/v1
+kind: Policy
+omitStages:
+  - RequestReceived
+rules:
+  - level: Metadata
+    verbs: [create, update, patch, delete, deletecollection]
+    resources:
+      - group: ""
+        resources: [nodes, nodes/status]
+  - level: None
+EOF
         curl -sfL https://get.k3s.io -o /tmp/install-k3s.sh
         INSTALL_K3S_VERSION="$k3s_version" \
-        INSTALL_K3S_EXEC="server $kube_proxy_flag --flannel-backend=none --disable-network-policy --disable=traefik --cluster-cidr=10.42.0.0/16 --write-kubeconfig-mode=644" \
+        INSTALL_K3S_EXEC="server $kube_proxy_flag --flannel-backend=none --disable-network-policy --disable=traefik --cluster-cidr=10.42.0.0/16 --write-kubeconfig-mode=644 --kube-apiserver-arg=audit-policy-file=/etc/rancher/k3s/nodemigrate-audit-policy.yaml --kube-apiserver-arg=audit-log-path=/var/lib/rancher/k3s/server/logs/nodemigrate-audit.log" \
             sh /tmp/install-k3s.sh
         SOURCE_KUBECONFIG=/etc/rancher/k3s/k3s.yaml
     else

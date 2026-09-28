@@ -35,9 +35,17 @@ Artifacts were downloaded once to
 `/tmp/nodemigrate-artifacts-36468405459/`. Exact jobs: Docker
 `109084192913`, K3s `109084193351`, upstream `109084193399`; validation was
 skipped. No general build or full e2e ran. No migration lane passed the full
-round trip, and the K3s Node loss still has no confirmed mechanism; do not
-dispatch another migration run until that issue is resolved alongside the
-other fixes.
+round trip. The captured K3s audit stream ends at 19:10:04, before return
+migration, so it does not cover the Node disappearance and cannot identify its
+actor. A separate focused test at SHA
+`2c9865bda8c8011aedc4bbb6fd3481b6a2a42d71` passed integer and floating JSON
+number serde round trips through `DynamicObject` in
+[run 36474893777](https://github.com/centerionware/not-k8s/actions/runs/36474893777);
+the CRD drift lies later in the API/export/import path. The fixture now enables
+K3s audit events for Node mutations and includes that log in failure
+diagnostics; this is not runtime-verified and does not resolve the Node loss.
+Do not dispatch another migration run until the known runtime failures are
+fixed together.
 
 Latest branch-runtime run
 [36463585411](https://github.com/centerionware/not-k8s/actions/runs/36463585411)
