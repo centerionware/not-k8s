@@ -9,11 +9,11 @@ this objective.
 
 ## Latest PR validation
 
-Commit `b1641f5ee34f4fd10f4d399930ba76df81f2eef1` passed the automatic PR
-checks: [`nodemigrate checks` run 36488685227](https://github.com/centerionware/not-k8s/actions/runs/36488685227),
-[`Nodemigrate tests` run 36488685382](https://github.com/centerionware/not-k8s/actions/runs/36488685382),
-and [commit convention run 36488679935](https://github.com/centerionware/not-k8s/actions/runs/36488679935).
-The `nodemigrate checks` run completed `Test nodemigrate` in 1m32s, and the
+Commit `10e84728cf5e6c2d67939d776eb560255e452671` passed the automatic PR
+checks: [`nodemigrate checks` run 36489610979](https://github.com/centerionware/not-k8s/actions/runs/36489610979),
+[`Nodemigrate tests` run 36489610972](https://github.com/centerionware/not-k8s/actions/runs/36489610972),
+and [commit convention run 36489606038](https://github.com/centerionware/not-k8s/actions/runs/36489606038).
+The `nodemigrate checks` run completed `Test nodemigrate` in 1m22s, and the
 focused `Nodemigrate tests` validation passed. Migration and build jobs were
 skipped by their path policies. Local `bash -n`,
 `check_nodemigrate_diagnostics.sh`, `check_nodemigrate_api_inventory.sh`, and
@@ -30,13 +30,14 @@ at the commit above, but they have not run in the migration fixture. The
 migration run remains paused while the repeated K3s returned-Node disappearance
 is unresolved.
 
-The current working change adds a returned-K3s audit gate: before CSI driver
+Commit `10e84728` adds a returned-K3s audit gate: before CSI driver
 reinstallation, it checks the active service unit and requires post-return Node
 and Node-Lease audit records. Failure output now includes K3s service identity,
 service state, and K3s/kernel journals since return began. The focused mocked
 diagnostics check passes locally for valid records and for the missing-Node
-record failure path. This change is not yet in CI, and live audit coverage and
-the Node-loss actor remain unverified.
+record failure path. CI crate tests and validation passed, but did not execute
+the live audit assertion. Live audit coverage and the Node-loss actor remain
+unverified.
 
 Before another migration attempt, resolve the full set of confirmed defects
 already exposed by completed runs as one batch; do not dispatch after fixing
