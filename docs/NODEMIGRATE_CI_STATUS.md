@@ -7,6 +7,17 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+## Latest PR validation
+
+Commit `ba91d5c8c14d5cd0558f0c676290a2746f1bc870` passed the automatic PR
+checks: [`nodemigrate checks` run 36484404301](https://github.com/centerionware/not-k8s/actions/runs/36484404301),
+[`Nodemigrate tests` run 36484404280](https://github.com/centerionware/not-k8s/actions/runs/36484404280),
+[`nodemigrate release` run 36484404374](https://github.com/centerionware/not-k8s/actions/runs/36484404374),
+and [commit convention run 36484402309](https://github.com/centerionware/not-k8s/actions/runs/36484402309).
+The `nodemigrate checks` run completed its `Test nodemigrate` job in 2m5s.
+These checks do not run the migration integration workflow, general build, or
+full e2e, and do not verify the K3s Node-loss fix.
+
 Before another migration attempt, resolve the full set of confirmed defects
 already exposed by completed runs as one batch; do not dispatch after fixing
 only one. Continue code and saved-artifact investigation where a cause remains
