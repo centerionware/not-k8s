@@ -10,23 +10,24 @@ compile or unit test does not mark a real migration path as verified.
 ## Latest integration result
 
 Branch-runtime run
-[36393910249](https://github.com/centerionware/not-k8s/actions/runs/36393910249)
-at SHA `4552ae2d029b6e71d77b607d12a89eea2b4c8e93` is terminal failure. All
-lane builds passed for nodemigrate and combined branch `notk8s --features cri`;
-focused nodemigrate tests passed at
-[36393755140](https://github.com/centerionware/not-k8s/actions/runs/36393755140).
-Upstream passed return behavior, including workload and storage checks, then
-failed strict parity on two Traefik CRD numeric bounds, which changed by one
-float64 step. The ControllerRevision sequence was the only other difference
-and is now treated as generated metadata while payload checks remain strict.
-K3s completed CRD import, then a later direct discovery call for replacement
-Node handling received HTTP 503 during Cilium recovery. All KubeApi discovery
-calls now use the bounded aggregate-first retry. The five-node fixture still
-failed to schedule its seed Pod because the PV affinity used a node name rather
-than the selected Node's actual hostname label; it now derives that label and
-keeps the necessary control-plane toleration. These changes await verification.
-The unresolved CRD bound change remains a merge blocker. Full log:
-`/tmp/nodemigrate-36393910249.log`.
+[36397547121](https://github.com/centerionware/not-k8s/actions/runs/36397547121)
+at SHA `fa8c6ec97c3a3afecd1162304bcecc0694f19a1d` is terminal failure. All
+three lanes built nodemigrate and the combined branch `notk8s --features cri`;
+focused nodemigrate crate tests passed at
+[36397531245](https://github.com/centerionware/not-k8s/actions/runs/36397531245).
+Upstream completed its return workload and storage checks, then strict
+round-trip parity again found two Traefik CRD `priority.maximum` values change
+from `9223372036854775000` to `9223372036854776000`. A nodeapiserver test now
+isolates CRD double serialization; it has not run yet. K3s completed API import
+and returned the replacement Node to Ready, but failed because the CSI
+registrar had not yet recreated its `CSINode`. `nodemigrate` now waits for up
+to 60 seconds for that specific object before repairing its owner reference.
+The five-node kubeadm fixture built successfully but could not schedule its
+seed Pod: the static PV is on `cp-1` and the CSI PV is on `worker-2`. The
+fixture now seeds and verifies the two volumes in separate Pods. Its
+diagnostics also showed CoreDNS CrashLoopBackOff, still under investigation.
+These fixes await another migration run. Full logs:
+`/tmp/nodemigrate-36397547121.log`.
 
 Branch-runtime run
 [36385002094](https://github.com/centerionware/not-k8s/actions/runs/36385002094)

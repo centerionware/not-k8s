@@ -581,12 +581,36 @@ impl KubeApi {
                     Api::all_with(client.clone(), &resource)
                 };
                 let mut completed = false;
+                let csinode_deadline =
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(60);
                 for attempt in 0..3 {
-                    let current = api
-                        .get_opt(name)
-                        .await
-                        .with_context(|| format!("reading migrated {kind} {name}"))?
-                        .with_context(|| format!("migrated {kind} {name} is missing"))?;
+                    let current = loop {
+                        if let Some(current) = api
+                            .get_opt(name)
+                            .await
+                            .with_context(|| format!("reading migrated {kind} {name}"))?
+                        {
+                            break current;
+                        }
+                        // The kubelet can mark the replacement Node Ready
+                        // before the CSI node-driver registrar recreates its
+                        // CSINode object. Keep the source owner reference
+                        // repair bounded while that node-scoped object is
+                        // being registered; missing other resource kinds is
+                        // still an immediate migration error.
+                        if kind != "CSINode" || !api_version.starts_with("storage.k8s.io/") {
+                            bail!("migrated {kind} {name} is missing");
+                        }
+                        if tokio::time::Instant::now() >= csinode_deadline {
+                            bail!(
+                                "migrated CSINode {name} did not appear while restoring Node owner references"
+                            );
+                        }
+                        eprintln!(
+                            "nodemigrate: waiting for replacement-node CSINode {name} before repairing its owner reference"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    };
                     let current: Value = serde_json::to_value(current)
                         .context("serializing migrated object owner references")?;
                     let existing_references = current

@@ -4,6 +4,35 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **CSINode registration trails replacement Node readiness.** In migration run
+  [36397547121](https://github.com/centerionware/not-k8s/actions/runs/36397547121),
+  K3s imported all CRDs and returned the Node to Ready, but the CSI registrar
+  had not recreated that Node's `CSINode` yet. Owner-reference repair failed
+  on the immediate 404. `nodemigrate` now waits up to 60 seconds for this
+  specific node-scoped object before patching its source Node owner reference;
+  another runtime run is pending.
+
+- **The five-node seed Pod combined volumes pinned to different Nodes.** In
+  run `36397547121`, the static hostPath PV correctly targeted `cp-1`, while
+  the hostpath CSI PV was provisioned on `worker-2`. One Pod mounting both
+  could not satisfy both PV affinities. The fixture now seeds and verifies
+  each PVC in a separate Pod, preserving the static data on the migrating
+  Node and exercising CSI data on the driver's Node; Docker verification is
+  pending.
+
+- **CRD schema `maximum` still changes across the branch API round trip.** Run
+  `36397547121` passed the upstream return workload and storage checks but
+  strict parity again found two Traefik CRD `priority.maximum` values change
+  from `9223372036854775000` to `9223372036854776000`. Parity remains strict.
+  The regression is now covered by a focused nodeapiserver CRD round-trip test
+  so the protobuf encode/decode path can be checked directly.
+
+- **The five-node probe's CoreDNS pods crash-loop independently of the seed
+  PV scheduling error.** The `36397547121` diagnostic snapshot shows the
+  kubeadm cluster's two CoreDNS Pods in `CrashLoopBackOff` while Cilium agents
+  and the fixture workloads are running. This needs separate diagnosis after
+  the storage fixture can schedule and the probe reports its next blocker.
+
 - **`node_exists` discovery did not retry a transient K3s 503.** In
   [run 36393910249](https://github.com/centerionware/not-k8s/actions/runs/36393910249),
   K3s imported the protected API and restored the workloads, but the post-import

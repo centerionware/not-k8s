@@ -8,30 +8,30 @@ is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
 Latest branch-runtime run
-[36393910249](https://github.com/centerionware/not-k8s/actions/runs/36393910249)
-at SHA `4552ae2d029b6e71d77b607d12a89eea2b4c8e93` is terminal failure. All
-three jobs built nodemigrate and the combined branch `notk8s --features cri`
-binary, compiling the packaged runtime components. Focused nodemigrate crate
-tests passed at [36393755140](https://github.com/centerionware/not-k8s/actions/runs/36393755140);
-workflow validation passed at
-[36393755072](https://github.com/centerionware/not-k8s/actions/runs/36393755072).
-Upstream completed the return workload and storage checks; strict API parity
-then found only two Traefik CRD `priority.maximum` fields changed from
-`9223372036854775000` to `9223372036854776000`. Those values are adjacent
-float64s, so the migration still changes schema data. The existing CSI
-ControllerRevision differed only by its controller-assigned `revision`
-sequence; inventory now excludes that sequence while keeping payload fields
-strict. K3s successfully retried CRD readiness and completed protected API
-import, then failed while preparing the replacement Node because a later
-`node_exists` discovery request got HTTP 503 during Cilium recovery. All
-remaining API discovery calls now share the bounded aggregate-first retry
-path. Docker preflight reached the five-node workload fixture, but
-`migration-seed` stayed Pending: scheduler diagnostics show that no node label
-matched the static PV node affinity. The fixture now reads the selected node's
-actual `kubernetes.io/hostname` label before constructing PV affinity; it also
-keeps the control-plane toleration. These fixes await another migration run.
-Complete logs are saved at `/tmp/nodemigrate-36393910249.log`. No general build
-or full e2e was dispatched.
+[36397547121](https://github.com/centerionware/not-k8s/actions/runs/36397547121)
+at SHA `fa8c6ec97c3a3afecd1162304bcecc0694f19a1d` is terminal failure. All
+three lanes built nodemigrate and combined branch `notk8s --features cri`,
+compiling the packaged runtime component crates. Focused nodemigrate crate
+tests passed at
+[36397531245](https://github.com/centerionware/not-k8s/actions/runs/36397531245);
+branch workflow validation passed at
+[36397531246](https://github.com/centerionware/not-k8s/actions/runs/36397531246);
+commit convention passed at
+[36397528336](https://github.com/centerionware/not-k8s/actions/runs/36397528336).
+The upstream migration completed return workload and storage checks, then
+strict parity found the same two Traefik CRD `priority.maximum` changes from
+`9223372036854775000` to `9223372036854776000`; parity remains strict. K3s
+completed protected API import and the replacement Node reached Ready, but its
+`CSINode` had not been recreated when owner-reference repair ran. The code now
+waits up to 60 seconds for this specific CSI registration object. Docker's
+five-node fixture reached workload setup, where a single seed Pod was
+unschedulable because its static hostPath PV targets `cp-1` and its CSI PV
+targets `worker-2`. Seeding and data verification now use separate Pods for
+each volume. The same diagnostic also found CoreDNS CrashLoopBackOff, which
+needs separate follow-up. A focused nodeapiserver CRD double round-trip test
+was added to isolate the schema number change; it has not run yet. Complete
+logs are saved at `/tmp/nodemigrate-36397547121.log`. No regular build or full
+e2e was dispatched.
 
 Previous validation attempt at SHA `f8cc4777d8356e70a91752f959839b1e3f549583`
 failed before running tests: `nodemigrate` and each migration lane hit the same

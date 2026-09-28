@@ -573,7 +573,7 @@ diagnostics() {
                 --all-containers --tail=500 || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n default csi-hostpath-socat-0 \
                 --all-containers --tail=200 || true
-            for pod in migration-seed migration-standalone; do
+            for pod in migration-seed-static migration-seed-csi migration-standalone; do
                 KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe pod -n migration-apps "$pod" || true
             done
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe pods -n migration-apps \
@@ -1026,58 +1026,6 @@ spec:
 YAML
 
     mkdir -p "$STATIC_PATH"
-    if [[ -n "${NODEMIGRATE_STATIC_NODE:-}" ]]; then
-        [[ "$NODEMIGRATE_STATIC_NODE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || {
-            echo "invalid static PV node name: $NODEMIGRATE_STATIC_NODE" >&2
-            return 1
-        }
-        local static_node_hostname
-        static_node_hostname="$(kubectl get node "$NODEMIGRATE_STATIC_NODE" \
-            -o jsonpath='{.metadata.labels.kubernetes\.io/hostname}')"
-        [[ -n "$static_node_hostname" ]] || {
-            echo "static PV node $NODEMIGRATE_STATIC_NODE has no kubernetes.io/hostname label" >&2
-            return 1
-        }
-        echo "static hostPath PV owner=$NODEMIGRATE_STATIC_NODE hostname=$static_node_hostname"
-        kubectl apply -f - <<YAML
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: migration-static-pv
-spec:
-  capacity:
-    storage: 1Gi
-  accessModes: [ReadWriteOnce]
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: migration-manual
-  hostPath:
-    path: /var/lib/nodemigrate-ci/static-volume
-    type: Directory
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: In
-          values: ["$static_node_hostname"]
-YAML
-    else
-        kubectl apply -f - <<'YAML'
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: migration-static-pv
-spec:
-  capacity:
-    storage: 1Gi
-  accessModes: [ReadWriteOnce]
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: migration-manual
-  hostPath:
-    path: /var/lib/nodemigrate-ci/static-volume
-    type: Directory
-YAML
-    fi
     kubectl apply -f - <<'YAML'
 apiVersion: v1
 kind: Namespace
@@ -1440,7 +1388,7 @@ spec:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: migration-seed
+  name: migration-seed-static
   namespace: migration-apps
 spec:
   restartPolicy: Never
@@ -1449,9 +1397,9 @@ spec:
     operator: Exists
     effect: NoSchedule
   initContainers:
-  - name: seed-volumes
+  - name: seed-static-volume
     image: busybox:1.36.1
-    command: [sh, -c, 'echo static-persistent-data > /static/marker; echo csi-persistent-data > /csi/marker']
+    command: [sh, -c, 'echo static-persistent-data > /static/marker']
     resources:
       requests:
         cpu: 1m
@@ -1459,8 +1407,6 @@ spec:
     volumeMounts:
     - name: static
       mountPath: /static
-    - name: csi
-      mountPath: /csi
   containers:
   - name: hold
     image: busybox:1.36.1
@@ -1472,12 +1418,45 @@ spec:
     volumeMounts:
     - name: static
       mountPath: /static
-    - name: csi
-      mountPath: /csi
   volumes:
   - name: static
     persistentVolumeClaim:
       claimName: migration-static-pvc
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: migration-seed-csi
+  namespace: migration-apps
+spec:
+  restartPolicy: Never
+  tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+  initContainers:
+  - name: seed-csi-volume
+    image: busybox:1.36.1
+    command: [sh, -c, 'echo csi-persistent-data > /csi/marker']
+    resources:
+      requests:
+        cpu: 1m
+        memory: 1Mi
+    volumeMounts:
+    - name: csi
+      mountPath: /csi
+  containers:
+  - name: hold
+    image: busybox:1.36.1
+    command: [sh, -c, 'sleep 36000']
+    resources:
+      requests:
+        cpu: 1m
+        memory: 1Mi
+    volumeMounts:
+    - name: csi
+      mountPath: /csi
+  volumes:
   - name: csi
     persistentVolumeClaim:
       claimName: migration-csi-pvc
@@ -1677,9 +1656,62 @@ spec:
     - protocol: TCP
       port: 80
 YAML
-    kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-static-pvc --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-csi-pvc --timeout=10m
-    kubectl wait -n migration-apps --for=condition=Ready pod/migration-seed --timeout=10m
+    if [[ -n "${NODEMIGRATE_STATIC_NODE:-}" ]]; then
+        [[ "$NODEMIGRATE_STATIC_NODE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || {
+            echo "invalid static PV node name: $NODEMIGRATE_STATIC_NODE" >&2
+            return 1
+        }
+        local static_node_hostname
+        static_node_hostname="$(kubectl get node "$NODEMIGRATE_STATIC_NODE" \
+            -o jsonpath='{.metadata.labels.kubernetes\.io/hostname}')"
+        [[ -n "$static_node_hostname" ]] || {
+            echo "static PV node $NODEMIGRATE_STATIC_NODE has no kubernetes.io/hostname label" >&2
+            return 1
+        }
+        echo "static hostPath PV owner=$NODEMIGRATE_STATIC_NODE hostname=$static_node_hostname"
+        kubectl apply -f - <<YAML
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: migration-static-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: migration-manual
+  hostPath:
+    path: /var/lib/nodemigrate-ci/static-volume
+    type: Directory
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values: ["$static_node_hostname"]
+YAML
+    else
+        kubectl apply -f - <<'YAML'
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: migration-static-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: migration-manual
+  hostPath:
+    path: /var/lib/nodemigrate-ci/static-volume
+    type: Directory
+YAML
+    fi
+    kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-static-pvc --timeout=5m
+    kubectl wait -n migration-apps --for=condition=Ready pod/migration-seed-static --timeout=10m
+    kubectl wait -n migration-apps --for=condition=Ready pod/migration-seed-csi --timeout=10m
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
     kubectl rollout status -n migration-apps deployment/migration-emptydir-nonroot --timeout=5m
     kubectl wait --for=condition=Accepted gatewayclasses.gateway.networking.k8s.io/migration-traefik --timeout=2m
@@ -1803,7 +1835,7 @@ YAML
     kubectl wait --for=condition=Established crd/certificates.cert-manager.io --timeout=2m
     kubectl wait --for=condition=Established crd/clusterissuers.cert-manager.io --timeout=2m
     kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
-    kubectl delete pod -n migration-apps migration-seed --wait=true
+    kubectl delete pod -n migration-apps migration-seed-static migration-seed-csi --wait=true
 
     # Exercise a legacy Secret-backed ServiceAccount credential. Kubernetes
     # binds its JWT to the issuing cluster and current ServiceAccount UID, so
@@ -2568,7 +2600,7 @@ YAML
 apiVersion: v1
 kind: Pod
 metadata:
-  name: migration-data-check
+  name: migration-static-data-check
   namespace: migration-apps
 spec:
   restartPolicy: Never
@@ -2579,24 +2611,46 @@ spec:
       requests:
         cpu: 1m
         memory: 1Mi
-    command: [sh, -c, 'test "$(cat /static/marker)" = static-persistent-data && test "$(cat /csi/marker)" = csi-persistent-data']
+    command: [sh, -c, 'test "$(cat /static/marker)" = static-persistent-data']
     volumeMounts:
     - name: static
       mountPath: /static
-    - name: csi
-      mountPath: /csi
   volumes:
   - name: static
     persistentVolumeClaim:
       claimName: migration-static-pvc
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: migration-csi-data-check
+  namespace: migration-apps
+spec:
+  restartPolicy: Never
+  containers:
+  - name: verify
+    image: busybox:1.36.1
+    resources:
+      requests:
+        cpu: 1m
+        memory: 1Mi
+    command: [sh, -c, 'test "$(cat /csi/marker)" = csi-persistent-data']
+    volumeMounts:
+    - name: csi
+      mountPath: /csi
+  volumes:
   - name: csi
     persistentVolumeClaim:
       claimName: migration-csi-pvc
 YAML
-    kubectl delete pod -n migration-apps migration-data-check --ignore-not-found --wait=true
+    kubectl delete pod -n migration-apps migration-static-data-check migration-csi-data-check \
+        --ignore-not-found --wait=true
     kubectl apply -f /tmp/nodemigrate-verify-pod.yaml
-    kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Succeeded pod/migration-data-check --timeout=5m
-    kubectl delete pod -n migration-apps migration-data-check --wait=true
+    kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Succeeded \
+        pod/migration-static-data-check --timeout=5m
+    kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Succeeded \
+        pod/migration-csi-data-check --timeout=5m
+    kubectl delete pod -n migration-apps migration-static-data-check migration-csi-data-check --wait=true
 
     kubectl rollout status -n traefik deployment/traefik --timeout=5m
     local traefik_chart_version

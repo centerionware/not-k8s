@@ -879,3 +879,57 @@ async fn create_prunes_a_field_the_crd_schema_does_not_declare() {
     let _ = child.kill().await;
     let _ = child.wait().await;
 }
+
+#[tokio::test]
+async fn crd_schema_double_preserves_the_source_json_number_on_storage_round_trip() {
+    let Some(nodestore_bin) = find_nodestore_binary() else {
+        eprintln!("SKIPPED: no nodestore binary available and building one on demand failed");
+        return;
+    };
+    let (mut child, _data_dir, mut storage) = spawn_nodestore(&nodestore_bin, 23809).await;
+    let mut crd = a_crd();
+    crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]["priority"] = json!({
+        "type": "integer",
+        "maximum": 9_223_372_036_854_775_000_i64
+    });
+
+    rest::create(
+        &mut storage,
+        "apiextensions.k8s.io",
+        "v1",
+        "customresourcedefinitions",
+        None,
+        &crd,
+    )
+    .await
+    .expect("rest::create(CRD) must not itself error");
+
+    let read_back = match rest::get(
+        &mut storage,
+        None,
+        "apiextensions.k8s.io",
+        "v1",
+        "customresourcedefinitions",
+        None,
+        "widgets.example.com",
+    )
+    .await
+    .expect("rest::get(CRD) must not error")
+    {
+        rest::GetOutcome::Found(object) => object,
+        other => panic!("expected Found, got {other:?}"),
+    };
+    let maximum = read_back
+        .pointer(
+            "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/priority/maximum",
+        )
+        .expect("the CRD maximum must remain present");
+    assert_eq!(
+        maximum.to_string(),
+        "9223372036854775000",
+        "CRD double serialization must preserve the source's shortest JSON representation"
+    );
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
