@@ -9,12 +9,13 @@ this objective.
 
 ## Latest PR validation
 
-Commit `ba91d5c8c14d5cd0558f0c676290a2746f1bc870` passed the automatic PR
-checks: [`nodemigrate checks` run 36484404301](https://github.com/centerionware/not-k8s/actions/runs/36484404301),
-[`Nodemigrate tests` run 36484404280](https://github.com/centerionware/not-k8s/actions/runs/36484404280),
-[`nodemigrate release` run 36484404374](https://github.com/centerionware/not-k8s/actions/runs/36484404374),
-and [commit convention run 36484402309](https://github.com/centerionware/not-k8s/actions/runs/36484402309).
-The `nodemigrate checks` run completed its `Test nodemigrate` job in 2m5s.
+Commit `fd0ffa2bb9b74cf15639ec249abdcd70f3148612` passed the automatic PR
+checks: [`nodemigrate checks` run 36485786662](https://github.com/centerionware/not-k8s/actions/runs/36485786662),
+[`Nodemigrate tests` run 36485786683](https://github.com/centerionware/not-k8s/actions/runs/36485786683),
+[`nodemigrate release` run 36485786731](https://github.com/centerionware/not-k8s/actions/runs/36485786731),
+and [commit convention run 36485784424](https://github.com/centerionware/not-k8s/actions/runs/36485784424).
+The `nodemigrate checks` run completed `Test nodemigrate` in 1m26s. The
+migration and release build/publish jobs were skipped by their path policies.
 These checks do not run the migration integration workflow, general build, or
 full e2e, and do not verify the K3s Node-loss fix.
 
