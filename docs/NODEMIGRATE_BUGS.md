@@ -107,6 +107,18 @@ Last updated: 2026-09-28
   A live return run is pending. Logs:
   `/tmp/nodemigrate-36361932369/nodemigrate-k3s-36361932369/nodemigrate-k3s.log`.
 
+- **`nodemigrate`: destination API discovery can return 503 just after core API readiness.**
+  In branch-runtime run
+  [36363999391](https://github.com/centerionware/not-k8s/actions/runs/36363999391),
+  the K3s return passed the direct core Namespace readiness probe but
+  `Discovery::run()` returned HTTP 503 before namespace import, causing
+  rollback. Initial destination discovery now retries for up to five minutes,
+  with each probe capped at ten seconds and failures logged. Focused
+  `nodemigrate` validation and live return verification are pending. The
+  upstream lane in that run passed discovery and CRD application but could not
+  reach the cert-manager webhook while importing a CertificateRequest; that
+  workload-networking failure remains separate.
+
 - **`nodemigrate`: later cluster nodes reused the first node's protected
   export.** Forward and staged reverse control-plane paths loaded
   `source-export=` and wrote node-specific host-path/CNI recovery material

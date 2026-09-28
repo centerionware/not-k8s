@@ -12,7 +12,7 @@ separate living documents below.
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Failed reverse cutovers now stop the partial retained target, restore local PV payloads, and restart the prior nodestore stack. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The required fixture extends existing coverage with ConfigMaps, CRDs/custom resources, Deployments, StatefulSets, DaemonSets, Jobs/CronJobs, Helm chart releases and managed objects, Ingress/Gateway API, RBAC, networking, storage, admission, and every listable discovered resource. Normalized source object content remains a strict equality gate; destination-only runtime identities are now reported separately and do not mask missing or changed source objects. The latest upstream lane still has unresolved source-identity changes including CoreDNS, system RBAC, and system PriorityClasses. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | PDB-aware eviction and PV reclaim fixes remain tracked; migration must preserve source PVs, PVCs, backing storage, and data. Nodelet CRI selection and five-node helper-path fixes passed focused validation. Run 36361932369 reproduced retained-API timeouts: each ten-second probe expired during full API discovery; readiness now directly lists core Namespaces, with focused CI pending. The same run's return rollback restored nodestore, but post-rollback workload exec still failed on an exited container. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | PDB-aware eviction and PV reclaim fixes remain tracked; migration must preserve source PVs, PVCs, backing storage, and data. Direct Namespace readiness passed live in run 36363999391: K3s reached retained API ready, then destination discovery returned HTTP 503 before import. A bounded discovery retry is in progress. The same run's upstream API import could not reach the cert-manager webhook; post-rollback workload exec remains affected by exited CRI containers. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement and new control-plane joins | Replacement ordering and Raft learner catch-up guard implemented; a new joined control plane is now promoted after Kubernetes Node readiness. Focused validation for this new-member path is pending; runtime scenario remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
@@ -22,6 +22,18 @@ separate living documents below.
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
+
+- Branch-runtime run
+  [36363999391](https://github.com/centerionware/not-k8s/actions/runs/36363999391)
+  at SHA `27b4152b` passed nodemigrate and branch-runtime builds, and the
+  Docker kubeadm preflight passed. K3s passed retained API readiness using the
+  direct Namespace probe, then destination API discovery returned HTTP 503
+  before Namespace import and rolled back. Upstream's API probe recovered
+  after one connection-refused attempt and accepted all 55 CRD apply requests;
+  importing `CertificateRequest migration-test-1` failed because the
+  cert-manager webhook ClusterIP timed out. Both lanes rolled back. A bounded
+  retry for initial destination discovery is being added; focused and live
+  validation are pending. Artifacts are in `/tmp/nodemigrate-36363999391/`.
 
 - Branch-runtime run
   [36361932369](https://github.com/centerionware/not-k8s/actions/runs/36361932369)

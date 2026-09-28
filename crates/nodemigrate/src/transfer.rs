@@ -111,9 +111,50 @@ struct ResourceExportSummary {
 
 const IMPORT_RETRY_ATTEMPTS: u32 = 60;
 const IMPORT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+const DISCOVERY_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+const DISCOVERY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 #[derive(Debug, Clone)]
 pub struct KubeApi {
     kubeconfig: PathBuf,
+}
+
+async fn wait_for_discovery(client: &Client) -> Result<Discovery> {
+    let started = std::time::Instant::now();
+    let mut last_error = None;
+    let mut attempt = 0;
+    while started.elapsed() < DISCOVERY_RETRY_TIMEOUT {
+        attempt += 1;
+        match tokio::time::timeout(
+            DISCOVERY_PROBE_TIMEOUT,
+            Discovery::new(client.clone()).run(),
+        )
+        .await
+        {
+            Ok(Ok(discovery)) => return Ok(discovery),
+            Ok(Err(error)) => {
+                let error = anyhow::Error::new(error).context("discovering destination APIs");
+                eprintln!(
+                    "nodemigrate: destination API discovery probe {attempt} failed: {error:#}"
+                );
+                last_error = Some(error);
+            }
+            Err(error) => {
+                let error = anyhow::Error::new(error)
+                    .context("destination API discovery probe exceeded 10 seconds");
+                eprintln!(
+                    "nodemigrate: destination API discovery probe {attempt} failed: {error:#}"
+                );
+                last_error = Some(error);
+            }
+        }
+        let remaining = DISCOVERY_RETRY_TIMEOUT.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        tokio::time::sleep(DISCOVERY_RETRY_DELAY.min(remaining)).await;
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("destination discovery did not return")))
+        .context("waiting for destination API discovery to become ready")
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
@@ -915,8 +956,7 @@ impl KubeApi {
             let mut last_error = String::new();
             let mut uid_map = HashMap::new();
             let mut source_crd_apis = BTreeSet::new();
-            let discovery = Discovery::new(client.clone())
-                .run()
+            let discovery = wait_for_discovery(&client)
                 .await
                 .context("discovering destination APIs before namespace import")?;
             let mut namespace_failures = Vec::new();
