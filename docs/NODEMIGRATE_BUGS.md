@@ -4,6 +4,30 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **Replicated core/v1 ReplicationController stalls after import.** Run
+  [36490156839](https://github.com/centerionware/not-k8s/actions/runs/36490156839)
+  timed out waiting for `migration-replication-controller` to report one Ready
+  replica in both the K3s-to-nodestore and Kubernetes-to-nodestore lanes. The
+  fixture had first passed on each upstream source. nodecontroller registered
+  no ReplicationController reconciler. The working branch now adds one using
+  the existing watch-driven ReplicaSet pattern, registers the shared RC watch,
+  binds the upstream `replication-controller` identity, and grants its status
+  patch. The migration script prints RC, Pod, and event state on a timeout.
+  Component CI and target-stage behavior remain to be verified.
+- **CSINode import fails when `spec` is omitted.** Five-node job
+  `109156567171` in run `36490156839` failed applying source CSINodes with
+  `spec.drivers: Required value`. Existing normalization handled `spec: {}`
+  but not an absent `spec`; the working branch now materializes `spec` and an
+  empty `drivers` list and adds a focused regression. Earlier focused CI only
+  exercised an omitted driver list inside a present spec. The complete case
+  needs CI verification.
+- **Five-node API certificate omits control-plane endpoint SANs.** During
+  the kubeadm failover probe, node kubelets repeatedly rejected the API
+  certificate for `cp-1`; kubeadm had not included `cp-1`, `cp-2`, or `cp-3`
+  as extra SANs. The fixture now supplies all three. Those TLS records were
+  present during the same run that later failed on CSINode import; a healthy
+  failover probe with the corrected SANs remains unverified.
+
 - **K3s returned Node disappears after becoming Ready.** In K3s job
   `109084193351` of run
   [36468405459](https://github.com/centerionware/not-k8s/actions/runs/36468405459),

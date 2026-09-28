@@ -379,6 +379,7 @@ fi
 if ! docker exec "$cp1" kubeadm init "${KUBEADM_INIT_ARGS[@]}" \
     --kubernetes-version "$(docker exec "$cp1" kubeadm version -o short)" \
     --control-plane-endpoint=cp-1:6443 \
+    --apiserver-cert-extra-sans=cp-1,cp-2,cp-3 \
     --apiserver-advertise-address="$cp1_ip" \
     --pod-network-cidr=10.244.0.0/16 \
     --cri-socket=unix:///run/containerd/containerd.sock \

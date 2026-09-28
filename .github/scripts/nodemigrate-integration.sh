@@ -2550,9 +2550,16 @@ verify_stage() {
         echo "PodTemplate workload data changed at stage $stage" >&2
         return 1
     }
-    kubectl wait -n migration-apps \
+    if ! kubectl wait -n migration-apps \
         --for=jsonpath='{.status.readyReplicas}'=1 \
-        replicationcontroller/migration-replication-controller --timeout=5m
+        replicationcontroller/migration-replication-controller --timeout=5m; then
+        echo "ReplicationController readiness timed out at stage $stage; collecting controller and Pod state" >&2
+        kubectl get replicationcontroller migration-replication-controller -n migration-apps -o yaml >&2 || true
+        kubectl get pods -n migration-apps -l app=migration-replication-controller -o wide >&2 || true
+        kubectl get pods -n migration-apps -l app=migration-replication-controller -o yaml >&2 || true
+        kubectl get events -n migration-apps --sort-by=.lastTimestamp | tail -n 40 >&2 || true
+        return 1
+    fi
     kubectl get replicationcontroller migration-replication-controller -n migration-apps -o json | jq -e '
       .spec.replicas == 1 and
       .spec.selector.app == "migration-replication-controller" and

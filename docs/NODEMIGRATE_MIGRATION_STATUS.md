@@ -7,12 +7,18 @@ This is the living implementation status record for the full scope in
 that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
-Active batch migration run
+Latest batch migration run
 [36490156839](https://github.com/centerionware/not-k8s/actions/runs/36490156839) at SHA
-`624442f622a6f8c44b72c9288ca5dbc32d5fbfa9` uses branch-built runtime,
-Cilium KPR, both single-node source lanes, and the isolated 3-control-plane/
-2-worker upstream round trip. Jobs are running; results are pending. See the
-[CI status](NODEMIGRATE_CI_STATUS.md) for exact inputs and job IDs.
+`624442f622a6f8c44b72c9288ca5dbc32d5fbfa9` built nodemigrate and the combined
+branch runtime in all lanes, then failed each runtime path. K3s and upstream
+both reached the nodestore stage and timed out waiting for the migrated
+core/v1 ReplicationController to report one ready replica. The five-node path
+failed during import because a source CSINode omitted `spec.drivers`. Its
+failure logs also show kubelet TLS checks rejecting `cp-1` because the kubeadm
+API certificate omitted the control-plane DNS endpoints. These three findings
+are being fixed in one batch; the next migration run must validate all three
+together. See the [CI status](NODEMIGRATE_CI_STATUS.md) for exact job IDs and
+saved logs.
 
 Latest completed migration run
 [36468405459](https://github.com/centerionware/not-k8s/actions/runs/36468405459)
@@ -33,11 +39,9 @@ at SHA `32255054dcc65baeac828f2ec00acd1b54ba3208`.
 The JSON float parsing defect passed focused component verification in
 [36479715060](https://github.com/centerionware/not-k8s/actions/runs/36479715060)
 at SHA `e253e25cf003ec04f8a59bb9e67988e748732135`; migration parity remains
-unverified. K3s Node loss is still
-unresolved. The active batch run 36490156839 validates the known component
-fixes and verifies the returned K3s audit stream before CSI reinstallation;
-the failure is not considered fixed until the run passes and its returned
-Node/Lease audit evidence is reviewed.
+unverified. K3s Node loss is still unresolved. Run 36490156839 failed during
+the nodestore stage before return migration, so it did not exercise the
+returned-K3s audit gate or provide Node/Lease actor evidence.
 The return path also now requires the replacement Node to have a new UID and
 Ready status; focused nodemigrate check
 [36481686171](https://github.com/centerionware/not-k8s/actions/runs/36481686171)

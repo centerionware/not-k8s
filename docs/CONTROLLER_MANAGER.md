@@ -325,7 +325,15 @@ fan-out) — the plan's suggested first PR.
 - `podgc-controller` (**2**): reclaims terminated Pods past
   `--terminated-pod-gc-threshold`. Not implemented.
 
-## E. Workload controllers — Tier 1 — **all four implemented (replicaset, deployment, daemonset, statefulset)**
+## E. Workload controllers — Tier 1 — **five implemented (replicationcontroller, replicaset, deployment, daemonset, statefulset)**
+
+- `replication-controller` (`crates/nodecontroller/src/controllers/replication_controller.rs`,
+  **implemented**): reconciles core/v1 ReplicationControllers into their
+  requested number of owned Pods and updates replica/readiness status. It uses
+  the upstream `replication-controller` service-account identity and shares
+  the Pod and ReplicationController informers. As with the ReplicaSet slice,
+  it manages Pods it owns and uses a simple scale-down ranking; migration
+  round-trip coverage is pending.
 
 - `replicaset-controller` (`crates/nodecontroller/src/controllers/replica_set.rs`,
   **implemented**): ensures a ReplicaSet's `spec.replicas` Pods exist,

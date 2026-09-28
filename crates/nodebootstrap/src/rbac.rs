@@ -150,6 +150,7 @@ const CONTROLLER_SA_NAMES: &[&str] = &[
     "endpointslice-controller",
     "resourcequota-controller",
     "replicaset-controller",
+    "replication-controller",
     "deployment-controller",
     "daemon-set-controller",
     "statefulset-controller",
@@ -188,6 +189,7 @@ const CONTROLLER_PATCH_GRANTS: &[(&str, &str, &str)] = &[
     ("persistent-volume-binder", "", "persistentvolumeclaims"),
     ("persistent-volume-binder", "", "persistentvolumeclaims/status"),
     ("replicaset-controller", "apps", "replicasets/status"),
+    ("replication-controller", "", "replicationcontrollers/status"),
     ("deployment-controller", "apps", "replicasets"),
     ("deployment-controller", "apps", "deployments/status"),
     ("root-ca-cert-publisher", "", "configmaps"),
@@ -712,7 +714,8 @@ subjects:
 /// doc comment explains is unnecessary), just enough to catch "RBAC wasn't
 /// actually enabled" or "the apiserver never became ready" with a clear
 /// error instead of a mysterious later 403.
-/// `system:controller:replicaset-controller` added by Finding #4: the
+/// `system:controller:replicaset-controller` and
+/// `system:controller:replication-controller` added by Finding #4: the
 /// generic names below all existed even while every `system:controller:*`
 /// ClusterRoleBinding this crate depends on for Finding #4 was silently
 /// absent, so they alone don't catch that gap. This one is a stand-in for
@@ -725,6 +728,7 @@ const SENTINEL_CLUSTER_ROLES: &[&str] = &[
     "system:monitoring",
     "system:kube-scheduler",
     "system:controller:replicaset-controller",
+    "system:controller:replication-controller",
 ];
 
 pub fn run() -> Result<()> {

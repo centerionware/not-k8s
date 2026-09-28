@@ -3250,14 +3250,13 @@ fn object_rank(object: &Value) -> u8 {
 fn prepare_initial_import_object(value: &Value, uid_map: &HashMap<String, String>) -> Value {
     let mut initial = value.clone();
     if initial.get("kind").and_then(Value::as_str) == Some("CSINode") {
-        if let Some(spec) = initial
-            .pointer_mut("/spec")
-            .and_then(Value::as_object_mut)
-        {
-            // Kubernetes requires CSINode.spec.drivers even when no CSI
-            // drivers are registered. Some source serializers omit this
-            // empty list; make the implied empty state explicit for strict
-            // destination validators.
+        // Kubernetes requires CSINode.spec.drivers even when no CSI drivers
+        // are registered. A source that omits spec entirely still means the
+        // empty driver set; materialize both levels for strict destinations.
+        if !initial.get("spec").is_some_and(Value::is_object) {
+            initial["spec"] = serde_json::json!({});
+        }
+        if let Some(spec) = initial.pointer_mut("/spec").and_then(Value::as_object_mut) {
             spec.entry("drivers").or_insert_with(|| Value::Array(Vec::new()));
         }
     }
@@ -3454,6 +3453,18 @@ mod tests {
         let normalized = prepare_initial_import_object(&source, &HashMap::new());
         assert_eq!(normalized.pointer("/spec/drivers"), Some(&serde_json::json!([])));
         assert_eq!(source.pointer("/spec/drivers"), None);
+    }
+
+    #[test]
+    fn migration_materializes_an_omitted_csinode_spec_and_driver_list() {
+        let source = serde_json::json!({
+            "apiVersion": "storage.k8s.io/v1",
+            "kind": "CSINode",
+            "metadata": {"name": "worker-2"}
+        });
+        let normalized = prepare_initial_import_object(&source, &HashMap::new());
+        assert_eq!(normalized.pointer("/spec/drivers"), Some(&serde_json::json!([])));
+        assert!(source.get("spec").is_none());
     }
 
     #[test]
