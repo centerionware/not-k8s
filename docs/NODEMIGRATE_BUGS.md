@@ -11,9 +11,10 @@ Last updated: 2026-09-28
   the five-node image. The Docker fixture passed source workload, static PV,
   CSI PV, network, and Traefik checks, then its Cilium values predicate failed
   without printing the observed values. The fixture now prints the IPAM,
-  kube-proxy replacement, and CNI path values when the predicate fails; this
-  remains assigned to migration CI until those values establish a runtime
-  defect. K3s passed source and
+  kube-proxy replacement, and CNI path values when the predicate fails. The
+  check now reads Helm's effective merged values instead of requiring every
+  expected field to have been explicitly overridden. This remains assigned to
+  migration CI until a rerun confirms the chart's effective settings. K3s passed source and
   nodestore checkpoints and logged successful return migration, then the
   HostPath CSI deployment did not become Ready within five minutes. Nodelet
   logs show repeated teardown of CSI Pods during this stage, making

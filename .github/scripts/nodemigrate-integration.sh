@@ -2742,7 +2742,7 @@ YAML
     }
     local expected_kpr="${NODEMIGRATE_CILIUM_KPR:-false}"
     local cilium_values
-    cilium_values="$(helm get values cilium -n kube-system -o json)" || {
+    cilium_values="$(helm get values cilium -n kube-system --all -o json)" || {
         echo "could not read Cilium Helm values at stage $stage" >&2
         return 1
     }

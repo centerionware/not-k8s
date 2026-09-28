@@ -19,11 +19,10 @@ Upstream passed source, nodestore, and returned checkpoints, then failed the
 returned PVC workload: the driver was not registered and the hostpath volume
 catalog did not contain the retained volume ID. Docker passed source workload,
 PV data, CSI data, Cilium network, and Traefik rollout checks, then failed its
-Cilium Helm-values assertion before migration. The assertion still needs to
-print the actual values to distinguish a fixture expectation error from a
-Helm-state change. The fixture now prints observed IPAM, kube-proxy
-replacement, and CNI path values on this failure; this diagnostic awaits a
-runtime rerun. Run artifacts were downloaded once to
+Cilium Helm-values assertion before migration. The fixture now checks Helm's
+merged effective values, not just explicit overrides, and prints observed
+IPAM, kube-proxy replacement, and CNI path values on failure. Runtime
+confirmation is pending. Run artifacts were downloaded once to
 `/tmp/nodemigrate-artifacts-36434878771/`. Exact jobs: K3s
 `108970087767`, upstream `108970088064`, Docker five-node preflight
 `108970088143`; dispatch validation was skipped. No regular build or full e2e
