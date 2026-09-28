@@ -8,16 +8,28 @@ is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
 Latest branch-runtime run
-[36402381606](https://github.com/centerionware/not-k8s/actions/runs/36402381606)
-completed with failure at tested SHA `8ce9b2691f0c639f10017f55edfa23fd094ad500`.
+[36407648434](https://github.com/centerionware/not-k8s/actions/runs/36407648434)
+completed with failure at tested SHA `7309de99f5d653961d8e4ce2a331b655d07924ee`.
 All three migration jobs built `nodemigrate` and the branch combined
-`notk8s --features cri`; the five-node job also built its node image. The k3s
-return reached Node Ready, then failed returned-stage checks; Kubernetes
-completed workload/storage checks and failed strict CRD numeric parity; the
-five-node lane failed its source NetworkPolicy allow probe while CoreDNS was
-CrashLoopBackOff. Exact job results: k3s `108863045006`, Kubernetes
-`108863045296`, Docker preflight `108863045252`. Full artifacts are saved once
-under `/tmp/nodemigrate-artifacts-36402381606/`, with job logs under
+`notk8s --features cri`; the five-node job also built its node image. Exact job
+results: Docker preflight `108880115025`, K3s `108880115167`, and Kubernetes
+`108880115214`. The Docker fixture confirmed CoreDNS's loop plugin was
+forwarding to `127.0.0.1`, explaining the failed source NetworkPolicy probe.
+K3s returned the node Ready, then the CSINode owner-reference PATCH returned
+404 after its read; a CSI registrar replacement race is the leading
+explanation, but the log does not identify the actor. Kubernetes completed workload and
+storage checks but strict parity caught Traefik CRD schema bounds changing
+from `9223372036854775000` to `9223372036854776000`; this remains an actual
+data difference and parity stays strict. Full artifacts are saved once under
+`/tmp/nodemigrate-artifacts-36407648434/`; do not download the same logs again.
+The confirmed fixture and CSINode fixes are being checked in the next focused
+migration run. The Traefik CRD precision defect remains unresolved.
+
+The preceding branch-runtime run
+[36402381606](https://github.com/centerionware/not-k8s/actions/runs/36402381606)
+at SHA `8ce9b2691f0c639f10017f55edfa23fd094ad500` also built the combined
+runtime and failed in the same runtime areas. Its artifacts are under
+`/tmp/nodemigrate-artifacts-36402381606/`; its job logs are under
 `/tmp/nodemigrate-{k3s,kubernetes,docker}-36402381606.log`.
 The corrected focused nodeapiserver quick-check passed at SHA `4c718dc0` in
 [36403498362](https://github.com/centerionware/not-k8s/actions/runs/36403498362)

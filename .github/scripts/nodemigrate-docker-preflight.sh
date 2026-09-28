@@ -5,6 +5,7 @@ ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
 IMAGE="${NODEMIGRATE_NODE_IMAGE:?set NODEMIGRATE_NODE_IMAGE to the built node image}"
 LOG="${NODEMIGRATE_PREFLIGHT_LOG:-/tmp/nodemigrate-docker-preflight.log}"
 SUFFIX="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$$"
+UPSTREAM_RESOLV_CONF="/tmp/nodemigrate-upstream-resolv-${SUFFIX}.conf"
 NETWORK="nodemigrate-probe-${SUFFIX}"
 NODES=(cp-1 cp-2 cp-3 worker-1 worker-2)
 CONTAINERS=()
@@ -41,6 +42,7 @@ cleanup() {
     if ((${#VOLUMES[@]})); then
         docker volume rm "${VOLUMES[@]}" >/dev/null 2>&1 || true
     fi
+    rm -f "$UPSTREAM_RESOLV_CONF"
     exit "$status"
 }
 trap cleanup EXIT
@@ -64,6 +66,20 @@ if awk 'NR > 1 { active=1 } END { exit !active }' /proc/swaps; then
     fail "Docker host swap is still active after swapoff"
 fi
 echo "Docker host swap is disabled for the kubelet simulation"
+HOST_RESOLV_CONF=/etc/resolv.conf
+if [[ -r /run/systemd/resolve/resolv.conf ]]; then
+    HOST_RESOLV_CONF=/run/systemd/resolve/resolv.conf
+fi
+if ! awk '
+    $1 == "nameserver" && $2 !~ /^127\./ && $2 != "::1" && $2 !~ /^fe80:/ { print; found=1 }
+    END { if (!found) exit 1 }
+' "$HOST_RESOLV_CONF" > "$UPSTREAM_RESOLV_CONF"; then
+    echo "FAIL: no non-loopback upstream nameserver in $HOST_RESOLV_CONF" >&2
+    cat "$HOST_RESOLV_CONF" >&2
+    exit 1
+fi
+echo "Using upstream resolver configuration $HOST_RESOLV_CONF for kubelet pods"
+awk '$1 == "nameserver" { print "  " $2 }' "$UPSTREAM_RESOLV_CONF"
 echo "Loading kernel modules on the Docker host for privileged node containers"
 sudo modprobe overlay
 sudo modprobe br_netfilter
@@ -236,6 +252,12 @@ node_ip() {
         "$(node_container "$1")"
 }
 
+for node in "${NODES[@]}"; do
+    container="$(node_container "$node")"
+    docker exec "$container" install -d -m0755 /etc/kubernetes
+    docker cp "$UPSTREAM_RESOLV_CONF" "$container:/etc/kubernetes/nodemigrate-resolv.conf"
+done
+
 echo "Configuring kubeadm and containerd on five isolated nodes"
 for node in "${NODES[@]}"; do
     container="$(node_container "$node")"
@@ -303,6 +325,9 @@ collect_node_diagnostics() {
         container="$(node_container "$node")"
         echo "Failure diagnostics for $node"
         docker exec "$container" bash -c '
+            echo "Kubelet resolver configuration"
+            grep -n "^resolvConf:" /var/lib/kubelet/config.yaml || true
+            cat /etc/kubernetes/nodemigrate-resolv.conf 2>/dev/null || true
             systemctl status --no-pager --full kubelet containerd || true
             findmnt -n -o TARGET,PROPAGATION,FSTYPE --target /sys/fs/bpf || true
             grep " /sys/fs/bpf " /proc/self/mountinfo || true
@@ -386,6 +411,22 @@ echo "Joining worker-1 and worker-2 to the upstream cluster"
 for node in worker-1 worker-2; do
     docker exec "$(node_container "$node")" "${join_args[@]}" \
         --cri-socket=unix:///run/containerd/containerd.sock
+done
+
+echo "Pointing all kubelets at the host's non-loopback upstream resolvers"
+for node in "${NODES[@]}"; do
+    container="$(node_container "$node")"
+    docker exec "$container" bash -ec '
+        config=/var/lib/kubelet/config.yaml
+        test -s "$config"
+        if grep -q "^resolvConf:" "$config"; then
+            sed -i "s|^resolvConf:.*|resolvConf: /etc/kubernetes/nodemigrate-resolv.conf|" "$config"
+        else
+            printf "\\nresolvConf: /etc/kubernetes/nodemigrate-resolv.conf\\n" >> "$config"
+        fi
+        grep -Fx "resolvConf: /etc/kubernetes/nodemigrate-resolv.conf" "$config"
+        systemctl restart kubelet
+    '
 done
 
 echo "Installing Helm and Cilium in the five-node upstream cluster"

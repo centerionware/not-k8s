@@ -10,6 +10,25 @@ compile or unit test does not mark a real migration path as verified.
 ## Latest integration result
 
 Branch-runtime run
+[36407648434](https://github.com/centerionware/not-k8s/actions/runs/36407648434)
+at SHA `7309de99f5d653961d8e4ce2a331b655d07924ee` built nodemigrate, the branch
+combined runtime (`notk8s --features cri`), and the five-node image, then failed
+in all three runtime lanes. In the five-node kubeadm/Cilium fixture, captured
+CoreDNS logs confirmed its `loop` plugin forwarding to `127.0.0.1`; the source
+NetworkPolicy allow probe then timed out. The fixture is being corrected to
+give kubelets an explicit, non-loopback upstream resolver file. In K3s, the
+returned node reached Ready, but its CSINode disappeared between the read and
+owner-reference patch, which failed with 404. A CSI registrar replacement
+race is the leading explanation, but the logs do not identify the actor. The
+utility now retries that specific 404 under its existing 60-second deadline.
+Upstream Kubernetes reached return-stage workload and storage checks, then
+strict parity caught the Traefik CRD integer `maximum` changing from
+`9223372036854775000` to `9223372036854776000`. That real difference remains
+unresolved; parity has not been relaxed. Artifacts are saved under
+`/tmp/nodemigrate-artifacts-36407648434/`. The new fixes await a fresh focused
+migration run.
+
+Branch-runtime run
 [36402381606](https://github.com/centerionware/not-k8s/actions/runs/36402381606)
 completed with failure at tested SHA `8ce9b2691f0c639f10017f55edfa23fd094ad500`.
 All lanes built nodemigrate and the branch combined runtime (`notk8s --features

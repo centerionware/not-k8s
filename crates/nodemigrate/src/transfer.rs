@@ -583,7 +583,9 @@ impl KubeApi {
                 let mut completed = false;
                 let csinode_deadline =
                     tokio::time::Instant::now() + std::time::Duration::from_secs(60);
-                for attempt in 0..3 {
+                let is_csinode = kind == "CSINode" && api_version.starts_with("storage.k8s.io/");
+                let mut conflict_retries = 0;
+                loop {
                     let current = loop {
                         if let Some(current) = api
                             .get_opt(name)
@@ -598,7 +600,7 @@ impl KubeApi {
                         // repair bounded while that node-scoped object is
                         // being registered; missing other resource kinds is
                         // still an immediate migration error.
-                        if kind != "CSINode" || !api_version.starts_with("storage.k8s.io/") {
+                        if !is_csinode {
                             bail!("migrated {kind} {name} is missing");
                         }
                         if tokio::time::Instant::now() >= csinode_deadline {
@@ -653,8 +655,27 @@ impl KubeApi {
                             completed = true;
                             break;
                         }
-                        Err(kube::Error::Api(response)) if response.code == 409 && attempt < 2 => {
+                        Err(kube::Error::Api(response))
+                            if response.code == 409 && conflict_retries < 2 =>
+                        {
                             // Re-read and recompute the complete reference list.
+                            conflict_retries += 1;
+                        }
+                        Err(kube::Error::Api(response))
+                            if response.code == 404 && is_csinode =>
+                        {
+                            // A CSI registrar can delete and recreate CSINode
+                            // while this repair is in flight. Re-read it under
+                            // the same bounded registration deadline used above.
+                            if tokio::time::Instant::now() >= csinode_deadline {
+                                bail!(
+                                    "migrated CSINode {name} kept disappearing while restoring Node owner references"
+                                );
+                            }
+                            eprintln!(
+                                "nodemigrate: replacement-node CSINode {name} disappeared during owner-reference repair; retrying"
+                            );
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                         }
                         Err(error) => {
                             return Err(error).with_context(|| {
