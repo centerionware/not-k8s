@@ -4,6 +4,36 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **The five-node CSI assertion assumed a singleton plugin runs on every
+  Node.** Run
+  [36414625541](https://github.com/centerionware/not-k8s/actions/runs/36414625541)
+  verified Cilium KPR and five-node recovery after control-plane loss, then
+  failed before nodemigrate ran: the upstream hostpath CSI StatefulSet had one
+  Ready Pod on `worker-2`, while the check required `hostpath.csi.k8s.io` in
+  every Node's `CSINode`. The assertion now derives the expected Nodes from
+  Ready plugin Pods and checks their driver registration and Node owner refs.
+  Runtime verification is pending.
+
+- **K3s return still loses Node/CSI readiness after reporting completion.** In
+  run `36414625541`, source and nodestore checkpoints passed and nodemigrate
+  reported migration to K3s complete. The later hostpath CSI deployment failed
+  its five-minute readiness wait. Captured K3s logs then repeatedly report its
+  own Node missing and Lease owner-ref reconciliation failing; kubelet reports
+  no Node relationship for re-imported Pods. Hostpath logs also report missing
+  CSI driver registration and volume IDs absent from its catalog. The logs do
+  not identify which transition initiated the churn; preserve as unresolved
+  and instrument the Node deletion/re-registration boundary before changing
+  migration behavior.
+
+- **Traefik CRD schema bound still changes on round trip.** Upstream run
+  `36414625541` passed source, nodestore, and returned workload/storage
+  checkpoints, then strict parity found `priority.maximum` changing from
+  `9223372036854775000` to `9223372036854776000` in the HTTP and TCP IngressRoute
+  CRDs. This is a real numeric value difference; parity remains strict and the
+  responsible migration hop is still unisolated.
+
+## Latest branch-run findings
+
 - **Cilium bootstrap cannot depend on CoreDNS to resolve the API host.** In
   five-node Docker run
   [36411280751](https://github.com/centerionware/not-k8s/actions/runs/36411280751),

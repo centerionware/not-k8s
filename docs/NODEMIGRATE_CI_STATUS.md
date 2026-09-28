@@ -8,6 +8,25 @@ is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
 Latest branch-runtime run
+[36414625541](https://github.com/centerionware/not-k8s/actions/runs/36414625541)
+completed with failure at SHA `b5bd5bded1e3016dbffebc6e68f3956f495c7883`.
+All three jobs built `nodemigrate` and the branch combined
+`notk8s --features cri`; the five-node job also built its node image. Exact
+results: Docker `108902678241`, Kubernetes `108902678544`, and K3s
+`108902678664`; validation `108902680012` was skipped for workflow dispatch.
+Docker verified five-node Cilium KPR recovery after cp-1 loss, then the
+fixture's CSI check failed because it required the singleton hostpath CSI
+StatefulSet to register on all five Nodes although its only plugin Pod ran on
+`worker-2`. The check now targets plugin-hosting Nodes. K3s passed source and
+nodestore checkpoints and completed the return, but post-return hostpath CSI
+failed its five-minute readiness wait while the Node and Cilium state changed.
+Kubernetes reached the returned checkpoint, then strict parity again reported
+the two Traefik CRD `priority.maximum` values changing from
+`9223372036854775000` to `9223372036854776000`. Artifacts were downloaded once
+under `/tmp/nodemigrate-artifacts-36414625541/`. The CSI-check correction and
+K3s/CRD follow-up remain pending. No general build or full e2e was dispatched.
+
+Latest branch-runtime run
 [36411280751](https://github.com/centerionware/not-k8s/actions/runs/36411280751)
 completed with failure at SHA `14bbe10d8b15dc87fd6ac91b8bdef5d13c6db648`.
 Every migration lane built `nodemigrate` and the branch combined

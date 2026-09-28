@@ -1935,10 +1935,28 @@ verify_system_addon_rollouts() {
 }
 
 verify_csi_node_registration() {
-    local node_names node node_json csinode_json deadline
-    node_names="$(kubectl get nodes -o json | jq -r '.items[].metadata.name')"
+    local plugin_json selector plugin_pods node_names node node_json csinode_json deadline
+    plugin_json="$(kubectl get statefulset csi-hostpathplugin -n default -o json)"
+    selector="$(jq -er '
+      .spec.selector.matchLabels
+      | to_entries
+      | map("\(.key)=\(.value)")
+      | join(",")
+      | select(length > 0)
+    ' <<<"$plugin_json")"
+    plugin_pods="$(kubectl get pods -n default -l "$selector" -o json)"
+    node_names="$(jq -r '
+      [.items[]
+       | select(.status.phase == "Running")
+       | select((.status.containerStatuses // []) | length > 0)
+       | select(all(.status.containerStatuses[]; .ready == true))
+       | .spec.nodeName]
+      | unique
+      | .[]
+    ' <<<"$plugin_pods")"
     [[ -n "$node_names" ]] || {
-        echo "no Nodes are available for CSI registration checks" >&2
+        echo "hostpath CSI StatefulSet has no Ready plugin Pod on any Node" >&2
+        kubectl get pods -n default -l "$selector" -o wide >&2 || true
         return 1
     }
     while IFS= read -r node; do
@@ -1963,7 +1981,7 @@ verify_csi_node_registration() {
             sleep 2
         done
     done <<<"$node_names"
-    echo "PASS: hostpath CSI registered on each Node and regenerated its CSINode owner reference"
+    echo "PASS: hostpath CSI registered on every Node running a plugin Pod and regenerated its CSINode owner reference"
 }
 
 capture_helm_release_state() {
@@ -2747,6 +2765,22 @@ capture_semantic_checkpoint() {
     local stage_dir="$CHECKPOINT_DIR/$stage"
     mkdir -p "$stage_dir"
     chmod 0700 "$CHECKPOINT_DIR" "$stage_dir"
+
+    for crd in ingressroutes.traefik.io ingressroutetcps.traefik.io; do
+        kubectl get crd "$crd" -o json | python3 -c '
+import json
+import sys
+
+stage, expected_name = sys.argv[1:]
+obj = json.load(sys.stdin)
+schema = obj["spec"]["versions"][0]["schema"]["openAPIV3Schema"]
+routes = schema["properties"]["spec"]["properties"]["routes"]
+priority = routes["items"]["properties"]["priority"]
+maximum = priority["maximum"]
+value = format(maximum, ".17g") if isinstance(maximum, float) else str(maximum)
+print(f"CRD precision checkpoint stage={stage} crd={expected_name} maximum={value} type={type(maximum).__name__}")
+' "$stage" "$crd"
+    done
 
     capture_migratable_api_objects \
         "$stage_dir/migratable-objects.jsonl" \

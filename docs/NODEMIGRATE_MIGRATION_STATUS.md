@@ -10,6 +10,29 @@ compile or unit test does not mark a real migration path as verified.
 ## Latest integration result
 
 Branch-runtime run
+[36414625541](https://github.com/centerionware/not-k8s/actions/runs/36414625541)
+at SHA `b5bd5bded1e3016dbffebc6e68f3956f495c7883` compiled nodemigrate and the
+branch combined runtime (`notk8s --features cri`) in all three lanes; the
+five-node lane also built its node image. Docker verified the five-node Cilium
+KPR cluster recovered all five Nodes after cp-1 loss, then stopped before
+migration because the fixture incorrectly required the singleton hostpath
+CSI StatefulSet to register on all Nodes. The driver Pod was Ready on
+`worker-2`; the verifier now checks every Node that actually runs the plugin.
+K3s passed source and nodestore checkpoints and completed migration back, then
+its hostpath deployment did not become Ready within five minutes. Captured
+logs show the K3s Node later absent while kubelet/Lease reconciliation failed,
+and hostpath reported missing driver registration/volume catalog state; the
+initiating Node/Pod transition remains undetermined. Upstream passed source,
+nodestore, and returned workload/storage checks, but strict parity still found
+Traefik CRD `priority.maximum` changed from `9223372036854775000` to
+`9223372036854776000`. This is a real numeric difference and remains a blocker.
+Artifacts are saved under `/tmp/nodemigrate-artifacts-36414625541/`; the CSI
+verifier fix and runtime follow-up are pending. No general build or full e2e
+ran.
+
+## Latest integration result
+
+Branch-runtime run
 [36411280751](https://github.com/centerionware/not-k8s/actions/runs/36411280751)
 at SHA `14bbe10d8b15dc87fd6ac91b8bdef5d13c6db648` built nodemigrate and the
 branch combined runtime (`notk8s --features cri`) in every migration lane,
