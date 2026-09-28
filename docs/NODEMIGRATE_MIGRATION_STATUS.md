@@ -30,6 +30,13 @@ focused rerun pending. Migration run
 [36430036471](https://github.com/centerionware/not-k8s/actions/runs/36430036471)
 is testing this commit across the enabled topologies.
 
+The corrected focused nodemigrate check
+[36430618866](https://github.com/centerionware/not-k8s/actions/runs/36430618866)
+passed at SHA `37da8cde9d1bc2489bfe588d379499b55b929e39`, including crate tests.
+Migration run `36430036471` has built nodemigrate and the combined branch
+runtime (`notk8s --features cri`) in both single-node lanes, built the five-node
+image, and started both migration checks plus the Docker topology probe.
+
 ## Latest validation
 
 The nodemigrate check

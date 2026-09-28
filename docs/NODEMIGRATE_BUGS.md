@@ -40,7 +40,9 @@ Last updated: 2026-09-28
   at SHA `de520706339fce833e6ff1099d760ad8f1ca71ee` compiled the library, then
   failed compiling the new unit test because `Value::Null` was not imported in
   the test module. The assertion now uses `serde_json::Value::Null`; a focused
-  rerun is pending.
+  rerun passed in
+  [36430618866](https://github.com/centerionware/not-k8s/actions/runs/36430618866)
+  at SHA `37da8cde9d1bc2489bfe588d379499b55b929e39`.
 
 ## Latest branch-run findings
 

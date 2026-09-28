@@ -34,6 +34,12 @@ It is now fully qualified; focused rerun is pending. Migration run
 is running the same SHA across K3s, upstream, and five-node Docker. Artifacts
 from prior run `36425151654` are under
 `/tmp/nodemigrate-artifacts-36425151654/`. No regular build or full e2e ran.
+The corrected focused nodemigrate check
+[36430618866](https://github.com/centerionware/not-k8s/actions/runs/36430618866)
+passed at SHA `37da8cde9d1bc2489bfe588d379499b55b929e39`, including crate tests.
+Migration run `36430036471` compiled nodemigrate and combined branch runtime in
+the K3s and upstream lanes and built the five-node image; both migrations and
+the Docker topology probe are running.
 
 The automatic nodemigrate check
 [36424188417](https://github.com/centerionware/not-k8s/actions/runs/36424188417)
