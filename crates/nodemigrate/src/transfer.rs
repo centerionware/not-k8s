@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{bail, ensure, Context, Result};
 use base64::Engine;
-use k8s_openapi::api::core::v1::ConfigMap;
+use k8s_openapi::api::core::v1::{ConfigMap, Namespace};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{
     api::{
@@ -270,17 +270,10 @@ impl KubeApi {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                let discovery = Discovery::new(client.clone())
-                    .run()
-                    .await
-                    .context("discovering Kubernetes APIs")?;
-                let (resource, capabilities) = find_resource(&discovery, "Namespace", "v1")
-                    .context("Kubernetes API does not expose Namespace")?;
-                ensure!(
-                    capabilities.supports_operation(verbs::LIST),
-                    "Kubernetes API cannot list namespaces"
-                );
-                let api: Api<DynamicObject> = Api::all_with(client, &resource);
+                // Readiness must not discover every installed API group: clusters
+                // with many CRDs can take longer than the probe deadline to
+                // enumerate discovery endpoints even when the core API is ready.
+                let api: Api<Namespace> = Api::all(client);
                 api.list(&ListParams::default())
                     .await
                     .context("checking Kubernetes API readiness")?;

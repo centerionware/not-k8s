@@ -1,6 +1,6 @@
 # nodemigrate status dashboard
 
-Last updated: 2026-09-27
+Last updated: 2026-09-28
 
 This dashboard tracks the full nodemigrate goal in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). Detailed status is kept in the
@@ -12,16 +12,31 @@ separate living documents below.
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Failed reverse cutovers now stop the partial retained target, restore local PV payloads, and restart the prior nodestore stack. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The required fixture extends existing coverage with ConfigMaps, CRDs/custom resources, Deployments, StatefulSets, DaemonSets, Jobs/CronJobs, Helm chart releases and managed objects, Ingress/Gateway API, RBAC, networking, storage, admission, and every listable discovered resource. Normalized source object content remains a strict equality gate; destination-only runtime identities are now reported separately and do not mask missing or changed source objects. The latest upstream lane still has unresolved source-identity changes including CoreDNS, system RBAC, and system PriorityClasses. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | PDB-aware eviction and PV reclaim fixes remain tracked; migration must preserve source PVs, PVCs, backing storage, and data. Proxy ownership and export-copy fixes have focused test evidence. Run 36359977515 confirms nodelet's selector fix passed source and first nodestore fixture checks; post-rollback reconciliation now uses running/newest CRI selection, with quick-check pending. Cilium return still has API readiness/webhook failures. Five-node nodes and cp-1 recovery passed, but the helper path mismatch failed fixture setup; the configured path is now passed through. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | PDB-aware eviction and PV reclaim fixes remain tracked; migration must preserve source PVs, PVCs, backing storage, and data. Nodelet CRI selection and five-node helper-path fixes passed focused validation. Run 36361932369 reproduced retained-API timeouts: each ten-second probe expired during full API discovery; readiness now directly lists core Namespaces, with focused CI pending. The same run's return rollback restored nodestore, but post-rollback workload exec still failed on an exited container. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement and new control-plane joins | Replacement ordering and Raft learner catch-up guard implemented; a new joined control plane is now promoted after Kubernetes Node readiness. Focused validation for this new-member path is pending; runtime scenario remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Release-backed run [36351022258](https://github.com/centerionware/not-k8s/actions/runs/36351022258) failed before return checkpoints. Branch run [36355485146](https://github.com/centerionware/not-k8s/actions/runs/36355485146) passed forward K3s/upstream migration and nodestore semantic checks, but K3s return Service routing and upstream returned-Node readiness failed. The focused `nodemigrate` quick-check passed at the same SHA; the new Cilium runtime-state and pod-handoff fixes still need a live rerun. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Latest branch-runtime run [36361932369](https://github.com/centerionware/not-k8s/actions/runs/36361932369) built the utility/runtime and passed the source plus forward K3s fixture, but return readiness timed out during discovery; upstream import still failed on CertificateRequest HTTP 500. The five-node probe failed. The readiness change to direct core-API access is pending focused validation. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory round-trip gates remain not passed: one-node K3s+Cilium and 3-control-plane + 2-worker upstream Kubernetes with Cilium and joined replacement. The five-node Docker preflight in run 36335580680 passed, but it did not migrate the five-node cluster. Neither round trip has passed all source/target/return parity and behavior checks. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Run [36355485146](https://github.com/centerionware/not-k8s/actions/runs/36355485146) passed the five-node Cilium/KPR setup and control-plane-loss recovery. Its migration fixture then failed because the hostpath setup script was missing after `cp-1` restart; the script is now copied after restart. Full five-node migration remains unverified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
+
+- Branch-runtime run
+  [36361932369](https://github.com/centerionware/not-k8s/actions/runs/36361932369)
+  at SHA `890e8d65` passed nodemigrate and branch-runtime builds. K3s source,
+  forward migration, and nodestore fixture checks passed. During return, all
+  20 retained-API probes hit their ten-second deadline while `ready()` ran API
+  discovery; the five-minute retry window then rolled back to nodestore. The
+  post-rollback `emptyDir` exec failed because the selected container was in
+  `CONTAINER_EXITED`. The upstream lane failed importing a CertificateRequest
+  with API HTTP 500. Five-node Docker preflight failed in its kubeadm probe.
+  Focused nodelet quick-check [36361932310](https://github.com/centerionware/not-k8s/actions/runs/36361932310)
+  passed at the same SHA. The readiness probe now lists a core Namespace
+  directly; focused nodemigrate validation is pending. Full e2e and general
+  build workflows were not run. Logs are in
+  `/tmp/nodemigrate-36361932369/`.
 
 - Branch-runtime run
   [36359977515](https://github.com/centerionware/not-k8s/actions/runs/36359977515)

@@ -1,6 +1,6 @@
 # nodemigrate CI and integration status
 
-Last updated: 2026-09-27
+Last updated: 2026-09-28
 
 This is the living CI record for the scope in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). The user-specific testing policy
@@ -17,6 +17,21 @@ unavailable after 59 five-second retries. The upstream lane also failed during
 import. Neither lane reached return migration, so this run does not validate
 retained-API readiness or either round trip. It did not enable general build or
 e2e workflows.
+
+Latest branch-runtime run
+[36361932369](https://github.com/centerionware/not-k8s/actions/runs/36361932369)
+at SHA `890e8d65` passed nodemigrate and branch-runtime builds. K3s source,
+forward migration, and the first nodestore fixture passed. Its return leg
+started K3s, but all 20 retained-API probes exceeded the ten-second timeout
+while `ready()` performed full API discovery; the five-minute retry then
+rolled back to nodestore. Post-rollback fixture exec failed with
+`CONTAINER_EXITED`. The new implementation directly lists core Namespaces to
+avoid discovery fan-out; focused CI is pending. The upstream lane failed
+importing `CertificateRequest migration-test-1` with HTTP 500. Five-node
+Docker preflight failed at `Probe kubeadm nodes`. The nodelet quick-check
+[36361932310](https://github.com/centerionware/not-k8s/actions/runs/36361932310)
+passed at the same SHA. Full e2e and general build workflows were not run.
+Artifacts are in `/tmp/nodemigrate-36361932369/`.
 
 Run [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
 at SHA `7f1c53f1` is terminal `cancelled`. Its K3s lane completed forward

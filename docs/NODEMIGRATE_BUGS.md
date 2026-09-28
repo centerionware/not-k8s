@@ -1,6 +1,6 @@
 # nodemigrate bug and fix tracker
 
-Last updated: 2026-09-27
+Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
@@ -93,15 +93,17 @@ Last updated: 2026-09-27
   [run 36350477684](https://github.com/centerionware/not-k8s/actions/runs/36350477684);
   the five-node runtime scenario remains pending.
 
-- **`nodemigrate`: retained-API readiness could hang inside one client call.**
-  Run [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
-  remained at the return-migration readiness message for over an hour. The
-  retry loop was five minutes, but a Kubernetes discovery/list call had no
-  deadline, so it could block past that loop. Each API probe now has a
-  ten-second deadline and each failed attempt logs its error. Focused
-  `nodemigrate` and `nodebootstrap` tests passed at code SHA `2d98e05e` in
-  [run 36350477684](https://github.com/centerionware/not-k8s/actions/runs/36350477684).
-  A live migration run is pending.
+- **`nodemigrate`: retained-API readiness discovery exceeds the probe deadline.**
+  The original indefinite wait in run
+  [36343008296](https://github.com/centerionware/not-k8s/actions/runs/36343008296)
+  came from an unbounded discovery/list call inside the retry loop. A ten-second
+  per-probe deadline fixed the unbounded wait, but branch-runtime run
+  [36361932369](https://github.com/centerionware/not-k8s/actions/runs/36361932369)
+  shows all 20 probes expiring while `ready()` performs discovery of every API
+  group before listing Namespaces. The bounded retry then rolls back after five
+  minutes. Readiness now checks the core Namespace API directly, avoiding full
+  discovery; focused `nodemigrate` CI and a live return run are pending. Logs:
+  `/tmp/nodemigrate-36361932369/nodemigrate-k3s-36361932369/nodemigrate-k3s.log`.
 
 - **`nodemigrate`: later cluster nodes reused the first node's protected
   export.** Forward and staged reverse control-plane paths loaded
