@@ -8,6 +8,25 @@ that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
 Latest migration run
+[36468405459](https://github.com/centerionware/not-k8s/actions/runs/36468405459)
+at SHA `fe2ca534a3f48a841eaf03f8436fc1343bdb1d8d` passed all nodemigrate and
+combined-runtime builds, and the Docker lane built its five-node image. All
+runtime lanes failed. Upstream reached returned-stage checks, then failed
+strict parity on CRD `double` bounds that changed between adjacent IEEE-754
+values; this remains a real numeric difference and no normalization is allowed.
+K3s saw the returned Node become Ready and then disappear during the HostPath
+CSI setup; the captured API audit has no matching Node DELETE, leaving the
+actor and mechanism unresolved. Docker preflight rejected four CSINodes whose
+source omitted the required `spec.drivers`. The logs also expose a repeated
+empty CronJob status patch from nodecontroller. Code changes address omitted
+empty CSINode drivers and no-op CronJob status writes; focused CI is pending.
+The CRD precision and K3s Node-loss issues remain unresolved. Do not dispatch
+another migration run until both are fixed and the code changes have been
+validated.
+See the [CI status](NODEMIGRATE_CI_STATUS.md) and
+[bug tracker](NODEMIGRATE_BUGS.md).
+
+Latest migration run
 [36463585411](https://github.com/centerionware/not-k8s/actions/runs/36463585411)
 at SHA `b452f071ce9c9a9ac5b3ba6134a93929c1072cf8` built nodemigrate and the
 combined branch runtime in all lanes; Docker also built its five-node image.

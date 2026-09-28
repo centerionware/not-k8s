@@ -8,6 +8,34 @@ is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
 Latest branch-runtime run
+[36468405459](https://github.com/centerionware/not-k8s/actions/runs/36468405459)
+at SHA `fe2ca534a3f48a841eaf03f8436fc1343bdb1d8d` used the branch-built
+runtime and five-node fixture. All nodemigrate and combined `notk8s --features
+cri` builds passed; Docker also built its node image. Upstream reached
+`PASS stage=returned`, then failed strict API-object parity on Traefik CRD
+floating-point schema bounds. A trial normalization was rejected after
+checking the adjacent IEEE-754 values: these are different doubles and remain
+a real parity failure. K3s reported the returned Node Ready, and the
+watcher saw it at 19:11:04, 19:11:12, and 19:11:19 UTC; from 19:11:33 UTC
+onward the Node list was empty. K3s logs then reported `node not found` and
+node-authorizer relationship failures. No matching Node DELETE request was
+present in captured API audit events, so the deleting actor remains unknown.
+HostPath CSI could not register or satisfy PV NodeAffinity. Docker preflight
+failed migrating four CSINodes because source objects omitted the required
+`spec.drivers` list; the importer now makes an omitted list explicitly empty.
+The logs also show the nodecontroller writing the unchanged empty status for
+`migration-cron` repeatedly at millisecond intervals; the controller now
+suppresses that no-op patch. The CSINode and CronJob code fixes await focused
+CI validation. The CRD numeric drift remains unfixed.
+Artifacts were downloaded once to
+`/tmp/nodemigrate-artifacts-36468405459/`. Exact jobs: Docker
+`109084192913`, K3s `109084193351`, upstream `109084193399`; validation was
+skipped. No general build or full e2e ran. No migration lane passed the full
+round trip, and the K3s Node loss still has no confirmed mechanism; do not
+dispatch another migration run until that issue is resolved alongside the
+other fixes.
+
+Latest branch-runtime run
 [36463585411](https://github.com/centerionware/not-k8s/actions/runs/36463585411)
 at SHA `b452f071ce9c9a9ac5b3ba6134a93929c1072cf8` used
 `runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.

@@ -44,7 +44,7 @@ use crate::workqueue::KeyedWorkQueue;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
-use k8s_openapi::api::batch::v1::{CronJob, Job};
+use k8s_openapi::api::batch::v1::{CronJob, CronJobStatus, Job};
 use k8s_openapi::api::core::v1::ObjectReference;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use kube::api::{Api, Patch, PatchParams, PostParams};
@@ -81,6 +81,16 @@ pub fn jobs_to_prune(mut terminal: Vec<String>, limit: i32) -> Vec<String> {
     }
     terminal.drain(terminal.len() - keep..);
     terminal
+}
+
+fn status_needs_patch(current: Option<&CronJobStatus>, desired: &CronJobStatus) -> bool {
+    // An omitted status and an all-empty status are equivalent. Writing an
+    // empty status object may be pruned by the API server, which would make
+    // every reconcile observe `None` and issue the same PATCH indefinitely.
+    if current.is_none() && desired == &CronJobStatus::default() {
+        return false;
+    }
+    current != Some(desired)
 }
 
 fn owner_reference(cj: &CronJob) -> OwnerReference {
@@ -217,7 +227,7 @@ async fn reconcile_cron_job(client: &Client, cj: &CronJob, job_cache: &HashMap<S
         status.last_successful_time = Some(crate::k8s_time::from_chrono(newest));
     }
 
-    if cj.status.as_ref() != Some(&status) {
+    if status_needs_patch(cj.status.as_ref(), &status) {
         let patch = serde_json::json!({ "status": status });
         if let Err(e) = cj_api.patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch)).await {
             tracing::warn!(namespace = %namespace, cronjob = %name, error = ?e, "failed to patch CronJob status");
@@ -360,5 +370,32 @@ mod tests {
     fn a_non_positive_limit_keeps_everything() {
         let names = vec!["cj-1".to_string(), "cj-2".to_string()];
         assert_eq!(jobs_to_prune(names, 0), Vec::<String>::new());
+    }
+
+    #[test]
+    fn missing_empty_status_does_not_generate_a_noop_patch() {
+        assert!(!status_needs_patch(None, &CronJobStatus::default()));
+    }
+
+    #[test]
+    fn nonempty_status_is_written_when_missing() {
+        let desired = CronJobStatus {
+            last_schedule_time: Some(crate::k8s_time::from_chrono(dt(1))),
+            ..Default::default()
+        };
+        assert!(status_needs_patch(None, &desired));
+    }
+
+    #[test]
+    fn changed_status_is_written() {
+        let current = CronJobStatus::default();
+        let desired = CronJobStatus {
+            active: Some(vec![ObjectReference {
+                name: Some("job-1".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert!(status_needs_patch(Some(&current), &desired));
     }
 }

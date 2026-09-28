@@ -3216,6 +3216,18 @@ fn object_rank(object: &Value) -> u8 {
 
 fn prepare_initial_import_object(value: &Value, uid_map: &HashMap<String, String>) -> Value {
     let mut initial = value.clone();
+    if initial.get("kind").and_then(Value::as_str) == Some("CSINode") {
+        if let Some(spec) = initial
+            .pointer_mut("/spec")
+            .and_then(Value::as_object_mut)
+        {
+            // Kubernetes requires CSINode.spec.drivers even when no CSI
+            // drivers are registered. Some source serializers omit this
+            // empty list; make the implied empty state explicit for strict
+            // destination validators.
+            spec.entry("drivers").or_insert_with(|| Value::Array(Vec::new()));
+        }
+    }
     if let Some(metadata) = initial
         .pointer_mut("/metadata")
         .and_then(Value::as_object_mut)
@@ -3344,7 +3356,28 @@ mod tests {
             }
         }))
         .unwrap();
+        assert!(!crd_schema_matches(&existing, &changed_schema));
         assert!(!can_preserve_existing_crd(&existing, &changed_schema));
+
+        let genuinely_changed_schema: DynamicObject = serde_json::from_value(serde_json::json!({
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": {
+                "name": "ingressroutes.traefik.io",
+                "labels": {
+                    "app.kubernetes.io/managed-by": "Helm",
+                    "obsolete": "remove"
+                },
+                "annotations": {"meta.helm.sh/release-name": "traefik"}
+            },
+            "spec": {
+                "versions": [{
+                    "schema": {"maximum": 9223372036854780000u64}
+                }]
+            }
+        }))
+        .unwrap();
+        assert!(!can_preserve_existing_crd(&existing, &genuinely_changed_schema));
 
         let changed_metadata: DynamicObject = serde_json::from_value(serde_json::json!({
             "apiVersion": "apiextensions.k8s.io/v1",
@@ -3376,6 +3409,19 @@ mod tests {
             metadata_patch.pointer("/metadata/annotations/meta.helm.sh~1release-name"),
             Some(&serde_json::json!("traefik-moved"))
         );
+    }
+
+    #[test]
+    fn migration_makes_an_omitted_empty_csinode_driver_list_explicit() {
+        let source = serde_json::json!({
+            "apiVersion": "storage.k8s.io/v1",
+            "kind": "CSINode",
+            "metadata": {"name": "worker-2"},
+            "spec": {}
+        });
+        let normalized = prepare_initial_import_object(&source, &HashMap::new());
+        assert_eq!(normalized.pointer("/spec/drivers"), Some(&serde_json::json!([])));
+        assert_eq!(source.pointer("/spec/drivers"), None);
     }
 
     #[test]

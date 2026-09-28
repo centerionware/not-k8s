@@ -4,6 +4,37 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **K3s returned Node disappears after becoming Ready.** In K3s job
+  `109084193351` of run
+  [36468405459](https://github.com/centerionware/not-k8s/actions/runs/36468405459),
+  the watcher saw the returned Node at 19:11:04, 19:11:12, and 19:11:19 UTC,
+  then saw an empty Node list from 19:11:33 onward. K3s subsequently reported
+  the Node missing and could not satisfy PV NodeAffinity or register the
+  HostPath CSI driver. No matching Node DELETE request appears in the captured
+  audit events. The actor and mechanism remain unknown; do not paper over this
+  by relaxing the readiness or storage checks, and do not rerun migration
+  until the cause is addressed.
+- **Empty CronJob status triggers repeated no-op writes.** The same K3s log
+  records `system:serviceaccount:kube-system:cronjob-controller` patching the
+  unchanged `migration-cron` status every few milliseconds. When a missing
+  status and a default empty desired status compare unequal, the API can prune
+  the empty patch and the next reconcile repeats it. `nodecontroller` now
+  treats missing and default-empty status as equivalent and has a regression
+  for the no-op case; CI verification is pending.
+- **CSINode imports omit the required empty driver list.** Docker preflight
+  job `109084192913` in run `36468405459` received four 422 errors because the
+  source CSINode objects lacked `spec.drivers`. The importer now materializes
+  an empty list only when the source omits the field, preserving the source's
+  empty-driver meaning while satisfying the Kubernetes API schema. A focused
+  nodemigrate regression and migration verification are pending.
+- **Round-trip import changes Traefik CRD numeric bounds.** Upstream
+  job `109084193399` in run `36468405459` found Traefik `maximum` bounds
+  serialized once as integer and once as floating-point numbers. Checking the
+  adjacent IEEE-754 values showed they are different `double` values, so JSON
+  parity must remain strict. A proposed normalization was reverted. Trace the
+  number through source export, `DynamicObject`, nodestore, and return import to
+  identify where it changes; no fix is pending yet.
+
 - **Round-trip import changes Traefik CRD numeric bounds.** Upstream job
   `109067982540` in run
   [36463585411](https://github.com/centerionware/not-k8s/actions/runs/36463585411)
@@ -12,9 +43,10 @@ Last updated: 2026-09-28
   `ingressroutetcps.traefik.io` from `9223372036854775000` to
   `9223372036854776000`. Nodestore returned this value as a floating-point
   JSON number (`9.223372036854776e+18`) while the retained Kubernetes API
-  returned the earlier integer form. This is an actual round-trip data
-  difference; preserve the source CRD schema through the JSON/API boundary and
-  add a focused precision regression before rerunning migration.
+  returned the earlier integer form. This is a genuine difference between
+  adjacent IEEE-754 `double` values, not merely a JSON rendering change.
+  Migration parity must stay strict while the export/import path is traced and
+  fixed.
 - **K3s removes the returned Node during HostPath CSI setup.** The same run's
   K3s lane passed source and nodestore checks, returned the Node as Ready, and
   then failed while reinstalling HostPath CSI. K3s emitted `Removing Node`
