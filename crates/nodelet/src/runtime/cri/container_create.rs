@@ -43,9 +43,7 @@ impl CriRuntime {
 
         let running_v = ContainerState::ContainerRunning as i32;
         let existing = self.list_pod_containers(sandbox_id).await?;
-        let existing_ctr = existing
-            .iter()
-            .find(|c| c.labels.get(CTR_NAME_LABEL).map(|n| n == &container.name).unwrap_or(false));
+        let existing_ctr = select_container_for_name(&existing, &container.name);
 
         let needs_restart;
         // Only a genuine "container exited on its own, restartPolicy

@@ -178,7 +178,7 @@ node cp-1 env PKI_DIR="$PKI_DIR" bash -ec '
 '
 
 echo "Installing and validating the source fixture on cp-1"
-node cp-1 env NODEMIGRATE_HOSTPATH_SETUP=/tmp/nodemigrate-hostpath-setup.sh \
+node cp-1 env NODEMIGRATE_HOSTPATH_SETUP="$NODEMIGRATE_HOSTPATH_SETUP" \
     NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" \
     bash "$NODE_ROOT/.github/scripts/nodemigrate-five-node-fixture.sh" source
 
@@ -305,7 +305,7 @@ done
 
 echo "Checking all five nodes and running the nodestore fixture checkpoint"
 wait_five_nodes /etc/nodebootstrap/admin.kubeconfig
-node cp-1 env NODEMIGRATE_HOSTPATH_SETUP=/tmp/nodemigrate-hostpath-setup.sh \
+node cp-1 env NODEMIGRATE_HOSTPATH_SETUP="$NODEMIGRATE_HOSTPATH_SETUP" \
     NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" \
     bash "$NODE_ROOT/.github/scripts/nodemigrate-five-node-fixture.sh" nodestore
 
@@ -350,7 +350,7 @@ for host in cp-2 cp-3 worker-1 worker-2; do
         NO_EXTRA_ENV to=kubernetes from=nodestore skip-api-export=true >/dev/null
 done
 wait_five_nodes /etc/kubernetes/admin.conf
-node cp-1 env NODEMIGRATE_HOSTPATH_SETUP=/tmp/nodemigrate-hostpath-setup.sh \
+node cp-1 env NODEMIGRATE_HOSTPATH_SETUP="$NODEMIGRATE_HOSTPATH_SETUP" \
     NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" \
     bash "$NODE_ROOT/.github/scripts/nodemigrate-five-node-fixture.sh" returned
 

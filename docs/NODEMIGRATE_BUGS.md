@@ -5,29 +5,40 @@ Last updated: 2026-09-27
 ## Latest branch-run findings
 
 - **`nodelet`: stale CRI records can make Pod exec/status select the wrong runtime object.**
-  Branch run [36357521280](https://github.com/centerionware/not-k8s/actions/runs/36357521280)
-  passed both migration utility and combined-runtime builds, but both
-  single-node lanes failed their `stage=nodestore` non-root `emptyDir` marker
-  check. One got `container is in CONTAINER_EXITED state`; the other reported
-  `container write-test not found in pod`. Code inspection found two lookups
-  that trusted the first CRI list entry even though CRI can retain prior
-  sandboxes and exited container attempts. The branch now selects a sandbox
-  matching the current Pod UID when available, otherwise prefers a ready/newer
-  sandbox; container lookup prefers a running attempt, then the newest
-  attempt. Focused regressions cover stale sandbox UIDs, readiness/order,
-  exited attempts, and wrong-name filtering. This is the leading explanation
-  for the fixture failures. Quick-check [36359505569](https://github.com/centerionware/not-k8s/actions/runs/36359505569)
-  found selector visibility and ownership compile errors; both are corrected
-  in commit `8f7df53e`. Focused `nodelet` quick-check passed at that SHA in
-  [36359755288](https://github.com/centerionware/not-k8s/actions/runs/36359755288);
-  live migration confirmation is pending.
+  Run [36357521280](https://github.com/centerionware/not-k8s/actions/runs/36357521280)
+  failed both single-node lanes' first `stage=nodestore` non-root `emptyDir`
+  marker check (`CONTAINER_EXITED` in K3s; container missing in upstream).
+  Code inspection found sandbox and container lookup trusting the first CRI
+  list entry. The branch now selects a sandbox matching the current Pod UID
+  when available, otherwise prefers a ready/newer sandbox; exec and
+  reconciliation select a running container attempt, then the newest. Focused
+  regressions cover stale sandbox UIDs, readiness/order, exited attempts, and
+  wrong-name filtering. Quick-check [36359755288](https://github.com/centerionware/not-k8s/actions/runs/36359755288)
+  passed at SHA `8f7df53e`. In run
+  [36359977515](https://github.com/centerionware/not-k8s/actions/runs/36359977515),
+  both source and first nodestore checkpoints passed. After failed return
+  migrations and nodestore rollback, a stale task (`no running task found`) or
+  missing Pod made the post-rollback `emptyDir` exec fail. The app-container
+  reconciliation still selected the first name-matching CRI attempt; it now
+  uses the same running/newest selection. Focused validation is pending.
 
-- **Five-node CI: setup-script copy collided with its `/tmp` source.** The same
-  run passed Docker's five-node kubeadm/Cilium setup and control-plane-loss
-  recovery, then `docker cp` failed because source and destination resolved to
-  `/tmp/nodemigrate-hostpath-setup.sh`. The post-restart copy now targets
-  `/var/tmp` and passes that path into the fixture. Shell validation passed;
-  the next five-node run must verify the full fixture.
+- **Five-node CI: setup-script path mismatch after recovery.** Run
+  [36359977515](https://github.com/centerionware/not-k8s/actions/runs/36359977515)
+  passed the five-node kubeadm/Cilium readiness and control-plane-loss
+  recovery checks. The preflight copied the hostpath helper to `/var/tmp`, but
+  the five-node integration script still requested `/tmp` inside `cp-1` and
+  failed with `cannot stat`. The coordinator now passes the configured helper
+  path through to each fixture invocation. Shell validation passed; runtime
+  verification is pending.
+
+- **`nodemigrate`: return cutover does not recover the retained API with its
+  workloads available.** In run 36359977515, K3s's 20 retained-API probes each
+  timed out after ten seconds. The upstream return's first readiness probe got
+  connection refused; object import then failed when the cert-manager
+  validation webhook ClusterIP timed out. Both migration utilities restored
+  nodestore, but post-rollback workload exec was also unavailable. The exact
+  K3s API timeout cause remains unconfirmed; this is separate from the fixed
+  selector compilation issue and needs a focused return-path fix.
 
 ## Current fixture finding
 

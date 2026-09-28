@@ -39,6 +39,22 @@ owning component, branch fix, and focused test evidence. The intended
 runtime tests are the primary migration target; `v0.8.0` can remain an optional
 published-runtime regression baseline, but is not required or exclusive.
 
+Branch-runtime run
+[36359977515](https://github.com/centerionware/not-k8s/actions/runs/36359977515)
+at SHA `f538a8d3` passed all focused `nodemigrate`, `notk8s`, and branch runtime
+builds. Both K3s and upstream lanes passed source and first `stage=nodestore`
+checks, including the non-root `emptyDir` test after the selector correction.
+K3s return timed out all 20 retained-API probes; upstream return began with an
+API connection refusal and failed import when the cert-manager validation
+webhook ClusterIP timed out. Both migration utilities restored nodestore, but
+the post-rollback workload exec checkpoint failed on stale/missing CRI state.
+The five-node job passed kubeadm/Cilium readiness and cp-1 loss recovery, then
+failed because it copied the hostpath script to `/var/tmp` while the
+integration script requested `/tmp`. The coordinator now passes its configured
+helper path through. App container reconciliation now uses nodelet's
+running/newest CRI selection; focused quick-check and a live rerun are pending.
+Artifacts are in `/tmp/nodemigrate-36359977515/`.
+
 Run [36357521280](https://github.com/centerionware/not-k8s/actions/runs/36357521280)
 at branch SHA `22848696` built `nodemigrate` and the branch combined runtime
 successfully. The Docker preflight passed five-node kubeadm/Cilium setup and
