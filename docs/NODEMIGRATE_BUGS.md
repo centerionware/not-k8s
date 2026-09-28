@@ -4,6 +4,33 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **Kubectl client version probe used an unsupported output format.** In
+  [run 36420315264](https://github.com/centerionware/not-k8s/actions/runs/36420315264),
+  Docker passed the Cilium KPR, five-node recovery, and plugin-node CSI checks,
+  then failed when the fixture requested `kubectl version --client -o
+  jsonpath`. The helper now reads `gitVersion` from YAML output. This fixture
+  correction awaits rerun.
+
+- **Return import rewrote an unchanged CRD schema.** The same run's upstream
+  lane showed the Traefik schema `maximum` unchanged at the source and
+  nodestore checkpoints (`9223372036854775000`), then rounded at the return
+  API. The importer previously sent a full-object update even when the
+  destination CRD already held identical spec and relevant labels/annotations.
+  It now skips that rewrite in this exact-match case; a focused unit test checks
+  unchanged CRDs and verifies that schema or label differences still require
+  the normal update path. Runtime verification is pending.
+
+- **K3s return lost the Node after migration reported success.** In run
+  `36420315264`, migration reported completion and the returned Node initially
+  became Ready. Later diagnostics found it missing; kubelet then reported no
+  node relationship for imported Pods, CSI teardown could not find its driver,
+  and the local PV could not resolve its node affinity. The capture does not
+  identify which actor initiated the Node removal. Keep this as unresolved;
+  capture audit/Node lifecycle events around the completion-to-fixture boundary
+  before attributing or changing migration behavior.
+
+## Latest branch-run findings
+
 - **Fixture checkpoint probe used an unsupported CRD short name.** In run
   [36418026366](https://github.com/centerionware/not-k8s/actions/runs/36418026366),
   both K3s and upstream reached forward import and most nodestore workload

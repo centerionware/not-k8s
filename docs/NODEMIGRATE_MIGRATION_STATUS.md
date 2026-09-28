@@ -10,6 +10,27 @@ compile or unit test does not mark a real migration path as verified.
 ## Latest integration result
 
 Branch-runtime run
+[36420315264](https://github.com/centerionware/not-k8s/actions/runs/36420315264)
+at SHA `de890b701d61130b3e6ce9922ffc5597e4342121` built nodemigrate and the
+combined branch runtime (`notk8s --features cri`) in all three lanes, thereby
+compiling the packaged component changes; Docker also built the five-node
+image. Docker passed its Cilium KPR and control-plane recovery checks plus CSI
+registration on the plugin Node, then fixture setup hit an unsupported
+`kubectl version --client -o jsonpath` option. That query now extracts
+`gitVersion` from YAML. Upstream reached the returned checkpoint with source
+and nodestore Traefik CRD bounds still exactly `9223372036854775000`; the
+original API rounded the value during return import. `apply_object` now avoids
+rewriting an existing CRD when its spec, labels, and annotations match, with a
+focused unit regression for unchanged and changed CRDs. K3s reported successful
+return migration, then the returned Node was absent from later API snapshots;
+kubelet lost node authorization for imported Pods and CSI teardown/readiness
+failed. The capture does not identify what removed the Node. Runtime checks for
+the current fixes are pending, and full migration parity remains unverified.
+No general build or full e2e ran.
+
+## Latest integration result
+
+Branch-runtime run
 [36418026366](https://github.com/centerionware/not-k8s/actions/runs/36418026366)
 at SHA `7e8337a08a73e6027ceaab5605eacd9acebaa0de` compiled nodemigrate and the
 combined branch runtime (`notk8s --features cri`) in all three lanes; Docker

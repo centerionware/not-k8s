@@ -949,7 +949,8 @@ install_workloads() {
     local stage=source
     if [[ -z "${NODEMIGRATE_KUBECTL_IMAGE:-}" ]]; then
         local kubectl_version
-        kubectl_version="$(kubectl version --client -o jsonpath='{.clientVersion.gitVersion}')"
+        kubectl_version="$(kubectl version --client -o yaml \
+            | awk '$1 == "gitVersion:" { print $2; exit }')"
         [[ -n "$kubectl_version" ]] || {
             echo "could not determine the kubectl image version for fixture Jobs" >&2
             return 1

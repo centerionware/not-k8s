@@ -8,6 +8,26 @@ is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
 Latest branch-runtime run
+[36420315264](https://github.com/centerionware/not-k8s/actions/runs/36420315264)
+at SHA `de890b701d61130b3e6ce9922ffc5597e4342121` built nodemigrate and the
+branch combined runtime (`notk8s --features cri`) in all three lanes; the
+five-node lane also built its node image. Docker passed its Cilium KPR, five-
+node control-plane recovery, and CSI-on-plugin-node checks, then fixture setup
+failed because `kubectl version --client` does not support `-o jsonpath`; the
+probe now reads YAML with `awk`. Upstream reached returned-stage checks and
+confirmed source and nodestore retained the exact Traefik CRD schema bound,
+but the source API rounded it during a full-object rewrite. The importer now
+preserves a destination CRD without a PUT when its spec, labels, and
+annotations already match; a focused unit regression covers unchanged and
+changed cases. K3s completed both migration directions, but its returned Node
+later disappeared from the API and the hostpath CSI deployment did not become
+Ready. Logs show kubelet node-authorization failures for re-imported Pods,
+failed CSI teardown, and no Node for the local-PV affinity; the actor that
+removed the Node remains unknown. Focused nodemigrate tests and a corrected
+three-lane migration rerun are pending. Artifacts are saved once under
+`/tmp/nodemigrate-artifacts-36420315264/`. No general build or full e2e ran.
+
+Latest branch-runtime run
 [36418026366](https://github.com/centerionware/not-k8s/actions/runs/36418026366)
 completed with failure at SHA `7e8337a08a73e6027ceaab5605eacd9acebaa0de`.
 All three lanes built nodemigrate and the combined branch

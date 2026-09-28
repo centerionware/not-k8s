@@ -2529,6 +2529,12 @@ async fn apply_object(
             .await
             .with_context(|| format!("reading destination {type_meta}/{kind} {name}"))?;
         let result = if let Some(existing) = existing {
+            if can_preserve_existing_crd(&existing, &object) {
+                eprintln!(
+                    "nodemigrate: preserved unchanged CustomResourceDefinition {name} without rewriting its schema"
+                );
+                return Ok(existing);
+            }
             if source_was_running
                 && kind == "Pod"
                 && pod_status_is_terminal_or_exited(&existing)
@@ -2628,6 +2634,17 @@ async fn apply_object(
         }
     }
     bail!("destination kept changing {type_meta}/{kind} {name} during migration")
+}
+
+fn can_preserve_existing_crd(
+    existing: &DynamicObject,
+    desired: &DynamicObject,
+) -> bool {
+    existing.types.kind.as_deref() == Some("CustomResourceDefinition")
+        && desired.types.kind.as_deref() == Some("CustomResourceDefinition")
+        && existing.data.get("spec") == desired.data.get("spec")
+        && existing.metadata.labels == desired.metadata.labels
+        && existing.metadata.annotations == desired.metadata.annotations
 }
 
 fn pod_status_is_terminal_or_exited(pod: &DynamicObject) -> bool {
@@ -3158,7 +3175,8 @@ fn export_directory() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
+        can_preserve_existing_crd, custom_resource_gvks, is_source_custom_resource,
+        kubeconfig_root_ca,
         namespace_ca_bundle_matches, node_scheduling_patch, object_rank, object_skip_reason,
         object_type_label, parse_cilium_kube_proxy_replacement, persistent_host_paths,
         pod_status_is_terminal_or_exited,
@@ -3181,6 +3199,62 @@ mod tests {
         assert!(parse_cilium_kube_proxy_replacement(Some("true")).unwrap());
         assert!(parse_cilium_kube_proxy_replacement(Some("strict")).unwrap());
         assert!(parse_cilium_kube_proxy_replacement(Some("unknown")).is_err());
+    }
+
+    #[test]
+    fn unchanged_crd_schema_is_not_rewritten_during_return_migration() {
+        let source: DynamicObject = serde_json::from_value(serde_json::json!({
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": {
+                "name": "ingressroutes.traefik.io",
+                "labels": {"app.kubernetes.io/managed-by": "Helm"},
+                "annotations": {"meta.helm.sh/release-name": "traefik"}
+            },
+            "spec": {
+                "versions": [{
+                    "schema": {"maximum": 9223372036854775000}
+                }]
+            }
+        }))
+        .unwrap();
+        let existing = source.clone();
+
+        assert!(can_preserve_existing_crd(&existing, &source));
+
+        let changed_schema: DynamicObject = serde_json::from_value(serde_json::json!({
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": {
+                "name": "ingressroutes.traefik.io",
+                "labels": {"app.kubernetes.io/managed-by": "Helm"},
+                "annotations": {"meta.helm.sh/release-name": "traefik"}
+            },
+            "spec": {
+                "versions": [{
+                    "schema": {"maximum": 9223372036854776000}
+                }]
+            }
+        }))
+        .unwrap();
+        assert!(!can_preserve_existing_crd(&existing, &changed_schema));
+
+        let changed_metadata: DynamicObject = serde_json::from_value(serde_json::json!({
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": {
+                "name": "ingressroutes.traefik.io",
+                "labels": {"app.kubernetes.io/managed-by": "other"},
+                "annotations": {"meta.helm.sh/release-name": "traefik"}
+            },
+            "spec": {
+                "versions": [{
+                    "schema": {"maximum": 9223372036854775000}
+                }]
+            }
+        }))
+        .unwrap();
+        assert!(!can_preserve_existing_crd(&existing, &changed_metadata));
     }
 
     #[test]
