@@ -9,6 +9,19 @@ separate living documents below.
 ## Current state
 
 Latest branch migration run
+[36463585411](https://github.com/centerionware/not-k8s/actions/runs/36463585411)
+at SHA `b452f071ce9c9a9ac5b3ba6134a93929c1072cf8` compiled nodemigrate and the
+combined branch runtime in all three lanes; Docker also built the five-node
+image. Upstream passed source, nodestore, and returned workload checks, then
+failed exact round-trip comparison on Traefik CRD numeric maxima. K3s
+completed return migration but the Node disappeared from API discovery during
+HostPath CSI setup. Docker's five-node Cilium topology and control-plane
+recovery checks passed, but its fixture exited 127 before its source
+checkpoint. No migration gate passed. Full evidence is recorded in the
+[CI status](NODEMIGRATE_CI_STATUS.md), with unresolved findings in the
+[bug tracker](NODEMIGRATE_BUGS.md).
+
+Latest branch migration run
 [36459506591](https://github.com/centerionware/not-k8s/actions/runs/36459506591)
 completed at SHA `da02155289d2bfdf02cbe32d0885b941f5f8542a`. Its builds of
 branch `nodemigrate` and combined `notk8s --features cri` passed for both

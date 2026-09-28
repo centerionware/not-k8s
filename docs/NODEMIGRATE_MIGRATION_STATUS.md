@@ -7,6 +7,18 @@ This is the living implementation status record for the full scope in
 that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
+Latest migration run
+[36463585411](https://github.com/centerionware/not-k8s/actions/runs/36463585411)
+at SHA `b452f071ce9c9a9ac5b3ba6134a93929c1072cf8` built nodemigrate and the
+combined branch runtime in all lanes; Docker also built its five-node image.
+Upstream passed returned workload behavior but failed strict CRD numeric
+round-trip parity. K3s returned the node as Ready, then lost it from API
+discovery during the HostPath CSI reinstall. Docker passed topology and
+control-plane recovery checks, but its initial fixture exited 127. None
+completed the required full bidirectional gate. See the
+[CI status](NODEMIGRATE_CI_STATUS.md) for exact jobs and artifacts and the
+[bug tracker](NODEMIGRATE_BUGS.md) for unresolved causes.
+
 Latest migration evidence is run
 [36434878771](https://github.com/centerionware/not-k8s/actions/runs/36434878771)
 at SHA `4f844b4311284e93fa6c8883c7858ae87122ee8a`. All lanes compiled

@@ -4,6 +4,33 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **Round-trip import changes Traefik CRD numeric bounds.** Upstream job
+  `109067982540` in run
+  [36463585411](https://github.com/centerionware/not-k8s/actions/runs/36463585411)
+  passed the returned functional checks, then the strict object comparator
+  found the `maximum` value changed for `ingressroutes.traefik.io` and
+  `ingressroutetcps.traefik.io` from `9223372036854775000` to
+  `9223372036854776000`. Nodestore returned this value as a floating-point
+  JSON number (`9.223372036854776e+18`) while the retained Kubernetes API
+  returned the earlier integer form. This is an actual round-trip data
+  difference; preserve the source CRD schema through the JSON/API boundary and
+  add a focused precision regression before rerunning migration.
+- **K3s removes the returned Node during HostPath CSI setup.** The same run's
+  K3s lane passed source and nodestore checks, returned the Node as Ready, and
+  then failed while reinstalling HostPath CSI. K3s emitted `Removing Node`
+  events; StatefulSet PV node-affinity checks could not find the node, and
+  HostPath CSI registration remained unavailable. This is after the utility's
+  return command reported success, so the loss occurs during or after test
+  fixture reinstallation. Determine which process deletes the Node and retain
+  its identity and scheduling state through the full returned-stage check.
+- **Docker five-node fixture exits 127 after topology recovery.** In the same
+  run, all five kubeadm nodes reached Ready with Cilium and the test passed its
+  control-plane-loss and recovery checks. The later fixture exited 127 before
+  completing the source checkpoint; the failure diagnostics included kubectl
+  requests falling back to `localhost:8080`, but did not identify the missing
+  command or call site. Make this failure print the failing command/context and
+  rerun the full simulated path.
+
 - **Returned PV identity repair creates an unsafe claim-reference window.** In
   upstream job `109054224944` of run
   [36459506591](https://github.com/centerionware/not-k8s/actions/runs/36459506591),

@@ -8,6 +8,31 @@ is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
 Latest branch-runtime run
+[36463585411](https://github.com/centerionware/not-k8s/actions/runs/36463585411)
+at SHA `b452f071ce9c9a9ac5b3ba6134a93929c1072cf8` used
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+All nodemigrate and combined-runtime builds passed in the K3s, upstream, and
+Docker lanes; Docker also built its five-node image. The upstream lane passed
+source, nodestore, and returned functional checkpoints, then the strict
+round-trip object comparison found numeric drift in `maximum` for Traefik's
+`ingressroutes.traefik.io` and `ingressroutetcps.traefik.io` CRD schemas
+(`9223372036854775000` vs `9223372036854776000`). K3s passed source and
+nodestore checkpoints and completed return migration, but the returned Node
+later disappeared from K3s discovery while the HostPath CSI driver was being
+reinstalled; StatefulSet PV topology and CSI registration then failed. The
+Docker five-node cluster reached five Ready Nodes and passed the control-plane
+loss/recovery checks, but the full fixture exited 127 during its initial
+source checks; the uploaded diagnostic log ends with kubectl requests falling
+back to `localhost:8080`, so the precise missing command/context still needs
+isolation. All three migration lanes failed; no bidirectional gate passed.
+Artifacts were downloaded once to
+`/tmp/nodemigrate-artifacts-36463585411/`. Exact jobs: upstream
+`109067982540`, K3s `109067983019`, Docker `109067983100`; validation was
+skipped. Focused nodemigrate tests passed separately at the same SHA in run
+[36463562507](https://github.com/centerionware/not-k8s/actions/runs/36463562507).
+No general build or full e2e ran.
+
+Latest branch-runtime run
 [36434878771](https://github.com/centerionware/not-k8s/actions/runs/36434878771)
 at SHA `4f844b4311284e93fa6c8883c7858ae87122ee8a` failed in all three
 migration lanes after their nodemigrate and combined `notk8s --features cri`
