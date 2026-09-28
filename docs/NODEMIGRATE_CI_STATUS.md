@@ -73,15 +73,14 @@ unknown. See the [NodeLifecycleController event path](https://github.com/kuberne
   not covered by the latest Docker preflight, which stopped at the CSINode
   import failure.
 - `nodemigrate`/K3s: the repeated Node loss is still unresolved and blocks a
-  migration retry. The fixture captures Node mutation audit records and now
-  records Node UIDs, resource versions, creation/deletion timestamps, and
-  kube-node-lease holder/renewal state in its target watcher. These diagnostics
-  pass `bash -n` and the focused `check_nodemigrate_diagnostics.sh` script
-  locally; `check_nodemigrate_api_inventory.sh` also passes in the current
-  working tree. These checks do not exercise a live watcher or migration and
-  have not run against a migration since the diagnostic fields were added.
-  Use them alongside the next eligible batch verification before selecting a
-  Node lifecycle fix.
+  migration retry. The fixture audits writes to Nodes and `kube-node-lease`
+  Leases, and records Node UIDs, resource versions, creation/deletion
+  timestamps, and Lease holder/renewal state in its target watcher.
+  `bash -n`, `check_nodemigrate_diagnostics.sh` (including static policy
+  checks), and `check_nodemigrate_api_inventory.sh` pass locally. These checks
+  do not exercise a live watcher, K3s audit path, or migration and have not run
+  against a migration since these diagnostics were added. Use them in the next
+  eligible batch verification before selecting a Node lifecycle fix.
 
 Latest focused component verification
 [36479715060](https://github.com/centerionware/not-k8s/actions/runs/36479715060)

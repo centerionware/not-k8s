@@ -755,6 +755,12 @@ rules:
     resources:
       - group: ""
         resources: [nodes, nodes/status]
+  - level: Metadata
+    verbs: [create, update, patch, delete, deletecollection]
+    namespaces: [kube-node-lease]
+    resources:
+      - group: coordination.k8s.io
+        resources: [leases]
   - level: None
 EOF
         curl -sfL https://get.k3s.io -o /tmp/install-k3s.sh

@@ -33,6 +33,21 @@ export PATH="$TEST_DIR:/usr/bin:/bin"
 # shellcheck source=nodemigrate-integration.sh
 source "$ROOT/.github/scripts/nodemigrate-integration.sh"
 
+audit_policy="$(sed -n '/^apiVersion: audit.k8s.io\/v1$/,/^EOF$/p' \
+    "$ROOT/.github/scripts/nodemigrate-integration.sh")"
+grep -Fq 'resources: [nodes, nodes/status]' <<< "$audit_policy" || {
+    echo "K3s audit policy does not capture Node lifecycle writes" >&2
+    exit 1
+}
+grep -Fq 'namespaces: [kube-node-lease]' <<< "$audit_policy" || {
+    echo "K3s audit policy does not scope Lease auditing to kube-node-lease" >&2
+    exit 1
+}
+grep -Fq 'resources: [leases]' <<< "$audit_policy" || {
+    echo "K3s audit policy does not capture Node Lease writes" >&2
+    exit 1
+}
+
 export KUBECTL_FIXTURE=failure
 output="$(diagnostic_kubectl_json /tmp/test-kubeconfig '{"name": .items[0].metadata.name}' \
     get service cert-manager-webhook -n cert-manager 2>&1)"

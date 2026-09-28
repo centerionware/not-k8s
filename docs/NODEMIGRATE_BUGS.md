@@ -14,8 +14,9 @@ Last updated: 2026-09-28
   return-migration service restart and the Node disappearance, so it cannot
   establish whether a DELETE occurred or identify the actor. The actor and
   mechanism remain unknown; do not paper over this by relaxing readiness or
-  storage checks. The fixture now configures K3s API auditing for Node
-  mutations and prints that audit file on failure; this diagnostic change has
+  storage checks. The fixture now configures K3s API auditing for Node and
+  `kube-node-lease` Lease mutations and prints that audit file on failure. The
+  local diagnostics check verifies both policy rules, but the audit path has
   not yet been exercised by a new migration run. Keep migration retries paused
   until this failure is understood and fixed.
   The watcher now records Node UID and lifecycle timestamps in its change
