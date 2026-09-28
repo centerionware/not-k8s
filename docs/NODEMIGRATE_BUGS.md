@@ -4,6 +4,28 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **Latest K3s, upstream, and five-node migration run failed after all builds
+  passed.** Branch-runtime run
+  [36430036471](https://github.com/centerionware/not-k8s/actions/runs/36430036471)
+  compiled nodemigrate and the combined `notk8s --features cri` runtime in all
+  lanes, and built the five-node image. The Docker static/CSI data probes both
+  passed, but the source verifier exited after the Traefik rollout before
+  identifying its failing assertion. The Helm assertions now print a specific
+  failure message. K3s reported the returned Node Ready, then its watcher
+  recorded an empty Node list by 13:59:32 UTC; no evidence identifies who
+  removed it. Upstream reached `PASS stage=returned`, but strict parity still
+  found both Traefik CRD `priority.maximum` fields changed from
+  `9223372036854775000` to `9223372036854776000`. The metadata-only patch was
+  not used for those CRDs. A focused comparison diagnostic now logs the
+  existing and desired maximums. Artifacts were downloaded once to
+  `/tmp/nodemigrate-artifacts-36430036471/`.
+
+- **Five-node source-stage failure was previously silent.** The failure log
+  stopped after `deployment traefik successfully rolled out`; later Helm and
+  Cilium value checks used `set -e` without naming their failing condition.
+  Those checks now emit a specific error before returning. The next run will
+  identify the exact condition.
+
 - **Docker static-data checker could not schedule on its PV node.** Migration
   run [36425151654](https://github.com/centerionware/not-k8s/actions/runs/36425151654)
   built nodemigrate, the combined branch runtime, and the five-node image, then

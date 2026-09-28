@@ -25,8 +25,8 @@ workload and parity checks to capture a Node loss after nodemigrate reports
 success. Focused test run
 [36429944327](https://github.com/centerionware/not-k8s/actions/runs/36429944327)
 failed compiling the metadata-patch regression because its `Value::Null`
-assertion was not qualified in the test module; the reference is fixed, with a
-focused rerun pending. Migration run
+assertion was not qualified in the test module; the reference is fixed and the
+focused rerun passed. Migration run
 [36430036471](https://github.com/centerionware/not-k8s/actions/runs/36430036471)
 is testing this commit across the enabled topologies.
 
@@ -35,7 +35,17 @@ The corrected focused nodemigrate check
 passed at SHA `37da8cde9d1bc2489bfe588d379499b55b929e39`, including crate tests.
 Migration run `36430036471` has built nodemigrate and the combined branch
 runtime (`notk8s --features cri`) in both single-node lanes, built the five-node
-image, and started both migration checks plus the Docker topology probe.
+image, then completed with all three runtime lanes failing. Docker passed both
+static and CSI PV data probes before its source-stage verifier exited after
+Traefik rollout; the exact silent Helm assertion is not yet identified, so
+those checks now report their own failures. K3s completed return migration and
+reported its Node Ready, then the state watcher captured an empty Node list at
+13:59:32 UTC while returned-stage checks failed on the missing local-PV Node.
+Upstream reached `PASS stage=returned`, but strict parity still found both
+Traefik CRD maximums changed from `9223372036854775000` to
+`9223372036854776000`. The CRD metadata-only patch did not run for those two
+objects; a focused comparison diagnostic now records the existing and desired
+schema values. No general build or full e2e ran.
 
 ## Latest validation
 

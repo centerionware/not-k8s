@@ -22,24 +22,30 @@ complete, but the Node disappeared before later checks; the initiating actor
 is unknown. Upstream retained the Traefik CRD maximum in nodestore, but strict
 returned-state parity found it rounded by the return API. The importer now
 patches only CRD labels/annotations when the schema matches, avoiding a full
-schema rewrite; this change and the Docker fixture fix await a new migration
-run. The return-target watcher will now stay active through returned-stage
-workload and parity checks, so a Node loss after the migration command returns
-can appear in the captured state timeline. Focused nodemigrate run
+schema rewrite. In run `36430036471`, Docker passed both static and CSI data
+probes, then the source fixture exited during checks after Traefik rolled out;
+the previously silent Helm assertions now report their failing check. The
+return watcher captured an empty Node list at 13:59:32 UTC after K3s reported
+completion; the actor remains unknown. Upstream reached `PASS stage=returned`,
+then strict parity again found both Traefik maximums changed from
+`9223372036854775000` to `9223372036854776000`. The metadata-only patch path
+did not run for those CRDs; the next run logs the compared values. All
+nodemigrate and combined-runtime builds passed in the three lanes. Focused
+nodemigrate run
 [36429944327](https://github.com/centerionware/not-k8s/actions/runs/36429944327)
 at SHA `de520706339fce833e6ff1099d760ad8f1ca71ee` caught a test-only compile
 error: the new assertion referenced `Value::Null` outside its import scope.
-It is now fully qualified; focused rerun is pending. Migration run
+It is now fully qualified; the focused rerun passed. Migration run
 [36430036471](https://github.com/centerionware/not-k8s/actions/runs/36430036471)
-is running the same SHA across K3s, upstream, and five-node Docker. Artifacts
-from prior run `36425151654` are under
-`/tmp/nodemigrate-artifacts-36425151654/`. No regular build or full e2e ran.
+completed with failures in K3s, upstream, and five-node Docker. Artifacts are
+under `/tmp/nodemigrate-artifacts-36430036471/`. No regular build or full e2e
+ran.
 The corrected focused nodemigrate check
 [36430618866](https://github.com/centerionware/not-k8s/actions/runs/36430618866)
 passed at SHA `37da8cde9d1bc2489bfe588d379499b55b929e39`, including crate tests.
-Migration run `36430036471` compiled nodemigrate and combined branch runtime in
-the K3s and upstream lanes and built the five-node image; both migrations and
-the Docker topology probe are running.
+Migration run `36430036471` compiled nodemigrate and the combined branch
+runtime in both single-node lanes and built the five-node image. It completed
+with failures in all three runtime lanes.
 
 The automatic nodemigrate check
 [36424188417](https://github.com/centerionware/not-k8s/actions/runs/36424188417)

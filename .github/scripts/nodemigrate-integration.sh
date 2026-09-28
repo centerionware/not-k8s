@@ -2705,12 +2705,30 @@ YAML
         echo "Traefik Helm release is missing or not deployed at stage $stage" >&2
         return 1
     }
-    helm get manifest traefik -n traefik | grep '^kind: Deployment$' >/dev/null
-    helm get values traefik -n traefik -o json | jq -e '.service.type == "ClusterIP"' >/dev/null
-    helm history traefik -n traefik -o json | jq -e 'any(.[]; .status == "deployed")' >/dev/null
-    helm get manifest cert-manager -n cert-manager | grep '^kind: Deployment$' >/dev/null
-    helm get values cert-manager -n cert-manager -o json | jq -e '.crds.enabled == true' >/dev/null
-    helm history cert-manager -n cert-manager -o json | jq -e 'any(.[]; .status == "deployed")' >/dev/null
+    helm get manifest traefik -n traefik | grep '^kind: Deployment$' >/dev/null || {
+        echo "Traefik Helm release has no Deployment manifest at stage $stage" >&2
+        return 1
+    }
+    helm get values traefik -n traefik -o json | jq -e '.service.type == "ClusterIP"' >/dev/null || {
+        echo "Traefik Helm service.type is not ClusterIP at stage $stage" >&2
+        return 1
+    }
+    helm history traefik -n traefik -o json | jq -e 'any(.[]; .status == "deployed")' >/dev/null || {
+        echo "Traefik Helm release has no deployed revision at stage $stage" >&2
+        return 1
+    }
+    helm get manifest cert-manager -n cert-manager | grep '^kind: Deployment$' >/dev/null || {
+        echo "cert-manager Helm release has no Deployment manifest at stage $stage" >&2
+        return 1
+    }
+    helm get values cert-manager -n cert-manager -o json | jq -e '.crds.enabled == true' >/dev/null || {
+        echo "cert-manager Helm release does not enable its CRDs at stage $stage" >&2
+        return 1
+    }
+    helm history cert-manager -n cert-manager -o json | jq -e 'any(.[]; .status == "deployed")' >/dev/null || {
+        echo "cert-manager Helm release has no deployed revision at stage $stage" >&2
+        return 1
+    }
     local cilium_chart_version
     cilium_chart_version="$(helm list -n kube-system --output json \
         | jq -r '.[] | select(.name == "cilium" and .status == "deployed") | .chart | sub("^cilium-"; "")')"
@@ -2718,15 +2736,30 @@ YAML
         echo "Cilium Helm release is missing or not deployed at stage $stage" >&2
         return 1
     }
-    helm get manifest cilium -n kube-system | grep '^kind: DaemonSet$' >/dev/null
+    helm get manifest cilium -n kube-system | grep '^kind: DaemonSet$' >/dev/null || {
+        echo "Cilium Helm release has no DaemonSet manifest at stage $stage" >&2
+        return 1
+    }
     local expected_kpr="${NODEMIGRATE_CILIUM_KPR:-false}"
     helm get values cilium -n kube-system -o json | jq -e --argjson kpr "$expected_kpr" \
-        '.ipam.mode == "kubernetes" and .kubeProxyReplacement == $kpr and .cni.confPath == "/etc/cni/net.d"' >/dev/null
-    helm history cilium -n kube-system -o json | jq -e 'any(.[]; .status == "deployed")' >/dev/null
+        '.ipam.mode == "kubernetes" and .kubeProxyReplacement == $kpr and .cni.confPath == "/etc/cni/net.d"' >/dev/null || {
+        echo "Cilium Helm values do not match IPAM, KPR, and CNI settings at stage $stage" >&2
+        return 1
+    }
+    helm history cilium -n kube-system -o json | jq -e 'any(.[]; .status == "deployed")' >/dev/null || {
+        echo "Cilium Helm release has no deployed revision at stage $stage" >&2
+        return 1
+    }
     helm upgrade cilium cilium/cilium -n kube-system --version "$cilium_chart_version" \
-        --reuse-values --dry-run=server --hide-secret >/dev/null
+        --reuse-values --dry-run=server --hide-secret >/dev/null || {
+        echo "Cilium Helm server dry-run failed at stage $stage" >&2
+        return 1
+    }
     helm upgrade traefik traefik/traefik -n traefik --version "$traefik_chart_version" \
-        --reuse-values --dry-run=server --hide-secret >/dev/null
+        --reuse-values --dry-run=server --hide-secret >/dev/null || {
+        echo "Traefik Helm server dry-run failed at stage $stage" >&2
+        return 1
+    }
     kubectl delete pod -n traefik migration-route-check --ignore-not-found --wait=true
     kubectl port-forward -n traefik svc/traefik 18080:80 >/tmp/traefik-port-forward.log 2>&1 &
     local port_forward_pid=$!

@@ -2529,6 +2529,18 @@ async fn apply_object(
             .await
             .with_context(|| format!("reading destination {type_meta}/{kind} {name}"))?;
         let result = if let Some(existing) = existing {
+            if kind == "CustomResourceDefinition"
+                && matches!(name, "ingressroutes.traefik.io" | "ingressroutetcps.traefik.io")
+                && !crd_schema_matches(&existing, &object)
+            {
+                const PRIORITY_MAXIMUM: &str = "/versions/0/schema/openAPIV3Schema/properties/spec/properties/routes/items/properties/priority/maximum";
+                eprintln!(
+                    "nodemigrate: CRD schema comparison {name}: existing maximum={:?}, desired maximum={:?}, existing_spec_matches_desired={}",
+                    existing.data.pointer(&format!("/spec{PRIORITY_MAXIMUM}")),
+                    object.data.pointer(&format!("/spec{PRIORITY_MAXIMUM}")),
+                    existing.data.get("spec") == object.data.get("spec"),
+                );
+            }
             if crd_schema_matches(&existing, &object) {
                 if can_preserve_existing_crd(&existing, &object) {
                     eprintln!(
