@@ -4,6 +4,30 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **Migration run 36434878771: returned HostPath CSI and Docker Cilium state
+  checks fail.** At SHA `4f844b4311284e93fa6c8883c7858ae87122ee8a`, all three
+  lanes compiled nodemigrate and combined branch `notk8s --features cri`; this
+  compiles all changed components packaged in that runtime. Docker also built
+  the five-node image. The Docker fixture passed source workload, static PV,
+  CSI PV, network, and Traefik checks, then its Cilium values predicate failed
+  without printing the observed values. The fixture now prints the IPAM,
+  kube-proxy replacement, and CNI path values when the predicate fails; this
+  remains assigned to migration CI until those values establish a runtime
+  defect. K3s passed source and
+  nodestore checkpoints and logged successful return migration, then the
+  HostPath CSI deployment did not become Ready within five minutes. Nodelet
+  logs show repeated teardown of CSI Pods during this stage, making
+  `nodelet` Pod reconciliation the lead component to inspect; the triggering
+  state transition is not yet isolated. Upstream passed through returned-stage
+  parity, but restored workloads could not use HostPath CSI: the driver was
+  reported unregistered, and a later mount reported that the retained volume
+  ID was absent from the driver's volume catalog. This is tracked against
+  `nodemigrate` CSI state handoff plus `nodelet` plugin registration until the
+  logs identify the first broken handoff. No lane completed a full round trip
+  with parity. Logs were downloaded once under
+  `/tmp/nodemigrate-artifacts-36434878771/`; jobs K3s `108970087767`, upstream
+  `108970088064`, Docker `108970088143`.
+
 - **Latest K3s, upstream, and five-node migration run failed after all builds
   passed.** Branch-runtime run
   [36430036471](https://github.com/centerionware/not-k8s/actions/runs/36430036471)

@@ -7,6 +7,21 @@ This is the living implementation status record for the full scope in
 that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
+Latest migration evidence is run
+[36434878771](https://github.com/centerionware/not-k8s/actions/runs/36434878771)
+at SHA `4f844b4311284e93fa6c8883c7858ae87122ee8a`. All lanes compiled
+nodemigrate and branch `notk8s --features cri` successfully, so every modified
+component packaged in the combined runtime was included in the build. Docker
+also compiled its five-node image. K3s passed source and nodestore checkpoints,
+reported a successful return, then failed while HostPath CSI failed to become
+Ready. Upstream reached returned-stage parity but its returned StatefulSet
+could not mount its PVC: HostPath CSI was not registered and then reported the
+retained volume ID missing from its catalog. Docker's five-node source fixture
+failed its Cilium Helm-values assertion after the source workloads and PV data
+probes passed. These three failures are unresolved; no bidirectional migration
+gate has passed. Run artifacts are saved once under
+`/tmp/nodemigrate-artifacts-36434878771/`. No regular build or full e2e ran.
+
 The focused nodemigrate check
 [36425866401](https://github.com/centerionware/not-k8s/actions/runs/36425866401)
 passed at SHA `8b11b11f3f26546f0a08bdcaba99382bb2fdcb6b`. Migration run

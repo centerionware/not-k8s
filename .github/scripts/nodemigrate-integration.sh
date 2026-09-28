@@ -2741,11 +2741,19 @@ YAML
         return 1
     }
     local expected_kpr="${NODEMIGRATE_CILIUM_KPR:-false}"
-    helm get values cilium -n kube-system -o json | jq -e --argjson kpr "$expected_kpr" \
-        '.ipam.mode == "kubernetes" and .kubeProxyReplacement == $kpr and .cni.confPath == "/etc/cni/net.d"' >/dev/null || {
-        echo "Cilium Helm values do not match IPAM, KPR, and CNI settings at stage $stage" >&2
+    local cilium_values
+    cilium_values="$(helm get values cilium -n kube-system -o json)" || {
+        echo "could not read Cilium Helm values at stage $stage" >&2
         return 1
     }
+    if ! jq -e --argjson kpr "$expected_kpr" \
+        '.ipam.mode == "kubernetes" and .kubeProxyReplacement == $kpr and .cni.confPath == "/etc/cni/net.d"' \
+        <<<"$cilium_values" >/dev/null; then
+        echo "Cilium Helm values do not match IPAM, KPR, and CNI settings at stage $stage" >&2
+        jq '{ipam: .ipam, kubeProxyReplacement: .kubeProxyReplacement, cni: .cni}' \
+            <<<"$cilium_values" >&2 || true
+        return 1
+    fi
     helm history cilium -n kube-system -o json | jq -e 'any(.[]; .status == "deployed")' >/dev/null || {
         echo "Cilium Helm release has no deployed revision at stage $stage" >&2
         return 1

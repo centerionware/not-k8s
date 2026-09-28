@@ -7,6 +7,35 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+Latest branch-runtime run
+[36434878771](https://github.com/centerionware/not-k8s/actions/runs/36434878771)
+at SHA `4f844b4311284e93fa6c8883c7858ae87122ee8a` failed in all three
+migration lanes after their nodemigrate and combined `notk8s --features cri`
+builds passed. The combined compile covers every modified component packaged
+in that binary; Docker also built the five-node node image. K3s passed source
+and nodestore checkpoints and reported a successful return, but the returned
+cluster could not bring up the HostPath CSI workload within five minutes.
+Upstream passed source, nodestore, and returned checkpoints, then failed the
+returned PVC workload: the driver was not registered and the hostpath volume
+catalog did not contain the retained volume ID. Docker passed source workload,
+PV data, CSI data, Cilium network, and Traefik rollout checks, then failed its
+Cilium Helm-values assertion before migration. The assertion still needs to
+print the actual values to distinguish a fixture expectation error from a
+Helm-state change. The fixture now prints observed IPAM, kube-proxy
+replacement, and CNI path values on this failure; this diagnostic awaits a
+runtime rerun. Run artifacts were downloaded once to
+`/tmp/nodemigrate-artifacts-36434878771/`. Exact jobs: K3s
+`108970087767`, upstream `108970088064`, Docker five-node preflight
+`108970088143`; dispatch validation was skipped. No regular build or full e2e
+ran. See the bug tracker for component attribution and follow-up.
+
+The migration-build rule is explicit: each lane compiles branch-built
+`notk8s --features cri`, which compiles all changed component crates packaged
+in that combined runtime. Do not add separate redundant component builds.
+This proves compilation only; migration checkpoints provide the runtime
+evidence. General `build.yml` and full e2e remain excluded by the user-directed
+nodemigrate policy.
+
 The focused nodemigrate check
 [36425866401](https://github.com/centerionware/not-k8s/actions/runs/36425866401)
 passed at SHA `8b11b11f3f26546f0a08bdcaba99382bb2fdcb6b`, including crate tests.

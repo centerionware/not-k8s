@@ -289,7 +289,11 @@ instructions in `AGENTS.md` for nodemigrate work:
   branch-fix validation. Each migration lane builds `notk8s` from the checked
   out PR branch with CRI support. Compiling that combined binary compiles all
   runtime components it packages, including every modified component crate;
-  do not narrow this to only selected crates or add redundant component builds.
+  this is the required evidence that migration testing includes changes to
+  other packaged components. Do not narrow this to only selected crates or add
+  redundant component builds. A successful `notk8s --features cri` compile
+  means all included and feature-enabled component changes were compiled; it
+  does not by itself prove their runtime behavior.
   The workflow also builds `nodemigrate`. These targeted test builds are
   authorized and do not constitute the general build gate.
 
