@@ -47,7 +47,8 @@ Last updated: 2026-09-28
   across the workspace fixes this parser boundary. Codec and listener
   regressions passed focused CI
   [36479715060](https://github.com/centerionware/not-k8s/actions/runs/36479715060)
-  for `nodeapiserver,nodemigrate` at SHA `e253e25c`. Runtime migration parity
+  for `nodeapiserver,nodemigrate` at SHA
+  `e253e25cf003ec04f8a59bb9e67988e748732135`. Runtime migration parity
   remains unverified; keep it strict and verify it after the K3s Node-loss
   failure is resolved.
 

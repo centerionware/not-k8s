@@ -9,7 +9,8 @@ this objective.
 
 Latest focused component verification
 [36479715060](https://github.com/centerionware/not-k8s/actions/runs/36479715060)
-at SHA `e253e25c` passed `nodeapiserver` and `nodemigrate` quick-checks. This
+at SHA `e253e25cf003ec04f8a59bb9e67988e748732135` passed `nodeapiserver` and
+`nodemigrate` quick-checks. This
 includes the exact-float codec regression and the listener test covering cached
 and revision-pinned CRD reads. The shared workspace enables
 `serde_json/float_roundtrip`, correcting JSON float parsing that changed a

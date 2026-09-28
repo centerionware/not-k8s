@@ -25,7 +25,8 @@ passed in
 at SHA `32255054dcc65baeac828f2ec00acd1b54ba3208`.
 The JSON float parsing defect passed focused component verification in
 [36479715060](https://github.com/centerionware/not-k8s/actions/runs/36479715060)
-at SHA `e253e25c`; migration parity remains unverified. K3s Node loss is still
+at SHA `e253e25cf003ec04f8a59bb9e67988e748732135`; migration parity remains
+unverified. K3s Node loss is still
 unresolved. Do not dispatch another migration run until that failure is
 understood and fixed.
 See the [CI status](NODEMIGRATE_CI_STATUS.md) and
