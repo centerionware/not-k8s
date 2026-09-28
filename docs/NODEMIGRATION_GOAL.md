@@ -285,12 +285,13 @@ instructions in `AGENTS.md` for nodemigrate work:
   fixes made here are included in migration testing. Testing is not limited to
   the released `v0.8.0` runtime; `v0.8.0` is an optional regression baseline
   and must not block branch-fix validation.
-- The branch-runtime migration workflow builds `notk8s` with CRI support. That
-  combined binary compiles all runtime components it packages, including
-  modified component crates; no separate component build is required to prove
-  those crates compile for this migration test. It also builds `nodemigrate`.
-  These targeted test builds are authorized and do not constitute the general
-  build gate.
+- Dispatch `nodemigrate-integration.yml` with `runtime_source=branch` for
+  branch-fix validation. Each migration lane builds `notk8s` from the checked
+  out PR branch with CRI support. Compiling that combined binary compiles all
+  runtime components it packages, including every modified component crate;
+  do not narrow this to only selected crates or add redundant component builds.
+  The workflow also builds `nodemigrate`. These targeted test builds are
+  authorized and do not constitute the general build gate.
 
 - Do not run the repository's general `build.yml` gate for this objective.
 - Do not run the repository's general e2e gate for this objective.

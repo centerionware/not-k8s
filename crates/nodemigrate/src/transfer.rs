@@ -64,6 +64,7 @@ enum SkipReason {
     CiliumEndpointReconciliation,
     CiliumIdentityReconciliation,
     CiliumNodeReconciliation,
+    NodebootstrapRuntimeRbac,
 }
 
 impl SkipReason {
@@ -103,6 +104,9 @@ impl SkipReason {
             Self::CiliumNodeReconciliation => {
                 "Cilium reconciles node addressing and IPAM state for the destination cluster"
             }
+            Self::NodebootstrapRuntimeRbac => {
+                "nodebootstrap recreates this runtime-owned RBAC policy on the destination"
+            }
         }
     }
 }
@@ -119,6 +123,38 @@ const IMPORT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5
 const DISCOVERY_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 const DISCOVERY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const DISCOVERY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn discover_apis(client: &Client) -> Result<Discovery> {
+    match tokio::time::timeout(
+        DISCOVERY_PROBE_TIMEOUT,
+        Discovery::new(client.clone()).run_aggregated(),
+    )
+    .await
+    {
+        Ok(Ok(discovery)) => Ok(discovery),
+        aggregate_result => {
+            let aggregate_error = match aggregate_result {
+                Ok(Err(error)) => {
+                    anyhow::Error::new(error).context("using aggregated Kubernetes API discovery")
+                }
+                Err(error) => anyhow::Error::new(error)
+                    .context("aggregated Kubernetes API discovery exceeded 10 seconds"),
+                Ok(Ok(_)) => unreachable!("successful aggregate discovery returned above"),
+            };
+            eprintln!(
+                "nodemigrate: aggregated API discovery unavailable; falling back to per-group discovery: {aggregate_error:#}"
+            );
+            tokio::time::timeout(
+                DISCOVERY_PROBE_TIMEOUT,
+                Discovery::new(client.clone()).run(),
+            )
+            .await
+            .context("per-group Kubernetes API discovery exceeded 10 seconds")?
+            .context("per-group Kubernetes API discovery failed after aggregate discovery")
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct KubeApi {
     kubeconfig: PathBuf,
@@ -130,23 +166,10 @@ async fn wait_for_discovery(client: &Client) -> Result<Discovery> {
     let mut attempt = 0;
     while started.elapsed() < DISCOVERY_RETRY_TIMEOUT {
         attempt += 1;
-        match tokio::time::timeout(
-            DISCOVERY_PROBE_TIMEOUT,
-            Discovery::new(client.clone()).run(),
-        )
-        .await
-        {
-            Ok(Ok(discovery)) => return Ok(discovery),
-            Ok(Err(error)) => {
-                let error = anyhow::Error::new(error).context("discovering destination APIs");
-                eprintln!(
-                    "nodemigrate: destination API discovery probe {attempt} failed: {error:#}"
-                );
-                last_error = Some(error);
-            }
+        match discover_apis(client).await {
+            Ok(discovery) => return Ok(discovery),
             Err(error) => {
-                let error = anyhow::Error::new(error)
-                    .context("destination API discovery probe exceeded 10 seconds");
+                let error = anyhow::Error::new(error).context("discovering destination APIs");
                 eprintln!(
                     "nodemigrate: destination API discovery probe {attempt} failed: {error:#}"
                 );
@@ -1016,7 +1039,9 @@ impl KubeApi {
             })?;
             let mut permanent_failures = Vec::new();
             for attempt in 0..IMPORT_RETRY_ATTEMPTS {
-                let discovery = Discovery::new(client.clone()).run().await.context("discovering destination Kubernetes APIs")?;
+                let discovery = discover_apis(&client)
+                    .await
+                    .context("discovering destination Kubernetes APIs")?;
                 let mut retry = Vec::new();
                 let mut failures = Vec::new();
                 let mut crd_applied = 0;
@@ -1125,7 +1150,9 @@ impl KubeApi {
             if !pending.is_empty() {
                 bail!("{} Kubernetes objects could not be restored; export retained at {}. Last-attempt failures: {}", pending.len(), export.dir.display(), last_error)
             }
-            let discovery = Discovery::new(client.clone()).run().await.context("discovering destination APIs for reference repair")?;
+            let discovery = discover_apis(&client)
+                .await
+                .context("discovering destination APIs for reference repair")?;
             for object in &export.objects {
                 let mut value: Value = serde_json::from_slice(&fs::read(&object.path)
                     .with_context(|| format!("reading {}", object.path.display()))?)
@@ -2654,7 +2681,7 @@ async fn wait_for_custom_resource_apis(
     }
     while !missing.is_empty() && started.elapsed() < timeout {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        discovery = Discovery::new(client.clone()).run().await.context(
+        discovery = discover_apis(&client).await.context(
             "refreshing destination API discovery for imported CustomResourceDefinitions",
         )?;
         missing = missing_custom_resource_apis(&discovery, expected);
@@ -2864,6 +2891,13 @@ fn object_skip_reason(object: &Value) -> Option<SkipReason> {
         .get("apiVersion")
         .and_then(Value::as_str)
         .and_then(|version| version.split_once('/').map(|(group, _)| group));
+    let name = object.pointer("/metadata/name").and_then(Value::as_str);
+    if api_group == Some("rbac.authorization.k8s.io")
+        && matches!(kind, "Role" | "RoleBinding" | "ClusterRole" | "ClusterRoleBinding")
+        && name.is_some_and(|name| name.starts_with("nodebootstrap:"))
+    {
+        return Some(SkipReason::NodebootstrapRuntimeRbac);
+    }
     if api_group == Some("cilium.io") {
         match kind {
             "CiliumEndpoint" => return Some(SkipReason::CiliumEndpointReconciliation),
@@ -3792,6 +3826,47 @@ current-context: test
             "metadata": {"name": "application-settings", "namespace": "apps"},
             "data": {"setting": "preserved"}
         })));
+    }
+
+    #[test]
+    fn migration_export_regenerates_only_nodebootstrap_owned_rbac() {
+        for kind in ["Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding"] {
+            let object = serde_json::json!({
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": kind,
+                "metadata": {
+                    "name": "nodebootstrap:controller-sa-node-controller",
+                    "namespace": "kube-system"
+                },
+                "rules": [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get"]}]
+            });
+            assert_eq!(
+                object_skip_reason(&object),
+                Some(SkipReason::NodebootstrapRuntimeRbac),
+                "nodebootstrap-owned {kind} must be regenerated by the destination"
+            );
+            assert!(sanitize(object).is_none());
+        }
+
+        for object in [
+            serde_json::json!({
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "ClusterRole",
+                "metadata": {"name": "migration-observer"},
+                "rules": [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get"]}]
+            }),
+            serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {"name": "nodebootstrap:application-data", "namespace": "apps"},
+                "data": {"preserve": "this"}
+            }),
+        ] {
+            assert!(
+                sanitize(object).is_some(),
+                "user RBAC and non-RBAC objects with the reserved-looking name remain migratable"
+            );
+        }
     }
 
     #[test]

@@ -41,7 +41,7 @@ cat > "$temporary_directory/source-objects.jsonl" <<'OBJECTS'
 OBJECTS
 cp "$temporary_directory/source-objects.jsonl" "$temporary_directory/target-objects.jsonl"
 cat >> "$temporary_directory/target-objects.jsonl" <<'OBJECTS'
-{"identity":{"apiGroup":"apps","kind":"Deployment","name":"target-runtime","namespace":"kube-system"},"sha256":"target-only"}
+{"identity":{"apiGroup":"apps","kind":"ReplicaSet","name":"target-runtime-1234","namespace":"kube-system"},"sha256":"target-only","lifecycleClass":"controller-generated-rollout-history"}
 OBJECTS
 NODEMIGRATE_INTEGRATION_LIBRARY=true bash -c '
   source "$1/.github/scripts/nodemigrate-integration.sh"
@@ -56,10 +56,15 @@ grep -Fq 'target-only objects: 1' <<< "$output" || {
     printf '%s\n' "$output" >&2
     exit 1
 }
+grep -Fq 'lifecycle=controller-generated-rollout-history' <<< "$output" || {
+    echo "API object comparison did not identify the generated rollout-history class" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+}
 
 cat > "$temporary_directory/target-objects.jsonl" <<'OBJECTS'
 {"identity":{"apiGroup":"apps","kind":"Deployment","name":"sample","namespace":"test"},"sha256":"changed","fields":{"/spec/replicas":"changed"}}
-{"identity":{"apiGroup":"apps","kind":"Deployment","name":"target-runtime","namespace":"kube-system"},"sha256":"target-only"}
+{"identity":{"apiGroup":"apps","kind":"ReplicaSet","name":"target-runtime-1234","namespace":"kube-system"},"sha256":"target-only","lifecycleClass":"controller-generated-rollout-history"}
 OBJECTS
 if output="$(NODEMIGRATE_INTEGRATION_LIBRARY=true bash -c '
   source "$1/.github/scripts/nodemigrate-integration.sh"
@@ -80,6 +85,41 @@ grep -Fq '/spec/replicas' <<< "$output" || {
 }
 grep -Fq 'target-runtime' <<< "$output" || {
     echo "API object comparison hid target-only identities when source data changed" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+}
+
+cat > "$temporary_directory/target-objects.jsonl" <<'OBJECTS'
+{"identity":{"apiGroup":"apps","kind":"Deployment","name":"unexpected","namespace":"kube-system"},"sha256":"target-only"}
+OBJECTS
+if output="$(NODEMIGRATE_INTEGRATION_LIBRARY=true bash -c '
+  source "$1/.github/scripts/nodemigrate-integration.sh"
+  assert_migratable_api_objects_unchanged "$2/source-objects.jsonl" "$2/target-objects.jsonl" source target
+' _ "$ROOT" "$temporary_directory" 2>&1)"; then
+    echo "API object comparison accepted unclassified target-only state" >&2
+    exit 1
+fi
+grep -Fq 'lack an explicit generated-state classification' <<< "$output" || {
+    echo "API object comparison did not explain why unclassified target-only state failed" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+}
+
+cat > "$temporary_directory/source-objects.jsonl" <<'OBJECTS'
+{"identity":{"apiGroup":"apiextensions.k8s.io","kind":"CustomResourceDefinition","name":"widgets.example.io","namespace":""},"sha256":"source","fields":{"/spec/group":"source"},"crdSpec":{"group":"example.io"}}
+OBJECTS
+cat > "$temporary_directory/target-objects.jsonl" <<'OBJECTS'
+{"identity":{"apiGroup":"apiextensions.k8s.io","kind":"CustomResourceDefinition","name":"widgets.example.io","namespace":""},"sha256":"target","fields":{"/spec/group":"target"},"crdSpec":{"group":"changed.example.io"}}
+OBJECTS
+if output="$(NODEMIGRATE_INTEGRATION_LIBRARY=true bash -c '
+  source "$1/.github/scripts/nodemigrate-integration.sh"
+  assert_migratable_api_objects_unchanged "$2/source-objects.jsonl" "$2/target-objects.jsonl" source returned
+' _ "$ROOT" "$temporary_directory" 2>&1)"; then
+    echo "API object comparison accepted a changed CRD schema" >&2
+    exit 1
+fi
+grep -Fq 'CRD spec diff for' <<< "$output" && grep -Fq 'changed.example.io' <<< "$output" || {
+    echo "API object comparison did not report the changed CRD schema" >&2
     printf '%s\n' "$output" >&2
     exit 1
 }

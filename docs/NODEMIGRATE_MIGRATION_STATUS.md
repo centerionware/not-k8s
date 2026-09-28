@@ -10,6 +10,27 @@ compile or unit test does not mark a real migration path as verified.
 ## Latest integration result
 
 Branch-runtime run
+[36385002094](https://github.com/centerionware/not-k8s/actions/runs/36385002094)
+at SHA `9c7897f0d917e51b9e3d8e81ee6a843e3332c8f2` failed before completing
+either full round trip. All three jobs built `nodemigrate` and branch
+`notk8s --features cri`, compiling the combined runtime's packaged component
+crates; targeted nodemigrate quick-check passed at
+[36384989298](https://github.com/centerionware/not-k8s/actions/runs/36384989298).
+The Docker source fixture exposed a static hostPath PV without node affinity;
+its directory existed only on cp-1, so the PV is now pinned to that node. K3s
+passed retained API readiness but timed out on repeated per-group discovery
+requests while Cilium was unhealthy; aggregated discovery is now attempted
+first, with a per-group fallback for compatibility. Upstream completed both
+migration directions and returned-stage checks for 119 listable APIs,
+Ingress/Gateway, PVC data, StatefulSet PVs, CronJob/Job, RBAC, and certificates.
+Strict parity then found changed Traefik CRDs, destination-generated
+ReplicaSets/ControllerRevisions, and `nodebootstrap:` RBAC absent from the
+source. These differences are unresolved, so the full round-trip gate remains
+red. Logs are in `/tmp/nodemigrate-{docker,k3s,kubernetes}-36385002094.log`;
+artifacts are in `/tmp/nodemigrate-artifacts-36385002094/`. No general build or
+full e2e workflow was dispatched.
+
+Previous branch-runtime run
 [36381052266](https://github.com/centerionware/not-k8s/actions/runs/36381052266)
 at SHA `74352dbd90ffa3df71ff5adb208adf93c9dad1f7` failed all three runtime
 jobs after both binaries built successfully. Targeted nodemigrate unit tests

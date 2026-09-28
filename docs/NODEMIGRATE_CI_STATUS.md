@@ -8,6 +8,28 @@ is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
 Latest branch-runtime run
+[36385002094](https://github.com/centerionware/not-k8s/actions/runs/36385002094)
+at SHA `9c7897f0d917e51b9e3d8e81ee6a843e3332c8f2` failed after the runtime
+builds completed. All three migration jobs built `nodemigrate` and branch
+`notk8s --features cri`; compiling the combined runtime included the packaged
+component crates from this branch. The dedicated `nodemigrate` quick-check
+passed at the same SHA in
+[36384989298](https://github.com/centerionware/not-k8s/actions/runs/36384989298).
+The Docker preflight created source PVs but its static hostPath fixture could
+schedule on a different node than the directory owner; the fixture now pins
+the PV to `cp-1`. K3s passed direct retained-API readiness but timed out
+repeatedly on per-group discovery while Cilium was unhealthy; discovery now
+tries aggregated discovery before its compatibility fallback. Upstream passed
+return-stage workload/storage checks, including PVC data and all 119 listable
+API resources, but strict parity found Traefik CRD content changes plus
+destination-generated workload revisions and `nodebootstrap:` RBAC. Those
+differences still need diagnosis; this run did not pass either full round-trip
+gate. Logs are saved under `/tmp/nodemigrate-{docker,k3s,kubernetes}-
+36385002094.log`; downloaded artifacts are in
+`/tmp/nodemigrate-artifacts-36385002094/`. No general build or full e2e
+workflow was dispatched.
+
+Previous branch-runtime run
 [36381052266](https://github.com/centerionware/not-k8s/actions/runs/36381052266)
 at SHA `74352dbd90ffa3df71ff5adb208adf93c9dad1f7` is terminal failure. The
 targeted `nodemigrate` quick-check passed at

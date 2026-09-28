@@ -179,6 +179,7 @@ node cp-1 env PKI_DIR="$PKI_DIR" bash -ec '
 
 echo "Installing and validating the source fixture on cp-1"
 node cp-1 env NODEMIGRATE_HOSTPATH_SETUP="$NODEMIGRATE_HOSTPATH_SETUP" \
+    NODEMIGRATE_STATIC_NODE=cp-1 \
     NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" \
     bash "$NODE_ROOT/.github/scripts/nodemigrate-five-node-fixture.sh" source
 

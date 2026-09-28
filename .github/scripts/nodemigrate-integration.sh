@@ -2840,16 +2840,38 @@ walk(obj, "", fields)
 version = obj.get("apiVersion", "")
 group = version.split("/", 1)[0] if "/" in version else ""
 metadata = obj.get("metadata") or {}
+kind = obj.get("kind")
+name = metadata.get("name", "")
+labels = metadata.get("labels") or {}
+owners = metadata.get("ownerReferences") or []
+lifecycle_class = None
+if (
+    group == "rbac.authorization.k8s.io"
+    and kind in {"Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding"}
+    and name.startswith("nodebootstrap:")
+):
+    lifecycle_class = "nodebootstrap-runtime-rbac"
+elif kind == "EndpointSlice" and labels.get("endpointslice.kubernetes.io/managed-by") == "nodecontroller":
+    lifecycle_class = "nodecontroller-regenerated-endpoints"
+elif kind in {"ReplicaSet", "ControllerRevision"} and any(
+    owner.get("controller") is True
+    and owner.get("kind") in {"Deployment", "StatefulSet", "DaemonSet"}
+    for owner in owners
+):
+    lifecycle_class = "controller-generated-rollout-history"
 row = {
     "identity": {
         "apiGroup": group,
-        "kind": obj.get("kind"),
+        "kind": kind,
         "namespace": metadata.get("namespace", ""),
-        "name": metadata.get("name"),
+        "name": name,
     },
     "sha256": hashlib.sha256(raw.encode()).hexdigest(),
     "fields": fields,
+    "lifecycleClass": lifecycle_class,
 }
+if kind == "CustomResourceDefinition":
+    row["crdSpec"] = obj.get("spec")
 if (
     obj.get("kind") == "StatefulSet"
     and metadata.get("namespace") == "default"
@@ -2928,13 +2950,22 @@ changed = sorted(
 )
 target_only = sorted(after.keys() - before.keys())
 print(f"Target-only objects: {len(target_only)}")
+unclassified = []
 if target_only:
     print("Target-only API object identities:")
-    print("\n".join(target_only))
-if missing or changed:
+    for identity in target_only:
+        row = after[identity]
+        lifecycle_class = row.get("lifecycleClass")
+        print(f"{identity} lifecycle={lifecycle_class or 'UNCLASSIFIED'}")
+        if lifecycle_class is None:
+            unclassified.append(identity)
+if missing or changed or unclassified:
     if missing:
         print("Source API objects missing on target:", file=sys.stderr)
         print("\n".join(missing), file=sys.stderr)
+    if unclassified:
+        print("Target-only API objects lack an explicit generated-state classification:", file=sys.stderr)
+        print("\n".join(unclassified), file=sys.stderr)
     for identity in changed:
         source_text = [f"sha256: {before[identity]['sha256']}\n"]
         target_text = [f"sha256: {after[identity]['sha256']}\n"]
@@ -2951,6 +2982,20 @@ if missing or changed:
         if field_paths:
             print(f"Changed normalized field paths for {identity}:", file=sys.stderr)
             print("\n".join(field_paths), file=sys.stderr)
+        source_crd_spec = before[identity].get("crdSpec")
+        target_crd_spec = after[identity].get("crdSpec")
+        if source_crd_spec is not None and target_crd_spec is not None:
+            source_text = json.dumps(source_crd_spec, sort_keys=True, indent=2).splitlines(keepends=True)
+            target_text = json.dumps(target_crd_spec, sort_keys=True, indent=2).splitlines(keepends=True)
+            spec_diff = list(difflib.unified_diff(
+                source_text,
+                target_text,
+                fromfile=f"source CRD spec {identity}",
+                tofile=f"target CRD spec {identity}",
+                lineterm="\n",
+            ))
+            print(f"CRD spec diff for {identity} (first 300 lines):", file=sys.stderr)
+            sys.stderr.writelines(spec_diff[:300])
         if "csiVolumeDiagnostics" in before[identity] or "csiVolumeDiagnostics" in after[identity]:
             print(f"CSI test volume values for {identity}:", file=sys.stderr)
             print("source:", file=sys.stderr)
@@ -3053,11 +3098,17 @@ canonicalize_api_object() {
 assert_round_trip_unchanged() {
     local initial="$CHECKPOINT_DIR/source"
     local returned="$CHECKPOINT_DIR/returned"
+    assert_migratable_api_objects_unchanged \
+        "$initial/migratable-objects.jsonl" "$returned/migratable-objects.jsonl" source returned
     assert_discovered_api_resources_preserved \
         "$initial/api-resources.txt" "$returned/api-resources.txt" returned
-    if ! cmp -s "$initial/semantic-state.json" "$returned/semantic-state.json"; then
+    jq -S 'del(.migratableObjects)' "$initial/semantic-state.json" \
+        > "$initial/round-trip-semantic-state.json"
+    jq -S 'del(.migratableObjects)' "$returned/semantic-state.json" \
+        > "$returned/round-trip-semantic-state.json"
+    if ! cmp -s "$initial/round-trip-semantic-state.json" "$returned/round-trip-semantic-state.json"; then
         echo "Returned Kubernetes semantic state differs from the source checkpoint" >&2
-        diff -u "$initial/semantic-state.json" "$returned/semantic-state.json" || true
+        diff -u "$initial/round-trip-semantic-state.json" "$returned/round-trip-semantic-state.json" || true
         return 1
     fi
     if ! cmp -s "$initial/certificate-secret.sha256" "$returned/certificate-secret.sha256"; then

@@ -4,6 +4,35 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **Round-trip inventory needed to separate preserved source state from
+  regenerated target state.** Run
+  [36385002094](https://github.com/centerionware/not-k8s/actions/runs/36385002094)
+  at SHA `9c7897f0` showed 526 source API objects preserved at nodestore and 82
+  target-only records: nodebootstrap-owned RBAC, nodecontroller-generated
+  EndpointSlices, and controller-owned ReplicaSets. The returned semantic
+  summary then failed on those additions without explicitly proving every
+  original object returned unchanged. The check now compares source objects
+  against returned objects, requires each target-only object to have an exact
+  runtime-generation classification, and reports CRD schema diffs. This keeps
+  original ReplicaSet/ControllerRevision history and ordinary RBAC under the
+  source-object parity check. Targeted script checks pass; migration CI is
+  pending.
+
+- **Do not migrate nodebootstrap's runtime-owned RBAC back into the retained
+  source.** The same run found `nodebootstrap:` Roles, RoleBindings,
+  ClusterRoles, and ClusterRoleBindings added by the destination runtime.
+  Export now skips only those four RBAC kinds with the reserved prefix, because
+  nodebootstrap provisions them for the active runtime. A focused regression
+  checks that ordinary user RBAC and non-RBAC resources with similar names
+  remain migratable. CI compilation and migration validation are pending.
+
+- **K3s API discovery and five-node hostPath fixture fixes are pending
+  runtime verification.** In run 36385002094 K3s passed direct retained API
+  readiness but its full per-group discovery probes timed out while Cilium was
+  unhealthy; the utility now tries aggregated discovery before fallback. The
+  five-node fixture's static hostPath PV is now constrained to `cp-1`, where
+  setup created its data directory. Neither follow-up has run in migration CI.
+
 - **`nodemigrate`: stale generated EndpointSlices broke returned Traefik
   traffic.** In run
   [36381052266](https://github.com/centerionware/not-k8s/actions/runs/36381052266),
