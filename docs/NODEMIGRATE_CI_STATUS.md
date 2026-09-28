@@ -19,6 +19,19 @@ retained-API readiness or either round trip. It did not enable general build or
 e2e workflows.
 
 Latest branch-runtime run
+[36366505575](https://github.com/centerionware/not-k8s/actions/runs/36366505575)
+at SHA `50b2805f` passed nodemigrate and branch-runtime builds; Docker
+kubeadm/Cilium preflight passed. K3s passed direct core Namespace readiness,
+then all 20 full destination-discovery probes timed out within the bounded
+five-minute retry; the post-failure capture showed Cilium agent and Envoy
+unhealthy. The upstream lane passed API readiness after one
+connection-refused attempt, but the cert-manager webhook ClusterIP timed out
+while importing its CertificateRequest. Both migration lanes failed and rolled
+back. Focused nodemigrate quick-check passed at code SHA `801b3275` in
+[36366260390](https://github.com/centerionware/not-k8s/actions/runs/36366260390).
+Artifacts are in `/tmp/nodemigrate-36366505575/`.
+
+Previous branch-runtime run
 [36363999391](https://github.com/centerionware/not-k8s/actions/runs/36363999391)
 at SHA `27b4152b` passed nodemigrate and branch-runtime builds; Docker
 kubeadm/Cilium preflight passed. The K3s return passed retained API readiness

@@ -12,16 +12,31 @@ separate living documents below.
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Failed reverse cutovers now stop the partial retained target, restore local PV payloads, and restart the prior nodestore stack. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The required fixture extends existing coverage with ConfigMaps, CRDs/custom resources, Deployments, StatefulSets, DaemonSets, Jobs/CronJobs, Helm chart releases and managed objects, Ingress/Gateway API, RBAC, networking, storage, admission, and every listable discovered resource. Normalized source object content remains a strict equality gate; destination-only runtime identities are now reported separately and do not mask missing or changed source objects. The latest upstream lane still has unresolved source-identity changes including CoreDNS, system RBAC, and system PriorityClasses. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | PDB-aware eviction and PV reclaim fixes remain tracked; migration must preserve source PVs, PVCs, backing storage, and data. Direct Namespace readiness passed live in run 36363999391. Bounded destination API discovery retry is implemented, and focused nodemigrate quick-check passed at SHA 801b3275; live validation is pending. Upstream API import still cannot reach its cert-manager webhook, and post-rollback workload exec remains affected by exited CRI containers. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | PDB-aware eviction and PV reclaim fixes remain tracked; migration must preserve source PVs, PVCs, backing storage, and data. Direct Namespace readiness passed live in runs 36363999391 and 36366505575, so the old hour-long readiness hang is fixed. Full destination discovery still times out in five minutes; the post-failure diagnostic capture shows Cilium agent/Envoy unhealthy. Upstream cannot reach its cert-manager webhook. These Cilium/discovery issues are tracked separately from the fixed readiness hang. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement and new control-plane joins | Replacement ordering and Raft learner catch-up guard implemented; a new joined control plane is now promoted after Kubernetes Node readiness. Focused validation for this new-member path is pending; runtime scenario remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Run [36363999391](https://github.com/centerionware/not-k8s/actions/runs/36363999391) verified K3s retained API readiness now passes; it then failed when destination API discovery returned HTTP 503. The bounded discovery retry passed focused check [36366260390](https://github.com/centerionware/not-k8s/actions/runs/36366260390); live revalidation is pending. Upstream still cannot reach its cert-manager webhook during import. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Run [36366505575](https://github.com/centerionware/not-k8s/actions/runs/36366505575) confirmed retained API readiness passes, but all bounded full-discovery probes time out; diagnostics show Cilium agent/Envoy unhealthy. Upstream cannot reach the cert-manager webhook during import. Focused nodemigrate quick-check passed in [36366260390](https://github.com/centerionware/not-k8s/actions/runs/36366260390); migration round-trip gates remain red. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory round-trip gates remain not passed: one-node K3s+Cilium and 3-control-plane + 2-worker upstream Kubernetes with Cilium and joined replacement. The five-node Docker preflight in run 36335580680 passed, but it did not migrate the five-node cluster. Neither round trip has passed all source/target/return parity and behavior checks. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Run [36355485146](https://github.com/centerionware/not-k8s/actions/runs/36355485146) passed the five-node Cilium/KPR setup and control-plane-loss recovery. Its migration fixture then failed because the hostpath setup script was missing after `cp-1` restart; the script is now copied after restart. Full five-node migration remains unverified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification
+
+- Branch-runtime run
+  [36366505575](https://github.com/centerionware/not-k8s/actions/runs/36366505575)
+  at SHA `50b2805f` passed nodemigrate/branch-runtime builds and Docker
+  kubeadm preflight. K3s passed direct Namespace readiness but all 20 bounded
+  destination API discovery probes timed out over five minutes; post-failure
+  diagnostics show Cilium agent and Envoy unhealthy. Upstream recovered API
+  readiness after one connection-refused probe, then failed applying
+  `CertificateRequest migration-test-1` because the cert-manager webhook
+  ClusterIP timed out. Both lanes rolled back; the downstream workload check
+  still found an exited CRI container. The focused nodemigrate quick-check
+  passed at code SHA `801b3275` in
+  [36366260390](https://github.com/centerionware/not-k8s/actions/runs/36366260390).
+  Full e2e and general build workflows were not run. Artifacts are in
+  `/tmp/nodemigrate-36366505575/`.
 
 - Branch-runtime run
   [36363999391](https://github.com/centerionware/not-k8s/actions/runs/36363999391)

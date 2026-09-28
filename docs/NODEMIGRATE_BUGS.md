@@ -117,10 +117,14 @@ Last updated: 2026-09-28
   `nodemigrate` quick-check passed at SHA `801b3275` in
   [run 36366260390](https://github.com/centerionware/not-k8s/actions/runs/36366260390).
   The first quick-check at SHA `78d2869b` found a missing delay constant; it
-  was added before the passing rerun. Live return verification is pending. The
-  upstream lane in that run passed discovery and CRD application but could not
-  reach the cert-manager webhook while importing a CertificateRequest; that
-  workload-networking failure remains separate.
+  was added before the passing rerun. Live run
+  [36366505575](https://github.com/centerionware/not-k8s/actions/runs/36366505575)
+  confirms the direct readiness fix but all 20 bounded full-discovery probes
+  timed out. The captured target state had Cilium agent and Envoy unhealthy;
+  upstream again could not reach the cert-manager webhook. The bounded retry
+  prevents another indefinite wait but does not fix destination Cilium
+  recovery or make API discovery complete. Track Cilium/service datapath
+  recovery as the current blocker.
 
 - **`nodemigrate`: later cluster nodes reused the first node's protected
   export.** Forward and staged reverse control-plane paths loaded
