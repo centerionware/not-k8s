@@ -35,9 +35,10 @@ use crate::{
 // are re-registered from the protected scheduling snapshot, and
 // VolumeAttachments must be recreated by the destination CSI attacher.
 // Leases and endpoint objects need object-level checks because users and
-// add-ons can own durable instances of those kinds. CiliumEndpoint and
-// CiliumNode records are Cilium-managed datapath/IPAM state, not workload
-// configuration; Cilium rebuilds them from the destination Pods and Nodes.
+// add-ons can own durable instances of those kinds. CiliumEndpoint,
+// CiliumIdentity, and CiliumNode records are Cilium-managed datapath,
+// identity-allocation, and IPAM state; Cilium rebuilds them from destination
+// Pods and Nodes while declarative Cilium policies remain migratable.
 const SKIP_KINDS: &[&str] = &[
     "ComponentStatus",
     "Event",
@@ -61,6 +62,7 @@ enum SkipReason {
     StaticPodMirror,
     ControllerOwnedPod,
     CiliumEndpointReconciliation,
+    CiliumIdentityReconciliation,
     CiliumNodeReconciliation,
 }
 
@@ -94,6 +96,9 @@ impl SkipReason {
             Self::ControllerOwnedPod => "the durable workload controller recreates this pod",
             Self::CiliumEndpointReconciliation => {
                 "Cilium regenerates this pod's datapath identity and endpoint from the destination runtime"
+            }
+            Self::CiliumIdentityReconciliation => {
+                "Cilium reallocates security identities from destination endpoint labels"
             }
             Self::CiliumNodeReconciliation => {
                 "Cilium reconciles node addressing and IPAM state for the destination cluster"
@@ -2745,6 +2750,7 @@ fn object_skip_reason(object: &Value) -> Option<SkipReason> {
     if api_group == Some("cilium.io") {
         match kind {
             "CiliumEndpoint" => return Some(SkipReason::CiliumEndpointReconciliation),
+            "CiliumIdentity" => return Some(SkipReason::CiliumIdentityReconciliation),
             "CiliumNode" => return Some(SkipReason::CiliumNodeReconciliation),
             _ => {}
         }
@@ -3659,6 +3665,14 @@ current-context: test
                     "status": {"id": 1234, "identity": {"id": 1234}}
                 }),
                 SkipReason::CiliumEndpointReconciliation,
+            ),
+            (
+                serde_json::json!({
+                    "apiVersion": "cilium.io/v2",
+                    "kind": "CiliumIdentity",
+                    "metadata": {"name": "12345"}
+                }),
+                SkipReason::CiliumIdentityReconciliation,
             ),
             (
                 serde_json::json!({

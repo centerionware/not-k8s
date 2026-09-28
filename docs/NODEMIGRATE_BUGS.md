@@ -40,6 +40,19 @@ Last updated: 2026-09-28
   K3s API timeout cause remains unconfirmed; this is separate from the fixed
   selector compilation issue and needs a focused return-path fix.
 
+- **`nodemigrate`: Cilium identity records conflict with destination allocation.**
+  In branch-runtime run
+  [36366505575](https://github.com/centerionware/not-k8s/actions/runs/36366505575),
+  the exporter selected 21 source and later 27 destination `CiliumIdentity`
+  objects. At `01:50:51Z`, the Cilium agent could not recreate the
+  metrics-server identity because that identity object already existed. The
+  parity harness already classifies `CiliumIdentity` as destination-rebuilt
+  runtime state; the exporter now does the same while retaining Cilium policy
+  objects. A focused regression covers the classification. Migration runtime
+  confirmation is pending. This evidence shows an identity allocator conflict;
+  it does not yet prove that it caused the later API discovery timeout or
+  failed Service probes.
+
 ## Current fixture finding
 
 - **Branch runtime runs 36352851628 and 36355485146 exposed return-path defects.**

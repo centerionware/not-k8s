@@ -280,10 +280,11 @@ These task-specific rules override conflicting general build/e2e/test
 instructions in `AGENTS.md` for nodemigrate work:
 
 - The coordinated `v0.8.1` regular runtime and standalone nodemigrate release
-  will be based on this nodemigrate branch and its accepted fixes. Test the
-  branch-built `notk8s` components that form the migration target; the released
-  `v0.8.0` runtime is an optional regression baseline, not a required or
-  exclusive test target.
+  will be based on this nodemigrate branch and its accepted fixes. The primary
+  migration test target is the `notk8s` runtime compiled from this branch, so
+  fixes made here are included in migration testing. Testing is not limited to
+  the released `v0.8.0` runtime; `v0.8.0` is an optional regression baseline
+  and must not block branch-fix validation.
 - Compile the specific changed components required by the migration test in
   the dedicated CI workflow. This includes `nodemigrate` and the branch runtime
   components exercised by the scenario. These test builds are authorized and

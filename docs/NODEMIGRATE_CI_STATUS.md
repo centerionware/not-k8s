@@ -23,8 +23,17 @@ Latest branch-runtime run
 at SHA `50b2805f` passed nodemigrate and branch-runtime builds; Docker
 kubeadm/Cilium preflight passed. K3s passed direct core Namespace readiness,
 then all 20 full destination-discovery probes timed out within the bounded
-five-minute retry; the post-failure capture showed Cilium agent and Envoy
-unhealthy. The upstream lane passed API readiness after one
+five-minute retry. At the `01:54:12Z` target-state snapshot, Cilium agent,
+Envoy, and cert-manager Pods reported Ready, but probes to the cert-manager
+webhook ClusterIP and its ready endpoint failed. A later `01:59:17Z` snapshot
+showed Cilium agent/Envoy and cert-manager Pods unhealthy after recovery or
+rollback activity; that later state does not establish the cause of the
+discovery timeouts. During the preceding nodestore stage, Cilium failed to
+recreate a metrics-server identity because the imported `CiliumIdentity` with
+that ID already existed. The exporter had selected 27 CiliumIdentity objects
+for migration even though the fixture's parity comparison treats these as
+destination-rebuilt runtime state. The exporter now follows that contract;
+runtime validation is pending. The upstream lane passed API readiness after one
 connection-refused attempt, but the cert-manager webhook ClusterIP timed out
 while importing its CertificateRequest. Both migration lanes failed and rolled
 back. Focused nodemigrate quick-check passed at code SHA `801b3275` in
