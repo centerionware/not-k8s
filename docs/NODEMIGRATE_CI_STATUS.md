@@ -7,6 +7,17 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+Latest focused nodemigrate verification
+[36481686171](https://github.com/centerionware/not-k8s/actions/runs/36481686171)
+passed at SHA `eb650b223a0503e135d4ff50b317d159b39bb2b4`. It tests the
+replacement-readiness invariant: when return migration deletes an existing
+same-name Node, it waits for a Ready Node with a different UID. The earlier
+run [36481385699](https://github.com/centerionware/not-k8s/actions/runs/36481385699)
+at SHA `ee35bfe37e6b358cfe80e8970c7823337e44829c` failed compilation because
+the prior Node state was moved before its UID was saved; the ownership issue
+was fixed in `eb650b22`. This CI covers utility tests only, not the K3s runtime
+removal or round trip.
+
 Latest focused component verification
 [36479715060](https://github.com/centerionware/not-k8s/actions/runs/36479715060)
 at SHA `e253e25cf003ec04f8a59bb9e67988e748732135` passed `nodeapiserver` and

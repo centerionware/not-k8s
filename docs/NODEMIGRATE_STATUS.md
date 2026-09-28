@@ -27,6 +27,13 @@ remain unresolved. No migration gate passed. Full evidence is recorded in the
 [CI status](NODEMIGRATE_CI_STATUS.md), with unresolved findings in the
 [bug tracker](NODEMIGRATE_BUGS.md).
 
+The return path now rejects the prior Ready Node UID after replacing an
+existing same-name Node. Focused `nodemigrate` check
+[36481686171](https://github.com/centerionware/not-k8s/actions/runs/36481686171)
+passed at SHA `eb650b223a0503e135d4ff50b317d159b39bb2b4`. This protects against
+accepting a stale object, but K3s later emitted `RemovingNode`; the reason for
+that runtime behavior remains unresolved and migration reruns stay paused.
+
 Latest branch migration run
 [36459506591](https://github.com/centerionware/not-k8s/actions/runs/36459506591)
 completed at SHA `da02155289d2bfdf02cbe32d0885b941f5f8542a`. Its builds of

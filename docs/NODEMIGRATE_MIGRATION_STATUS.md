@@ -29,6 +29,11 @@ at SHA `e253e25cf003ec04f8a59bb9e67988e748732135`; migration parity remains
 unverified. K3s Node loss is still
 unresolved. Do not dispatch another migration run until that failure is
 understood and fixed.
+The return path also now requires the replacement Node to have a new UID and
+Ready status; focused nodemigrate check
+[36481686171](https://github.com/centerionware/not-k8s/actions/runs/36481686171)
+passed at SHA `eb650b223a0503e135d4ff50b317d159b39bb2b4`. This guard is not a
+runtime fix for the observed K3s controller removal; that cause remains open.
 See the [CI status](NODEMIGRATE_CI_STATUS.md) and
 [bug tracker](NODEMIGRATE_BUGS.md).
 

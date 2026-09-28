@@ -18,6 +18,16 @@ Last updated: 2026-09-28
   mutations and prints that audit file on failure; this diagnostic change has
   not yet been exercised by a new migration run. Keep migration retries paused
   until this failure is understood and fixed.
+  The captured event list also contains K3s `RemovingNode` events and repeated
+  `Starting kubelet` events. That confirms the controller-removal path was
+  active, but does not establish why the Node stopped renewing or whether a
+  direct DELETE request preceded it. The return path now requires a new Ready
+  UID after it replaces an existing Node, preventing the old Ready object from
+  satisfying cutover. Focused check
+  [36481686171](https://github.com/centerionware/not-k8s/actions/runs/36481686171)
+  passed at SHA `eb650b223a0503e135d4ff50b317d159b39bb2b4`. This guard has not
+  been exercised in a migration run and does not close the later Node-loss
+  failure.
 - **Empty CronJob status triggers repeated no-op writes.** The same K3s log
   records `system:serviceaccount:kube-system:cronjob-controller` patching the
   unchanged `migration-cron` status every few milliseconds. When a missing
