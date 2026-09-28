@@ -10,17 +10,24 @@ compile or unit test does not mark a real migration path as verified.
 ## Latest integration result
 
 Branch-runtime run
-[36397547121](https://github.com/centerionware/not-k8s/actions/runs/36397547121)
-at SHA `fa8c6ec97c3a3afecd1162304bcecc0694f19a1d` is terminal failure. All
-three lanes built nodemigrate and the combined branch `notk8s --features cri`;
-focused nodemigrate crate tests passed at
+[36402381606](https://github.com/centerionware/not-k8s/actions/runs/36402381606)
+is still running at tested SHA `8ce9b2691f0c639f10017f55edfa23fd094ad500`.
+The k3s and Kubernetes lanes have built nodemigrate and combined branch
+`notk8s --features cri`; the five-node lane has built nodemigrate, combined
+`notk8s`, and its node image. Runtime migration and probe steps remain active.
+The corrected focused nodeapiserver check passed at SHA `4c718dc0` in
+[36403498362](https://github.com/centerionware/not-k8s/actions/runs/36403498362).
+The preceding completed branch-runtime failure at SHA
+`fa8c6ec97c3a3afecd1162304bcecc0694f19a1d` was run at
+[36397547121](https://github.com/centerionware/not-k8s/actions/runs/36397547121).
+That run's focused nodemigrate crate tests passed at
 [36397531245](https://github.com/centerionware/not-k8s/actions/runs/36397531245).
 Upstream completed its return workload and storage checks, then strict
 round-trip parity again found two Traefik CRD `priority.maximum` values change
 from `9223372036854775000` to `9223372036854776000`. A nodeapiserver CRD
-double round-trip check ran, exposing an incorrect test expectation about the
-original integer-shaped JSON spelling; it now checks the protobuf double's
-numeric value. K3s completed API import
+double round-trip check exposed an incorrect assertion about the original
+integer-shaped JSON spelling; it now checks the protobuf double's numeric
+value and passed in the later quick-check. K3s completed API import
 and returned the replacement Node to Ready, but failed because the CSI
 registrar had not yet recreated its `CSINode`. `nodemigrate` now waits for up
 to 60 seconds for that specific object before repairing its owner reference.

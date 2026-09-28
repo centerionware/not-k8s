@@ -8,11 +8,20 @@ is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
 Latest branch-runtime run
-[36397547121](https://github.com/centerionware/not-k8s/actions/runs/36397547121)
-at SHA `fa8c6ec97c3a3afecd1162304bcecc0694f19a1d` is terminal failure. All
-three lanes built nodemigrate and combined branch `notk8s --features cri`,
-compiling the packaged runtime component crates. Focused nodemigrate crate
-tests passed at
+[36402381606](https://github.com/centerionware/not-k8s/actions/runs/36402381606)
+is still running at tested SHA `8ce9b2691f0c639f10017f55edfa23fd094ad500`.
+Its k3s and Kubernetes jobs have built nodemigrate and combined branch
+`notk8s --features cri`; the five-node job has built nodemigrate, combined
+`notk8s`, and the node image. Runtime migration and probe steps remain active.
+The corrected focused nodeapiserver quick-check passed at SHA `4c718dc0` in
+[36403498362](https://github.com/centerionware/not-k8s/actions/runs/36403498362)
+and includes the CRD protobuf-double round-trip regression. The earlier
+quick-check at SHA `8ce9b269` failed because its assertion required an
+integer-shaped JSON spelling from a protobuf `double`; it now compares the
+numeric `f64` value. The previous completed branch-runtime failure at SHA
+`fa8c6ec97c3a3afecd1162304bcecc0694f19a1d` was run at
+[36397547121](https://github.com/centerionware/not-k8s/actions/runs/36397547121).
+That run's focused nodemigrate crate tests passed at
 [36397531245](https://github.com/centerionware/not-k8s/actions/runs/36397531245);
 branch workflow validation passed at
 [36397531246](https://github.com/centerionware/not-k8s/actions/runs/36397531246);
@@ -28,15 +37,10 @@ five-node fixture reached workload setup, where a single seed Pod was
 unschedulable because its static hostPath PV targets `cp-1` and its CSI PV
 targets `worker-2`. Seeding and data verification now use separate Pods for
 each volume. The same diagnostic also found CoreDNS CrashLoopBackOff, which
-needs separate follow-up. A focused nodeapiserver CRD double round-trip test
-ran in quick-check `36402378386`; it confirmed `JSONSchemaProps.maximum` is
-returned as a floating-point JSON number, as required by its protobuf
-`double` field. Its first assertion incorrectly required the original
-integer-shaped JSON spelling. It now checks the round-tripped numeric `f64`
-value, pending another quick-check. Complete migration logs are saved at
-`/tmp/nodemigrate-36397547121.log`; the quick-check log is at
-`/tmp/nodemigrate-quickcheck-36402378386.log`. No regular build or full e2e was
-dispatched.
+needs separate follow-up. The earlier quick-check log is at
+`/tmp/nodemigrate-quickcheck-36402378386.log`. Complete migration logs for
+run `36397547121` are saved at `/tmp/nodemigrate-36397547121.log`. No regular
+build or full e2e was dispatched.
 
 Previous validation attempt at SHA `f8cc4777d8356e70a91752f959839b1e3f549583`
 failed before running tests: `nodemigrate` and each migration lane hit the same
