@@ -277,6 +277,26 @@ fn node_scheduling_patch(state: &NodeSchedulingState) -> Value {
     patch
 }
 
+fn node_is_ready(node: &DynamicObject) -> bool {
+    node.data
+        .pointer("/status/conditions")
+        .and_then(Value::as_array)
+        .is_some_and(|conditions| {
+            conditions.iter().any(|condition| {
+                condition.get("type").and_then(Value::as_str) == Some("Ready")
+                    && condition.get("status").and_then(Value::as_str) == Some("True")
+            })
+        })
+}
+
+fn node_is_ready_replacement(node: &DynamicObject, previous_uid: &str) -> bool {
+    node.metadata
+        .uid
+        .as_deref()
+        .is_some_and(|uid| uid != previous_uid)
+        && node_is_ready(node)
+}
+
 impl KubeApi {
     pub fn source(installation: &Installation) -> Result<Self> {
         let kubeconfig = std::env::var_os("NODEMIGRATE_SOURCE_KUBECONFIG")
@@ -429,16 +449,29 @@ impl KubeApi {
             else {
                 return Ok(false);
             };
-            Ok(node
-                .data
-                .pointer("/status/conditions")
-                .and_then(Value::as_array)
-                .is_some_and(|conditions| {
-                    conditions.iter().any(|condition| {
-                        condition.get("type").and_then(Value::as_str) == Some("Ready")
-                            && condition.get("status").and_then(Value::as_str) == Some("True")
-                    })
-                }))
+            Ok(node_is_ready(&node))
+        })
+    }
+
+    pub fn replacement_node_ready(&self, name: &str, previous_uid: &str) -> Result<bool> {
+        let (runtime, client) = self.connected()?;
+        runtime.block_on(async {
+            let discovery = wait_for_discovery(&client).await?;
+            let (resource, capabilities) = find_resource(&discovery, "Node", "v1")
+                .context("Kubernetes API does not expose Node")?;
+            ensure!(
+                capabilities.supports_operation(verbs::GET),
+                "Kubernetes API cannot read nodes"
+            );
+            let api: Api<DynamicObject> = Api::all_with(client, &resource);
+            let Some(node) = api
+                .get_opt(name)
+                .await
+                .context("checking replacement node registration")?
+            else {
+                return Ok(false);
+            };
+            Ok(node_is_ready_replacement(&node, previous_uid))
         })
     }
 
@@ -3291,11 +3324,10 @@ fn export_directory() -> Result<PathBuf> {
 mod tests {
     use super::{
         can_preserve_existing_crd, crd_metadata_merge_patch, crd_schema_matches,
-        custom_resource_gvks, is_source_custom_resource,
-        kubeconfig_root_ca,
-        namespace_ca_bundle_matches, node_scheduling_patch, object_rank, object_skip_reason,
-        object_type_label, parse_cilium_kube_proxy_replacement, persistent_host_paths,
-        pod_status_is_terminal_or_exited, prepare_initial_import_object,
+        custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
+        namespace_ca_bundle_matches, node_is_ready_replacement, node_scheduling_patch, object_rank,
+        object_skip_reason, object_type_label, parse_cilium_kube_proxy_replacement,
+        persistent_host_paths, pod_status_is_terminal_or_exited, prepare_initial_import_object,
         preserve_discovered_type_meta, remapped_node_owner_references, restore_cni_path_backups,
         retryable_import_error, same_group_kind, sanitize, service_account_token_secret_patch,
         service_account_token_secret_value, skip_kind_reason, skip_object,
@@ -4821,6 +4853,29 @@ current-context: test
             "operator-value"
         );
         assert_eq!(patch["spec"]["unschedulable"], true);
+    }
+
+    #[test]
+    fn replacement_node_must_have_a_new_uid_and_be_ready() {
+        let old_ready: DynamicObject = serde_json::from_value(serde_json::json!({
+            "metadata": {"uid": "old-node-uid"},
+            "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+        }))
+        .unwrap();
+        let new_not_ready: DynamicObject = serde_json::from_value(serde_json::json!({
+            "metadata": {"uid": "new-node-uid"},
+            "status": {"conditions": [{"type": "Ready", "status": "False"}]}
+        }))
+        .unwrap();
+        let new_ready: DynamicObject = serde_json::from_value(serde_json::json!({
+            "metadata": {"uid": "new-node-uid"},
+            "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+        }))
+        .unwrap();
+
+        assert!(!node_is_ready_replacement(&old_ready, "old-node-uid"));
+        assert!(!node_is_ready_replacement(&new_not_ready, "old-node-uid"));
+        assert!(node_is_ready_replacement(&new_ready, "old-node-uid"));
     }
 
     #[test]

@@ -930,7 +930,16 @@ fn migrate_to_existing(
         );
     }
     eprintln!("nodemigrate: waiting for returned node {returning_node_name} to become Ready");
-    if let Err(error) = wait_for_node(&target_api, &returning_node_name) {
+    let returned_node_readiness = match observed_replacement_state
+        .as_ref()
+        .and_then(|state| state.uid.as_deref())
+    {
+        Some(previous_uid) => {
+            wait_for_replacement_node(&target_api, &returning_node_name, previous_uid)
+        }
+        None => wait_for_node(&target_api, &returning_node_name),
+    };
+    if let Err(error) = returned_node_readiness {
         return Err(rollback_reverse_migration(
             source,
             target,
@@ -1363,6 +1372,32 @@ fn wait_for_node(target: &transfer::KubeApi, name: &str) -> Result<()> {
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("node {name} did not become Ready")))
         .context("waiting for the replacement node")
+}
+
+fn wait_for_replacement_node(
+    target: &transfer::KubeApi,
+    name: &str,
+    previous_uid: &str,
+) -> Result<()> {
+    let mut last_error = None;
+    for _ in 0..60 {
+        match target
+            .ready()
+            .and_then(|()| target.replacement_node_ready(name, previous_uid))
+        {
+            Ok(true) => return Ok(()),
+            Ok(false) => {
+                last_error = Some(anyhow::anyhow!(
+                    "node {name} has not registered as a Ready replacement for UID {previous_uid}"
+                ));
+            }
+            Err(error) => last_error = Some(error),
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+    Err(last_error
+        .unwrap_or_else(|| anyhow::anyhow!("node {name} did not become a Ready replacement")))
+    .context("waiting for fresh registration of the replacement node")
 }
 
 fn hostname() -> String {
