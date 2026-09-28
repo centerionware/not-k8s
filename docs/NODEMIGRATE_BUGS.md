@@ -18,6 +18,12 @@ Last updated: 2026-09-28
   mutations and prints that audit file on failure; this diagnostic change has
   not yet been exercised by a new migration run. Keep migration retries paused
   until this failure is understood and fixed.
+  The watcher now records Node UID and lifecycle timestamps in its change
+  detector, and captures Node resource versions plus Node-Lease renewal times
+  at its normal diagnostic cadence. This preserves identity/heartbeat evidence
+  without making every Lease renewal trigger a full log capture; only shell
+  syntax and the focused `check_nodemigrate_diagnostics.sh` script pass locally.
+  The check covers JSON diagnostics, not the live watcher or API audit path.
   The captured event list also contains K3s `RemovingNode` events and repeated
   `Starting kubelet` events. That confirms the controller-removal path was
   active, but does not establish why the Node stopped renewing or whether a
@@ -27,7 +33,23 @@ Last updated: 2026-09-28
   [36481686171](https://github.com/centerionware/not-k8s/actions/runs/36481686171)
   passed at SHA `eb650b223a0503e135d4ff50b317d159b39bb2b4`. This guard has not
   been exercised in a migration run and does not close the later Node-loss
-  failure.
+  failure. The failure artifact records the returned Node Ready at 19:11:04,
+  19:11:12, and 19:11:19 UTC with Cilium reporting
+  `NetworkUnavailable=False`; the Node list was empty by 19:11:33. Afterward,
+  K3s kubelet logs show repeated `Forbidden` errors for its old Pod UIDs because
+  the node authorizer could no longer find a Node-to-Pod relationship. These
+  are downstream symptoms of the missing Node, not evidence that kubelet
+  caused its deletion. The K3s audit data still ends before this interval, so
+  the deleting actor and root cause remain unproven. Do not make a runtime
+  behavior change based only on these downstream errors. The same post-return
+  Node loss is present in saved K3s artifacts for runs
+  [36434878771](https://github.com/centerionware/not-k8s/actions/runs/36434878771),
+  [36459506591](https://github.com/centerionware/not-k8s/actions/runs/36459506591),
+  [36463585411](https://github.com/centerionware/not-k8s/actions/runs/36463585411),
+  and `36468405459`; the repeated failure confirms this is not an isolated
+  HostPath CSI rollout issue. The configured Node-mutation audit must identify
+  whether the API object is deleted or the K3s control plane loses it before
+  changing Node lifecycle behavior.
 - **Empty CronJob status triggers repeated no-op writes.** The same K3s log
   records `system:serviceaccount:kube-system:cronjob-controller` patching the
   unchanged `migration-cron` status every few milliseconds. When a missing
@@ -112,8 +134,10 @@ Last updated: 2026-09-28
   Nodelet logged Pod reconciliation timeouts for CoreDNS and the CSI plugin,
   and API logs contain Cilium peer certificate failures. This points toward
   nodelet/Cilium recovery after the service handoff, but does not yet isolate
-  the failing transition. Track under `nodelet`, Cilium configuration/trust,
-  and `nodemigrate` host-state handoff; do not relax the readiness assertion.
+  the failing transition. Later K3s captures show the Node disappears before
+  HostPath CSI scheduling fails, so treat CSI registration and PV NodeAffinity
+  failures as consequences of the confirmed Node-loss symptom until evidence
+  separates them. Do not relax the readiness assertion.
 
 - **Migration run 36434878771: returned HostPath CSI and Docker Cilium state
   checks fail.** At SHA `4f844b4311284e93fa6c8883c7858ae87122ee8a`, all three

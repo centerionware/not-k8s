@@ -7,6 +7,11 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+Before another migration attempt, resolve the full set of confirmed defects
+already exposed by completed runs as one batch; do not dispatch after fixing
+only one. Continue code and saved-artifact investigation where a cause remains
+unknown, and do not use a migration run only to discover that cause.
+
 Latest focused nodemigrate verification
 [36481686171](https://github.com/centerionware/not-k8s/actions/runs/36481686171)
 passed at SHA `eb650b223a0503e135d4ff50b317d159b39bb2b4`. It tests the
@@ -17,6 +22,42 @@ at SHA `ee35bfe37e6b358cfe80e8970c7823337e44829c` failed compilation because
 the prior Node state was moved before its UID was saved; the ownership issue
 was fixed in `eb650b22`. This CI covers utility tests only, not the K3s runtime
 removal or round trip.
+
+The latest K3s artifact review narrows the Node-loss sequence: the returned
+Node was Ready at 19:11:04, 19:11:12, and 19:11:19 UTC, with Cilium's
+`NetworkUnavailable` condition false, then absent from the API by 19:11:33.
+K3s kubelet subsequently received repeated `Forbidden` responses for old Pod
+UIDs because the node authorizer could not find the Node-to-Pod relationship.
+Those authorization errors follow the missing Node and do not identify what
+removed it. The K3s audit data does not cover the interval, so the runtime
+cause remains unknown and another migration run is not queued.
+
+## Batch status before the next migration run
+
+- `nodecontroller`: the empty CronJob status no-op has a regression and passed
+  focused CI in run `36473759900`.
+- `nodemigrate`: the missing `CSINode.spec.drivers` default has a regression
+  and passed focused CI in run `36473759900`. PV import now orders PVCs before
+  PVs and maps known claim UIDs before the first PV write; that code is in the
+  current branch, but the saved runtime evidence does not isolate the claim
+  handoff from other return-stage behavior.
+- `nodeapiserver`/`nodemigrate`: exact floating-point JSON round trips passed
+  focused CI in run `36479715060`. Runtime parity after that parser fix has
+  not been tested; keep strict parity enabled.
+- Migration fixture: Python availability and effective Cilium Helm values
+  checks have been corrected in the fixture. Their complete five-node path is
+  not covered by the latest Docker preflight, which stopped at the CSINode
+  import failure.
+- `nodemigrate`/K3s: the repeated Node loss is still unresolved and blocks a
+  migration retry. The fixture captures Node mutation audit records and now
+  records Node UIDs, resource versions, creation/deletion timestamps, and
+  kube-node-lease holder/renewal state in its target watcher. These diagnostics
+  pass `bash -n` and the focused `check_nodemigrate_diagnostics.sh` script
+  locally; `check_nodemigrate_api_inventory.sh` also passes in the current
+  working tree. These checks do not exercise a live watcher or migration and
+  have not run against a migration since the diagnostic fields were added.
+  Use them alongside the next eligible batch verification before selecting a
+  Node lifecycle fix.
 
 Latest focused component verification
 [36479715060](https://github.com/centerionware/not-k8s/actions/runs/36479715060)

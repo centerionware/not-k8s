@@ -283,6 +283,9 @@ watch_migration_target_state() {
                 echo 'target node scheduling and readiness:'
                 diagnostic_kubectl_json "$kubeconfig" '[.items[]? | {
                         name: .metadata.name,
+                        uid: .metadata.uid,
+                        creationTimestamp: .metadata.creationTimestamp,
+                        deletionTimestamp: .metadata.deletionTimestamp,
                         unschedulable: (.spec.unschedulable // false),
                         taints: .spec.taints,
                         conditions: [.status.conditions[]? | {type, status, reason, message}],
@@ -367,6 +370,25 @@ watch_migration_target_state() {
                 {
                     echo "Target cluster state at $(date -u +%FT%TZ):"
                     printf '%s\n' "$snapshot"
+                    echo 'target Node API identity and resource versions:'
+                    diagnostic_kubectl_json "$kubeconfig" '[.items[]? | {
+                            name: .metadata.name,
+                            uid: .metadata.uid,
+                            resourceVersion: .metadata.resourceVersion,
+                            creationTimestamp: .metadata.creationTimestamp,
+                            deletionTimestamp: .metadata.deletionTimestamp
+                        }]' get nodes || true
+                    echo 'node Lease identity and renewal state:'
+                    diagnostic_kubectl_json "$kubeconfig" '[.items[]? | {
+                            name: .metadata.name,
+                            uid: .metadata.uid,
+                            resourceVersion: .metadata.resourceVersion,
+                            holderIdentity: .spec.holderIdentity,
+                            renewTime: .spec.renewTime,
+                            leaseDurationSeconds: .spec.leaseDurationSeconds,
+                            leaseTransitions: .spec.leaseTransitions,
+                            ownerReferences: .metadata.ownerReferences
+                        }]' get leases -n kube-node-lease || true
                     echo "Target CoreDNS logs:"
                     KUBECONFIG="$kubeconfig" kubectl logs -n kube-system \
                         -l k8s-app=kube-dns --all-containers --tail=100 2>&1 || true
