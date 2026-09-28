@@ -14,7 +14,8 @@ Branch-runtime migration run
 [36425151654](https://github.com/centerionware/not-k8s/actions/runs/36425151654)
 at SHA `46428806c3490958bd76a033c9e443391f2694aa` completed with failures in
 all three lanes after nodemigrate and combined `notk8s --features cri` builds
-passed; Docker also built the five-node image. Docker timed out waiting for
+passed, compiling all packaged components from the branch; Docker also built
+the five-node image. Docker timed out waiting for
 `migration-static-data-check`, which was blocked by cp-1's control-plane taint;
 a matching toleration is now in the fixture. K3s reported return migration
 complete, but the Node disappeared before later checks; the initiating actor

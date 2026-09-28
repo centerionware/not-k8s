@@ -29,11 +29,11 @@ Last updated: 2026-09-28
   regression are pending focused CI and migration verification. Strict parity
   remains enabled.
 
-- **Latest migration utility test passed.** Focused check
+- **Previous migration utility test passed.** Focused check
   [36425866401](https://github.com/centerionware/not-k8s/actions/runs/36425866401)
   passed at SHA `8b11b11f3f26546f0a08bdcaba99382bb2fdcb6b`, including
-  nodemigrate crate tests. It does not verify the current uncommitted CRD
-  metadata patch.
+  nodemigrate crate tests. It predates the CRD metadata-patch regression added
+  afterward and does not verify that change.
 
 - **CRD metadata-patch test needed a qualified JSON null value.** Focused run
   [36429944327](https://github.com/centerionware/not-k8s/actions/runs/36429944327)
