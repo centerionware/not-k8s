@@ -903,6 +903,9 @@ fn migrate_to_existing(
         None
     };
     let node_was_replaced = observed_replacement_state.is_some();
+    let previous_replacement_uid = observed_replacement_state
+        .as_ref()
+        .and_then(|state| state.uid.clone());
     let replacement_state = reverse_node_replacement_state(
         destination_node_exists,
         observed_replacement_state,
@@ -930,10 +933,7 @@ fn migrate_to_existing(
         );
     }
     eprintln!("nodemigrate: waiting for returned node {returning_node_name} to become Ready");
-    let returned_node_readiness = match observed_replacement_state
-        .as_ref()
-        .and_then(|state| state.uid.as_deref())
-    {
+    let returned_node_readiness = match previous_replacement_uid.as_deref() {
         Some(previous_uid) => {
             wait_for_replacement_node(&target_api, &returning_node_name, previous_uid)
         }
