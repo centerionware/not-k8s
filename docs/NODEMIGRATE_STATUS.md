@@ -509,19 +509,23 @@ has passed.
 
 ## Next actions
 
-1. Finish release-backed run [36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663)
-   against the latest regular release (`v0.8.0`): capture its terminal lane
-   results and inspect each completed artifact once, then fix any confirmed
-   component defects and rerun the relevant migration check.
-2. Diagnose the return-migration timeout in run
-   [36321804254](https://github.com/centerionware/not-k8s/actions/runs/36321804254)
-   from its completed K3s artifact, and compare the upstream Cilium failure
-   with the redacted CRI diagnostics in the current release-backed run.
-3. Continue the source/target/return parity loop until both single-node lanes
-   pass, preserving PVs, PVCs, backing data, and the source installation.
-4. Implement and run the distinct three-control-plane/two-worker migration
-   with existing-cluster join/replacement. Docker preflight alone does not
-   exercise migration membership or state parity.
-5. Keep both migration merge gates and publication readiness open until their
-   complete runtime evidence passes; do not bump shared `VERSION` for a
-   standalone nodemigrate publication.
+1. Resolve the K3s returned-Node disappearance before retrying migration.
+   Saved runs show the Node Ready and then absent, but do not establish the
+   deleting actor or cause. Node/Lease audit capture and watcher identity
+   diagnostics are in the fixture and have not yet been exercised in a
+   migration. Preserve readiness and storage assertions.
+2. Keep the confirmed component defects fixed together before the next
+   migration batch: CronJob no-op status writes, omitted CSINode drivers,
+   exact JSON float round trips, and PVC-before-PV claim UID remapping. Focused
+   tests passed; runtime data handoff and strict parity remain unverified.
+3. After the K3s cause and batch fixes are addressed, run the dedicated
+   branch-runtime K3s+Cilium and upstream Kubernetes+Cilium round trips. Verify
+   source, not-k8s, and returned-source workloads, Helm state, network paths,
+   PV/PVC bindings, and payload data at each checkpoint.
+4. Complete the isolated upstream three-control-plane/two-worker migration,
+   including existing-cluster join/replacement and membership recovery.
+   Docker's five-node preflight proves isolation only, not migration behavior.
+5. Keep both required runtime merge gates and release readiness open until
+   their full evidence passes. The regular build and full e2e gates remain
+   excluded for this objective; a nodemigrate-only release must not advance
+   shared `VERSION`.
