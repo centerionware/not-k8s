@@ -9,26 +9,26 @@ this objective.
 
 ## Latest PR validation
 
-Commit `9a15cc148a142f8a2fa7eee0bdbbabb936d3b0a2` passed the automatic PR
-checks: [`nodemigrate checks` run 36486447268](https://github.com/centerionware/not-k8s/actions/runs/36486447268),
-[`Nodemigrate tests` run 36486447271](https://github.com/centerionware/not-k8s/actions/runs/36486447271),
-[`nodemigrate release` run 36486447226](https://github.com/centerionware/not-k8s/actions/runs/36486447226),
-and [commit convention run 36486444662](https://github.com/centerionware/not-k8s/actions/runs/36486444662).
-The `nodemigrate checks` run completed `Test nodemigrate` in 1m27s. The
-migration and release build/publish jobs were skipped by their path policies.
-Local `bash -n`, `check_nodemigrate_diagnostics.sh`,
-`check_nodemigrate_api_inventory.sh`, and `git diff --check` also passed for
-this commit. These checks do not run the migration integration workflow,
-general build, or full e2e, and do not verify the K3s Node-loss fix or live K3s
-audit behavior.
+Commit `b1641f5ee34f4fd10f4d399930ba76df81f2eef1` passed the automatic PR
+checks: [`nodemigrate checks` run 36488685227](https://github.com/centerionware/not-k8s/actions/runs/36488685227),
+[`Nodemigrate tests` run 36488685382](https://github.com/centerionware/not-k8s/actions/runs/36488685382),
+and [commit convention run 36488679935](https://github.com/centerionware/not-k8s/actions/runs/36488679935).
+The `nodemigrate checks` run completed `Test nodemigrate` in 1m32s, and the
+focused `Nodemigrate tests` validation passed. Migration and build jobs were
+skipped by their path policies. Local `bash -n`,
+`check_nodemigrate_diagnostics.sh`, `check_nodemigrate_api_inventory.sh`, and
+`git diff --check` also passed. These checks do not execute the migration
+integration workflow, general build, or full e2e, and do not verify the K3s
+Node-loss fix or live K3s audit behavior.
 
 The current working change extends the workload fixture with a core/v1
 PodTemplate and a live ReplicationController. Each stage checks the preserved
 PodTemplate spec and confirms that the controller maintains exactly one Ready
-owned Pod whose command ran. These assertions have passed shell syntax,
-diagnostics, API-inventory, and whitespace checks locally, but are not yet
-covered by PR CI or a migration run. The migration run remains paused while
-the repeated K3s returned-Node disappearance is unresolved.
+owned Pod whose command ran. These assertions passed shell syntax,
+diagnostics, API-inventory, whitespace checks, and the automatic PR validation
+at the commit above, but they have not run in the migration fixture. The
+migration run remains paused while the repeated K3s returned-Node disappearance
+is unresolved.
 
 Before another migration attempt, resolve the full set of confirmed defects
 already exposed by completed runs as one batch; do not dispatch after fixing
