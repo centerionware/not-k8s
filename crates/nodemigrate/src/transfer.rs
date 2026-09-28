@@ -169,7 +169,7 @@ async fn wait_for_discovery(client: &Client) -> Result<Discovery> {
         match discover_apis(client).await {
             Ok(discovery) => return Ok(discovery),
             Err(error) => {
-                let error = anyhow::Error::new(error).context("discovering destination APIs");
+                let error = error.context("discovering destination APIs");
                 eprintln!(
                     "nodemigrate: destination API discovery probe {attempt} failed: {error:#}"
                 );

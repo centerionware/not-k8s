@@ -7,6 +7,17 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+Latest validation attempt at SHA `f8cc4777d8356e70a91752f959839b1e3f549583`
+failed before running tests: `nodemigrate` and each migration lane hit the same
+compile error in `wait_for_discovery`, which wrapped an `anyhow::Error` with
+`Error::new`. The error is now given context directly; the correction is
+pending a rerun. Utility test log:
+`/tmp/nodemigrate-tests-36389588658.log`; migration build log:
+`/tmp/nodemigrate-kubernetes-36389615059.log`. Runs:
+[nodemigrate checks 36389588658](https://github.com/centerionware/not-k8s/actions/runs/36389588658)
+and [branch migration 36389615059](https://github.com/centerionware/not-k8s/actions/runs/36389615059).
+The migration jobs did not reach their runtime lane or five-node fixture.
+
 Latest branch-runtime run
 [36385002094](https://github.com/centerionware/not-k8s/actions/runs/36385002094)
 at SHA `9c7897f0d917e51b9e3d8e81ee6a843e3332c8f2` failed after the runtime

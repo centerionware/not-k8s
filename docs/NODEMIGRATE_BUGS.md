@@ -4,6 +4,12 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **`nodemigrate`: aggregated discovery retry wrapped `anyhow::Error` twice.**
+  At branch SHA `f8cc4777` both targeted crate testing and every migration job
+  failed at compile time with E0277 in `wait_for_discovery`; no migration
+  runtime started. The retry loop now adds context directly to the existing
+  error. A pushed build/test rerun is pending.
+
 - **Round-trip inventory needed to separate preserved source state from
   regenerated target state.** Run
   [36385002094](https://github.com/centerionware/not-k8s/actions/runs/36385002094)

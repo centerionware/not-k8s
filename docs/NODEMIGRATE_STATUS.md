@@ -23,6 +23,13 @@ separate living documents below.
 
 ## Current verification
 
+- Follow-up branch build and utility test
+  [36389615059](https://github.com/centerionware/not-k8s/actions/runs/36389615059)
+  and [36389588658](https://github.com/centerionware/not-k8s/actions/runs/36389588658)
+  at SHA `f8cc4777` both failed before runtime tests because of the same
+  `anyhow::Error` double-wrap compile error. It is corrected locally and awaits
+  CI validation. This attempt gives no runtime migration evidence.
+
 - Latest branch-runtime run
   [36385002094](https://github.com/centerionware/not-k8s/actions/runs/36385002094)
   at SHA `9c7897f0d917e51b9e3d8e81ee6a843e3332c8f2` built `nodemigrate` and
