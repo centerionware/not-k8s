@@ -10,25 +10,23 @@ compile or unit test does not mark a real migration path as verified.
 ## Latest integration result
 
 Branch-runtime run
-[36390001684](https://github.com/centerionware/not-k8s/actions/runs/36390001684)
-at SHA `d30bce2e144fd2be134120b6261515b5a55a96e5` built nodemigrate and the
-combined branch `notk8s --features cri` binary in all three jobs. Focused
-nodemigrate checks passed at
-[36389980702](https://github.com/centerionware/not-k8s/actions/runs/36389980702).
-Upstream returned through the behavioral workload and storage probes, then
-failed strict parity on changed Traefik CRD float64 schema bounds and an
-existing CSI ControllerRevision's sequence field. K3s returned to API readiness and
-accepted all 59 CRDs, then transient API discovery returned 503 while Cilium
-was restarting. Five-node setup passed control-plane recovery but its static
-PV seed Pod could not schedule on the tainted node that owns the PV path. The
-branch now retries transient CRD discovery failures, keeps strict CRD numeric
-parity, excludes only the generated ControllerRevision sequence field from
-comparison, and lets the fixture Pod tolerate the control-plane taint. The CRD
-numeric change still needs diagnosis. None of these runtime fixes is verified
-yet. Logs:
-`/tmp/nodemigrate-docker-36390001684.log`,
-`/tmp/nodemigrate-k3s-36390001684.log`, and
-`/tmp/nodemigrate-kubernetes-36390001684.log`.
+[36393910249](https://github.com/centerionware/not-k8s/actions/runs/36393910249)
+at SHA `4552ae2d029b6e71d77b607d12a89eea2b4c8e93` is terminal failure. All
+lane builds passed for nodemigrate and combined branch `notk8s --features cri`;
+focused nodemigrate tests passed at
+[36393755140](https://github.com/centerionware/not-k8s/actions/runs/36393755140).
+Upstream passed return behavior, including workload and storage checks, then
+failed strict parity on two Traefik CRD numeric bounds, which changed by one
+float64 step. The ControllerRevision sequence was the only other difference
+and is now treated as generated metadata while payload checks remain strict.
+K3s completed CRD import, then a later direct discovery call for replacement
+Node handling received HTTP 503 during Cilium recovery. All KubeApi discovery
+calls now use the bounded aggregate-first retry. The five-node fixture still
+failed to schedule its seed Pod because the PV affinity used a node name rather
+than the selected Node's actual hostname label; it now derives that label and
+keeps the necessary control-plane toleration. These changes await verification.
+The unresolved CRD bound change remains a merge blocker. Full log:
+`/tmp/nodemigrate-36393910249.log`.
 
 Branch-runtime run
 [36385002094](https://github.com/centerionware/not-k8s/actions/runs/36385002094)

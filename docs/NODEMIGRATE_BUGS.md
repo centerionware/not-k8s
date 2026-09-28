@@ -4,6 +4,37 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **`node_exists` discovery did not retry a transient K3s 503.** In
+  [run 36393910249](https://github.com/centerionware/not-k8s/actions/runs/36393910249),
+  K3s imported the protected API and restored the workloads, but the post-import
+  replacement-node check made a direct discovery request while Cilium was
+  recovering and received HTTP 503. The remaining `KubeApi` operations now use
+  the bounded aggregate-first discovery retry helper; migration verification
+  is pending.
+
+- **Five-node static PV affinity used the wrong hostname value.** In run
+  `36393910249`, the fixture tolerated cp-1's control-plane taint, but the
+  scheduler reported that all five Nodes failed the static PV affinity. The
+  fixture previously assumed the node name equaled its `kubernetes.io/hostname`
+  label. It now reads the selected Node's actual label before creating the PV;
+  Docker verification is pending.
+
+- **Returned Traefik CRD schema bounds changed by one float64 step.** In run
+  `36393910249`, source and nodestore checkpoints passed and the upstream
+  return workload/storage checks passed, but two Traefik CRDs changed
+  `priority.maximum` from `9223372036854775000` to `9223372036854776000`. These
+  values are adjacent float64s, so parity remains strict and this is an
+  unresolved migration data change. Trace the value through nodemigrate export,
+  nodestore transfer, and source API write/read before considering any compare
+  normalization.
+
+- **ControllerRevision parity can ignore its generated sequence only.** The
+  same upstream result showed `/revision` was the sole changed field on the
+  existing CSI ControllerRevision; inventory now omits that controller-owned
+  sequence but continues to compare the complete payload and other fields.
+  The updated comparison passed the upstream inventory check before the CRD
+  bound differences caused the run to fail.
+
 - **Migration discovery must survive transient API 503s during CRD readiness.**
   In run [36390001684](https://github.com/centerionware/not-k8s/actions/runs/36390001684),
   K3s returned HTTP 503 from API discovery after accepting all 59 imported CRDs

@@ -379,10 +379,7 @@ impl KubeApi {
     pub fn kube_proxy_daemonset_present(&self) -> Result<bool> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
-            let discovery = Discovery::new(client.clone())
-                .run()
-                .await
-                .context("discovering APIs before checking kube-proxy ownership")?;
+            let discovery = wait_for_discovery(&client).await?;
             let (resource, capabilities) = find_resource(&discovery, "DaemonSet", "apps/v1")
                 .context("Kubernetes API does not expose apps/v1 DaemonSet")?;
             ensure!(
@@ -398,10 +395,7 @@ impl KubeApi {
     pub fn node_count(&self) -> Result<usize> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
-            let discovery = Discovery::new(client.clone())
-                .run()
-                .await
-                .context("discovering Kubernetes APIs")?;
+            let discovery = wait_for_discovery(&client).await?;
             let (resource, capabilities) = find_resource(&discovery, "Node", "v1")
                 .context("Kubernetes API does not expose Node")?;
             ensure!(
@@ -420,10 +414,7 @@ impl KubeApi {
     pub fn node_ready(&self, name: &str) -> Result<bool> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
-            let discovery = Discovery::new(client.clone())
-                .run()
-                .await
-                .context("discovering Kubernetes APIs")?;
+            let discovery = wait_for_discovery(&client).await?;
             let (resource, capabilities) = find_resource(&discovery, "Node", "v1")
                 .context("Kubernetes API does not expose Node")?;
             ensure!(
@@ -454,10 +445,7 @@ impl KubeApi {
     pub fn node_exists(&self, name: &str) -> Result<bool> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
-            let discovery = Discovery::new(client.clone())
-                .run()
-                .await
-                .context("discovering Kubernetes APIs")?;
+            let discovery = wait_for_discovery(&client).await?;
             let (resource, capabilities) = find_resource(&discovery, "Node", "v1")
                 .context("Kubernetes API does not expose Node")?;
             ensure!(
@@ -476,10 +464,7 @@ impl KubeApi {
     pub fn node_scheduling_state(&self, name: &str) -> Result<Option<NodeSchedulingState>> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
-            let discovery = Discovery::new(client.clone())
-                .run()
-                .await
-                .context("discovering Kubernetes APIs")?;
+            let discovery = wait_for_discovery(&client).await?;
             let (resource, capabilities) = find_resource(&discovery, "Node", "v1")
                 .context("Kubernetes API does not expose Node")?;
             ensure!(
@@ -503,10 +488,7 @@ impl KubeApi {
     ) -> Result<()> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
-            let discovery = Discovery::new(client.clone())
-                .run()
-                .await
-                .context("discovering Kubernetes APIs")?;
+            let discovery = wait_for_discovery(&client).await?;
             let (resource, capabilities) = find_resource(&discovery, "Node", "v1")
                 .context("Kubernetes API does not expose Node")?;
             ensure!(
@@ -536,10 +518,7 @@ impl KubeApi {
         let source_uid = source_uid.to_owned();
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
-            let discovery = Discovery::new(client.clone())
-                .run()
-                .await
-                .context("discovering APIs before restoring Node owner references")?;
+            let discovery = wait_for_discovery(&client).await?;
             let (node_resource, node_capabilities) = find_resource(&discovery, "Node", "v1")
                 .context("destination Kubernetes API does not expose Node")?;
             ensure!(
@@ -672,10 +651,7 @@ impl KubeApi {
     pub fn delete_node(&self, name: &str, expected_uid: &str) -> Result<()> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
-            let discovery = Discovery::new(client.clone())
-                .run()
-                .await
-                .context("discovering Kubernetes APIs")?;
+            let discovery = wait_for_discovery(&client).await?;
             let (resource, capabilities) = find_resource(&discovery, "Node", "v1")
                 .context("Kubernetes API does not expose Node")?;
             ensure!(
@@ -704,10 +680,7 @@ impl KubeApi {
     pub fn node_labels(&self, node_name: &str) -> Result<HashMap<String, String>> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
-            let discovery = Discovery::new(client.clone())
-                .run()
-                .await
-                .context("discovering Kubernetes APIs")?;
+            let discovery = wait_for_discovery(&client).await?;
             node_labels(&client, &discovery, node_name).await
         })
     }
@@ -720,10 +693,7 @@ impl KubeApi {
     ) -> Result<HostPathSnapshot> {
         let (runtime, client) = self.connected()?;
         let objects = runtime.block_on(async {
-            let discovery = Discovery::new(client.clone())
-                .run()
-                .await
-                .context("discovering Kubernetes APIs")?;
+            let discovery = wait_for_discovery(&client).await?;
             let (resource, capabilities) = find_resource(&discovery, "PersistentVolume", "v1")
                 .context("Kubernetes API does not expose PersistentVolume")?;
             ensure!(
@@ -776,10 +746,7 @@ impl KubeApi {
         let node_name = installation_node_name(installation);
         let (runtime, client) = self.connected()?;
         let (objects, labels, node_states) = runtime.block_on(async {
-            let discovery = Discovery::new(client.clone())
-                .run()
-                .await
-                .context("discovering source Kubernetes APIs")?;
+            let discovery = wait_for_discovery(&client).await?;
             let labels = match node_labels(&client, &discovery, &node_name).await {
                 Ok(labels) => Some(labels),
                 Err(error) => {

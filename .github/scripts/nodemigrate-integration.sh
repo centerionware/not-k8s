@@ -1031,6 +1031,14 @@ YAML
             echo "invalid static PV node name: $NODEMIGRATE_STATIC_NODE" >&2
             return 1
         }
+        local static_node_hostname
+        static_node_hostname="$(kubectl get node "$NODEMIGRATE_STATIC_NODE" \
+            -o jsonpath='{.metadata.labels.kubernetes\.io/hostname}')"
+        [[ -n "$static_node_hostname" ]] || {
+            echo "static PV node $NODEMIGRATE_STATIC_NODE has no kubernetes.io/hostname label" >&2
+            return 1
+        }
+        echo "static hostPath PV owner=$NODEMIGRATE_STATIC_NODE hostname=$static_node_hostname"
         kubectl apply -f - <<YAML
 apiVersion: v1
 kind: PersistentVolume
@@ -1051,7 +1059,7 @@ spec:
       - matchExpressions:
         - key: kubernetes.io/hostname
           operator: In
-          values: ["$NODEMIGRATE_STATIC_NODE"]
+          values: ["$static_node_hostname"]
 YAML
     else
         kubectl apply -f - <<'YAML'

@@ -8,26 +8,30 @@ is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
 Latest branch-runtime run
-[36390001684](https://github.com/centerionware/not-k8s/actions/runs/36390001684)
-at SHA `d30bce2e144fd2be134120b6261515b5a55a96e5` built nodemigrate and the
-combined branch `notk8s --features cri` binary in every lane. The focused
-nodemigrate checks passed at
-[36389980702](https://github.com/centerionware/not-k8s/actions/runs/36389980702).
-All three migration lanes failed: upstream completed the return behavior checks
-but strict inventory found two Traefik CRD schema bounds changed by one float64
-step, plus an existing CSI ControllerRevision whose controller-owned
-`revision` sequence advanced. CRD parity remains strict and the numeric change
-is unresolved; inventory now excludes only that ControllerRevision sequence
-field while keeping its payload strict.
-K3s returned to the retained API and applied 59 CRDs, then a discovery probe
-received HTTP 503 while Cilium Envoy and the Cilium agent were restarting. CRD
-discovery now uses the aggregate-first fallback and retries transient failures
-within its existing deadline. The five-node setup passed kubeadm/Cilium and
-control-plane recovery, but `migration-seed` could not schedule because its
-static PV was pinned to tainted `cp-1`; the fixture now tolerates that control
-plane taint. All three fixes await another migration run. Logs are saved at
-`/tmp/nodemigrate-{docker,k3s,kubernetes}-36390001684.log`. No general build or
-full e2e was dispatched.
+[36393910249](https://github.com/centerionware/not-k8s/actions/runs/36393910249)
+at SHA `4552ae2d029b6e71d77b607d12a89eea2b4c8e93` is terminal failure. All
+three jobs built nodemigrate and the combined branch `notk8s --features cri`
+binary, compiling the packaged runtime components. Focused nodemigrate crate
+tests passed at [36393755140](https://github.com/centerionware/not-k8s/actions/runs/36393755140);
+workflow validation passed at
+[36393755072](https://github.com/centerionware/not-k8s/actions/runs/36393755072).
+Upstream completed the return workload and storage checks; strict API parity
+then found only two Traefik CRD `priority.maximum` fields changed from
+`9223372036854775000` to `9223372036854776000`. Those values are adjacent
+float64s, so the migration still changes schema data. The existing CSI
+ControllerRevision differed only by its controller-assigned `revision`
+sequence; inventory now excludes that sequence while keeping payload fields
+strict. K3s successfully retried CRD readiness and completed protected API
+import, then failed while preparing the replacement Node because a later
+`node_exists` discovery request got HTTP 503 during Cilium recovery. All
+remaining API discovery calls now share the bounded aggregate-first retry
+path. Docker preflight reached the five-node workload fixture, but
+`migration-seed` stayed Pending: scheduler diagnostics show that no node label
+matched the static PV node affinity. The fixture now reads the selected node's
+actual `kubernetes.io/hostname` label before constructing PV affinity; it also
+keeps the control-plane toleration. These fixes await another migration run.
+Complete logs are saved at `/tmp/nodemigrate-36393910249.log`. No general build
+or full e2e was dispatched.
 
 Previous validation attempt at SHA `f8cc4777d8356e70a91752f959839b1e3f549583`
 failed before running tests: `nodemigrate` and each migration lane hit the same
