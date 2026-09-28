@@ -293,8 +293,8 @@ async fn listener_serves_a_real_discovery_and_crud_round_trip() {
         "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/priority/maximum";
     for (stage, object) in [
         ("create", &created_crd),
-        ("cached read", &returned_crd),
         ("persisted read", &persisted_crd),
+        ("cached read", &returned_crd),
     ] {
         let maximum = object
             .pointer(maximum_pointer)
