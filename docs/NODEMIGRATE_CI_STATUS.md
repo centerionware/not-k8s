@@ -7,7 +7,7 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
-## Active migration batch
+## Latest completed migration batch
 
 Run [36490156839](https://github.com/centerionware/not-k8s/actions/runs/36490156839)
 completed at SHA `624442f622a6f8c44b72c9288ca5dbc32d5fbfa9` with
@@ -23,20 +23,22 @@ The workflow compiles
 migration lanes; no standalone build or full e2e was dispatched. The watcher
 log is `/tmp/nodemigrate-36490156839-watch.log`.
 
-The run exposed three concrete defects, now addressed together in the working
-branch: (1) the replacement runtime had no core/v1 ReplicationController
-controller, so the migrated fixture stayed without a ready owned Pod in both
-single-node nodestore stages; nodecontroller now reconciles ReplicationControllers
-under the upstream `replication-controller` identity and has the matching
-status-patch grant; (2) a source CSINode with an omitted `spec` was not
-normalized, so five-node import failed with `spec.drivers: Required value`;
-import now materializes `spec.drivers: []`; (3) the kubeadm fixture omitted
-`cp-1`, `cp-2`, and `cp-3` from the API serving certificate SANs, producing
-kubelet TLS errors during the control-plane failover probe; kubeadm init now
-includes those SANs. The ReplicationController timeout also prints object,
-Pod, and event diagnostics. The run stopped the five-node path on CSINode
-import, so later return checks were not reached. These fixes need focused CI
-validation before another migration batch.
+The run exposed the missing ReplicationController reconciler and rejected
+CSINode imports. Follow-up run
+[36493677637](https://github.com/centerionware/not-k8s/actions/runs/36493677637)
+at SHA `0cef554bd03d53d1725e66a2d47ef2c65edd6dff` compiled every lane, and
+confirmed the new reconciler created a Ready owned Pod in both nodestore
+targets. Both single-node lanes then failed strict snapshot parity on
+`spec.minReadySeconds` (omitted upstream versus explicit default zero). Docker
+failed import because the source CSINode had `drivers: null`; earlier
+normalization fixed only a missing `spec`. Its failure diagnostics also show
+the migrated API certificate lacked the source endpoint name `cp-1`, even
+though kubeadm's source certificate correctly contained all control-plane
+SANs. All three follow-up defects are fixed together in the current working
+branch. The run stopped before reverse migration in all lanes. Saved logs are
+`/tmp/nodemigrate-36493677637/k3s.log`, `kubernetes.log`, and `docker.log`.
+The changed snapshot, import, and endpoint-SAN paths need focused CI validation
+before the next migration batch.
 
 ## Latest PR validation
 
@@ -53,9 +55,10 @@ integration workflow, general build, or full e2e, and do not verify the K3s
 Node-loss fix or live K3s audit behavior.
 
 The migration fixture includes a core/v1 PodTemplate and live
-ReplicationController. The run confirmed the source-stage assertion and
-exposed the missing target reconciler at the nodestore stage. Its owner, Pod,
-and event diagnostics are now collected when readiness times out.
+ReplicationController. Run 364936 confirmed the source and nodestore stages
+each produced one Ready owned Pod and the expected command ran. The stage
+failed afterward on the default-zero `minReadySeconds` snapshot difference.
+Readiness failures now print RC, Pod, and event diagnostics.
 
 Commit `10e84728` adds a returned-K3s audit gate: before CSI driver
 reinstallation, it checks the active service unit and requires post-return Node
@@ -110,10 +113,10 @@ unknown. See the [NodeLifecycleController event path](https://github.com/kuberne
 
 - `nodecontroller`: the empty CronJob status no-op has a regression and passed
   focused CI in run `36473759900`.
-- `nodemigrate`: import now materializes both an omitted CSINode `spec` and
-  its required empty `drivers` list. The full omission regression is in the
-  working branch; earlier CI covered omitted drivers under a present spec.
-  PV import now orders PVCs before
+- `nodemigrate`: import now normalizes absent CSINode `spec`, missing `drivers`,
+  and `drivers: null` to the required empty list. Earlier focused CI covered
+  only a missing driver field in a present spec; the null case failed in run
+  364936 and has a new regression. PV import now orders PVCs before
   PVs and maps known claim UIDs before the first PV write. Ordering and UID
   remapping regressions passed the complete `nodemigrate` crate test in
   [run 36486806547](https://github.com/centerionware/not-k8s/actions/runs/36486806547)
@@ -122,21 +125,25 @@ unknown. See the [NodeLifecycleController event path](https://github.com/kuberne
 - `nodeapiserver`/`nodemigrate`: exact floating-point JSON round trips passed
   focused CI in run `36479715060`. Runtime parity after that parser fix has
   not been tested; keep strict parity enabled.
-- `nodecontroller`: core/v1 ReplicationController reconciliation is now
-  registered with Pod and ReplicationController watches and a status grant;
-  migrated owned-Pod behavior remains to be exercised in CI.
-- Migration fixture: kubeadm's serving certificate now covers every named
-  control-plane endpoint. The five-node run reached migration, then failed on
-  CSINode import; return behavior remains unverified.
+- `nodecontroller`: core/v1 ReplicationController reconciliation is registered
+  with Pod and ReplicationController watches and a status grant. Run 364936
+  passed target owned-Pod creation and readiness in both single-node lanes;
+  strict parity then found omitted-versus-zero `minReadySeconds`. Both snapshot
+  filters and focused shell regressions now canonicalize only default zero.
+- `nodemigrate`/`nodebootstrap`: run 364936 showed the replacement API
+  certificate missing the source kubeconfig's DNS API endpoint. The working
+  branch now carries that endpoint into target API certificate SAN generation;
+  actual cutover TLS behavior is pending.
 - `nodemigrate`/K3s: the repeated Node loss is still unresolved and blocks a
-  success claim. The active batch run now requires and records writes to Nodes and `kube-node-lease`
-  Leases, and records Node UIDs, resource versions, creation/deletion
-  timestamps, and Lease holder/renewal state in its target watcher.
+  success claim. Run 364936 failed before return migration and did not exercise
+  the returned-stage audit gate. The fixture requires and records writes to
+  Nodes and `kube-node-lease` Leases, and records Node UIDs, resource versions,
+  creation/deletion timestamps, and Lease holder/renewal state in its watcher.
   `bash -n`, `check_nodemigrate_diagnostics.sh` (including static policy
   checks), and `check_nodemigrate_api_inventory.sh` pass locally. These checks
-  do not exercise a live watcher, K3s audit path, or migration and have not run
-  against a migration since these diagnostics were added. Use them in the next
-  eligible batch verification before selecting a Node lifecycle fix.
+  do not exercise a live watcher or the K3s returned-stage audit path. The next
+  successful round trip must review its returned Node/Lease audit evidence
+  before deciding whether another Node lifecycle fix is needed.
 
 Latest focused component verification
 [36479715060](https://github.com/centerionware/not-k8s/actions/runs/36479715060)

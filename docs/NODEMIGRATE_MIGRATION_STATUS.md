@@ -8,16 +8,18 @@ that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
 Latest batch migration run
-[36490156839](https://github.com/centerionware/not-k8s/actions/runs/36490156839) at SHA
-`624442f622a6f8c44b72c9288ca5dbc32d5fbfa9` built nodemigrate and the combined
-branch runtime in all lanes, then failed each runtime path. K3s and upstream
-both reached the nodestore stage and timed out waiting for the migrated
-core/v1 ReplicationController to report one ready replica. The five-node path
-failed during import because a source CSINode omitted `spec.drivers`. Its
-failure logs also show kubelet TLS checks rejecting `cp-1` because the kubeadm
-API certificate omitted the control-plane DNS endpoints. These three findings
-are being fixed in one batch; the next migration run must validate all three
-together. See the [CI status](NODEMIGRATE_CI_STATUS.md) for exact job IDs and
+[36493677637](https://github.com/centerionware/not-k8s/actions/runs/36493677637) at SHA
+`0cef554bd03d53d1725e66a2d47ef2c65edd6dff` passed all nodemigrate and combined
+runtime builds but failed all three runtime paths. The new target
+ReplicationController controller produced the expected Ready owned Pod in
+both single-node lanes; strict parity then flagged only upstream omission
+versus target default-zero `spec.minReadySeconds`. Docker import failed because
+a source CSINode had `spec.drivers: null`; absent `spec` was already handled,
+but null was not. Docker diagnostics also revealed that the replacement API
+certificate omitted the source kubeconfig DNS endpoint `cp-1`. All three
+findings are fixed together in the current working branch and need focused CI
+validation before another migration run. All three lanes stopped before the
+return leg. See the [CI status](NODEMIGRATE_CI_STATUS.md) for exact job IDs and
 saved logs.
 
 Latest completed migration run

@@ -17,7 +17,7 @@
       else (.metadata.annotations // {}) end),
       ownerReferences: [(.metadata.ownerReferences // [])[] | {apiVersion, kind, name, controller}],
       spec: ((.spec // {})
-        | if $kind == "StatefulSet" and .minReadySeconds == 0 then
+        | if ($kind == "StatefulSet" or $kind == "ReplicationController") and .minReadySeconds == 0 then
             del(.minReadySeconds)
           else . end
         | if has("volumeClaimTemplates") then

@@ -24,6 +24,24 @@ target_application="$(jq -cn '{items:[
 jq -e 'all(.[]; .kind != "ConfigMap" or .name != "kube-root-ca.crt") and .[0].spec.volumeClaimTemplates[0].spec.resources.requests.storage == "1Gi"' \
     <<< "$(jq -cS -f "$APPLICATION_FILTER" <<< "$target_application")" >/dev/null
 
+source_rc='{"items":[{"apiVersion":"v1","kind":"ReplicationController","metadata":{"name":"rc","namespace":"apps"},"spec":{"replicas":1,"selector":{"app":"rc"},"template":{"metadata":{"labels":{"app":"rc"}},"spec":{"containers":[{"name":"check","image":"busybox"}]}}}}]}'
+target_rc='{"items":[{"apiVersion":"v1","kind":"ReplicationController","metadata":{"name":"rc","namespace":"apps"},"spec":{"replicas":1,"selector":{"app":"rc"},"minReadySeconds":0,"template":{"metadata":{"labels":{"app":"rc"}},"spec":{"containers":[{"name":"check","image":"busybox"}]}}}}]}'
+[[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$source_rc")" == "$(jq -cS -f "$APPLICATION_FILTER" <<< "$target_rc")" ]] || {
+    echo "an omitted and default-zero ReplicationController minReadySeconds changed migration semantics" >&2
+    exit 1
+}
+source_rc_object="$(jq -c '.items[0]' <<< "$source_rc")"
+target_rc_object="$(jq -c '.items[0]' <<< "$target_rc")"
+[[ "$(jq -cS -f "$FILTER" <<< "$source_rc_object")" == "$(jq -cS -f "$FILTER" <<< "$target_rc_object")" ]] || {
+    echo "an omitted and default-zero ReplicationController minReadySeconds changed normalized API state" >&2
+    exit 1
+}
+changed_rc="$(jq -c '.items[0].spec.minReadySeconds = 1' <<< "$target_rc_object")"
+[[ "$(jq -cS -f "$FILTER" <<< "$source_rc_object")" != "$(jq -cS -f "$FILTER" <<< "$changed_rc")" ]] || {
+    echo "nonzero ReplicationController minReadySeconds was normalized away" >&2
+    exit 1
+}
+
 legacy_token_source='{"items":[{"apiVersion":"v1","kind":"Secret","type":"kubernetes.io/service-account-token","metadata":{"name":"legacy-token","namespace":"apps","annotations":{"kubernetes.io/service-account.name":"builder","kubernetes.io/service-account.uid":"source-uid","custom.example/preserve":"yes"}}}]}'
 legacy_token_target="${legacy_token_source/source-uid/target-uid}"
 [[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$legacy_token_source")" == "$(jq -cS -f "$APPLICATION_FILTER" <<< "$legacy_token_target")" ]] || {

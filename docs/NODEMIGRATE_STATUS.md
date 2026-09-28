@@ -9,13 +9,15 @@ separate living documents below.
 ## Current state
 
 Latest batch migration run
-[36490156839](https://github.com/centerionware/not-k8s/actions/runs/36490156839)
-at SHA `624442f622a6f8c44b72c9288ca5dbc32d5fbfa9` passed all nodemigrate and
-combined-runtime builds but failed all three migration lanes. The findings are
-being fixed together: missing ReplicationController reconciliation,
-incomplete CSINode normalization, and kubeadm serving certificate SANs.
-Another migration run waits for focused CI validation of the full fix batch.
-No general build or full e2e was run.
+[36493677637](https://github.com/centerionware/not-k8s/actions/runs/36493677637)
+at SHA `0cef554bd03d53d1725e66a2d47ef2c65edd6dff` passed all nodemigrate and
+combined-runtime builds but failed all three migration lanes. The new
+ReplicationController controller made the target workload Ready; parity then
+found an omitted-versus-zero `minReadySeconds` default. Five-node import still
+rejected a null CSINode driver list, and diagnostics found the target API cert
+missing the source endpoint SAN. These three issues are fixed together in the
+working branch, awaiting focused CI before another migration batch. No general
+build or full e2e was run.
 
 Latest completed branch migration run
 [36468405459](https://github.com/centerionware/not-k8s/actions/runs/36468405459)
@@ -62,11 +64,11 @@ has passed.
 | --- | --- | --- |
 | Full bidirectional migration implementation | In progress; replacement uses UID-preconditioned Node deletes and preserves Node labels, annotations, taints, and schedulability. Forward exports carry node scheduling metadata for later offline control-plane or worker joins after source API quorum is lost. Failed reverse cutovers now stop the partial retained target, restore local PV payloads, and restart the prior nodestore stack. Reverse staged quorum orchestration and the five-node coordinator remain incomplete. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The required fixture extends existing coverage with ConfigMaps, CRDs/custom resources, Deployments, StatefulSets, DaemonSets, Jobs/CronJobs, Helm chart releases and managed objects, Ingress/Gateway API, RBAC, networking, storage, admission, and every listable discovered resource. Normalized source object content remains a strict equality gate; destination-only runtime identities are now reported separately and do not mask missing or changed source objects. The latest upstream lane still has unresolved source-identity changes including CoreDNS, system RBAC, and system PriorityClasses. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | Run 36490156839 found missing target-side ReplicationController reconciliation, CSINode import with an omitted `spec`, and kubeadm serving certificate SAN omissions. All three fixes are together in the working branch and need focused CI validation. The run failed before reverse migration, so K3s returned Node-loss audit evidence is still unavailable. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | Run 36493677637 found default-zero ReplicationController parity drift, a null CSINode driver list, and missing source API endpoint SANs in the target certificate. Their grouped fixes need focused CI validation. The run failed before reverse migration, so K3s returned Node-loss audit evidence remains unavailable. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement and new control-plane joins | Replacement ordering and Raft learner catch-up guard implemented; a new joined control plane is now promoted after Kubernetes Node readiness. Focused validation for this new-member path is pending; runtime scenario remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried. Forward and return worker paths avoid cluster-wide re-import, guard stale same-name Node replacement, preserve local PV data, and wait for fresh Ready registration. Runtime behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Detects the configured CNI directories, passes them through to containerd on the target, and snapshots/restores directories under K3s's data path around explicit uninstall. Focused checks passed; real K3s+Cilium uninstall behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Run [36490156839](https://github.com/centerionware/not-k8s/actions/runs/36490156839) compiled the branch runtime and ran Cilium KPR in both single-node lanes plus isolated 3-control-plane/2-worker upstream migration. All runtime lanes failed on the findings listed above; the grouped fixes await focused CI. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Run [36493677637](https://github.com/centerionware/not-k8s/actions/runs/36493677637) compiled the branch runtime and ran Cilium KPR in both single-node lanes plus isolated 3-control-plane/2-worker upstream migration. All runtime lanes failed on the findings listed above; their grouped fixes await focused CI. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Nodemigrate merge gates | Both mandatory round-trip gates remain not passed: one-node K3s+Cilium and 3-control-plane + 2-worker upstream Kubernetes with Cilium and joined replacement. The five-node Docker preflight in run 36335580680 passed, but it did not migrate the five-node cluster. Neither round trip has passed all source/target/return parity and behavior checks. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Docker five-node isolation preflight | Run [36355485146](https://github.com/centerionware/not-k8s/actions/runs/36355485146) passed the five-node Cilium/KPR setup and control-plane-loss recovery. Its migration fixture then failed because the hostpath setup script was missing after `cp-1` restart; the script is now copied after restart. Full five-node migration remains unverified. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |

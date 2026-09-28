@@ -89,7 +89,7 @@ select(
 | if .kind == "StatefulSet" and .spec.volumeClaimTemplates then
     .spec.volumeClaimTemplates |= map(del(.apiVersion, .kind))
   else . end
-| if .kind == "StatefulSet" and .spec.minReadySeconds == 0 then
+| if (.kind == "StatefulSet" or .kind == "ReplicationController") and .spec.minReadySeconds == 0 then
     .spec |= del(.minReadySeconds)
   else . end
 | if deployment_owned_replicaset then .spec |= del(.replicas) else . end

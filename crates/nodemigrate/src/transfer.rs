@@ -298,8 +298,8 @@ fn node_is_ready_replacement(node: &DynamicObject, previous_uid: &str) -> bool {
 }
 
 impl KubeApi {
-    pub fn source(installation: &Installation) -> Result<Self> {
-        let kubeconfig = std::env::var_os("NODEMIGRATE_SOURCE_KUBECONFIG")
+    fn source_kubeconfig_path(installation: &Installation) -> PathBuf {
+        std::env::var_os("NODEMIGRATE_SOURCE_KUBECONFIG")
             .map(PathBuf::from)
             .or_else(|| {
                 installation
@@ -316,13 +316,82 @@ impl KubeApi {
                 crate::request::Distribution::Kubernetes => {
                     PathBuf::from("/etc/kubernetes/admin.conf")
                 }
-            });
+            })
+    }
+
+    pub fn source(installation: &Installation) -> Result<Self> {
+        let kubeconfig = Self::source_kubeconfig_path(installation);
         ensure!(
             kubeconfig.is_file(),
             "source kubeconfig {} does not exist",
             kubeconfig.display()
         );
         Ok(Self { kubeconfig })
+    }
+
+    pub fn source_api_server_name(installation: &Installation) -> Result<Option<String>> {
+        let kubeconfig = Self::source_kubeconfig_path(installation);
+        if !kubeconfig.is_file() {
+            return Ok(None);
+        }
+        let api = Self { kubeconfig };
+        api.api_server_name().map(Some)
+    }
+
+    fn api_server_name(&self) -> Result<String> {
+        let contents = fs::read_to_string(&self.kubeconfig)
+            .with_context(|| format!("reading Kubernetes config {}", self.kubeconfig.display()))?;
+        let config: serde_yaml::Value = serde_yaml::from_str(&contents)
+            .with_context(|| format!("parsing Kubernetes config {}", self.kubeconfig.display()))?;
+        let current_context = config
+            .get("current-context")
+            .and_then(serde_yaml::Value::as_str)
+            .context("source kubeconfig has no current-context")?;
+        let contexts = config
+            .get("contexts")
+            .and_then(serde_yaml::Value::as_sequence)
+            .context("source kubeconfig has no contexts list")?;
+        let cluster_name = contexts
+            .iter()
+            .find(|context| {
+                context.get("name").and_then(serde_yaml::Value::as_str) == Some(current_context)
+            })
+            .and_then(|context| context.get("context"))
+            .and_then(|context| context.get("cluster"))
+            .and_then(serde_yaml::Value::as_str)
+            .context("source kubeconfig current context has no cluster")?;
+        let clusters = config
+            .get("clusters")
+            .and_then(serde_yaml::Value::as_sequence)
+            .context("source kubeconfig has no clusters list")?;
+        let server = clusters
+            .iter()
+            .find(|cluster| {
+                cluster.get("name").and_then(serde_yaml::Value::as_str) == Some(cluster_name)
+            })
+            .and_then(|cluster| cluster.get("cluster"))
+            .and_then(|cluster| cluster.get("server"))
+            .and_then(serde_yaml::Value::as_str)
+            .context("source kubeconfig current cluster has no API server URL")?;
+        let authority = server
+            .split_once("://")
+            .map_or(server, |(_, rest)| rest)
+            .split('/')
+            .next()
+            .unwrap_or_default();
+        let host = if let Some(bracketed) = authority.strip_prefix('[') {
+            bracketed
+                .split_once(']')
+                .map(|(host, _)| host)
+                .context("source API server URL has an invalid IPv6 authority")?
+        } else {
+            authority
+                .rsplit_once(':')
+                .filter(|(_, port)| port.bytes().all(|byte| byte.is_ascii_digit()))
+                .map_or(authority, |(host, _)| host)
+        };
+        ensure!(!host.is_empty(), "source API server URL has no host");
+        Ok(host.to_owned())
     }
 
     pub fn destination(distribution: crate::request::Distribution) -> Result<Self> {
@@ -3257,7 +3326,9 @@ fn prepare_initial_import_object(value: &Value, uid_map: &HashMap<String, String
             initial["spec"] = serde_json::json!({});
         }
         if let Some(spec) = initial.pointer_mut("/spec").and_then(Value::as_object_mut) {
-            spec.entry("drivers").or_insert_with(|| Value::Array(Vec::new()));
+            if !spec.get("drivers").is_some_and(Value::is_array) {
+                spec.insert("drivers".to_string(), Value::Array(Vec::new()));
+            }
         }
     }
     if let Some(metadata) = initial
@@ -3465,6 +3536,45 @@ mod tests {
         let normalized = prepare_initial_import_object(&source, &HashMap::new());
         assert_eq!(normalized.pointer("/spec/drivers"), Some(&serde_json::json!([])));
         assert!(source.get("spec").is_none());
+    }
+
+    #[test]
+    fn migration_replaces_a_null_csinode_driver_list_with_an_empty_list() {
+        let source = serde_json::json!({
+            "apiVersion": "storage.k8s.io/v1",
+            "kind": "CSINode",
+            "metadata": {"name": "worker-2"},
+            "spec": {"drivers": null}
+        });
+        let normalized = prepare_initial_import_object(&source, &HashMap::new());
+        assert_eq!(normalized.pointer("/spec/drivers"), Some(&serde_json::json!([])));
+        assert_eq!(source.pointer("/spec/drivers"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn source_api_server_name_uses_the_current_kubeconfig_context() {
+        let directory = tempfile::tempdir().expect("create kubeconfig directory");
+        let kubeconfig = directory.path().join("admin.conf");
+        fs::write(
+            &kubeconfig,
+            "apiVersion: v1\nkind: Config\ncurrent-context: migrate\ncontexts:\n- name: other\n  context:\n    cluster: other-cluster\n    user: admin\n- name: migrate\n  context:\n    cluster: source\n    user: admin\nclusters:\n- name: other-cluster\n  cluster:\n    server: https://wrong.example.test:6443\n- name: source\n  cluster:\n    server: https://cp-1:6443/api\nusers:\n- name: admin\n  user: {}\n",
+        )
+        .expect("write kubeconfig");
+        let api = KubeApi { kubeconfig };
+        assert_eq!(api.api_server_name().expect("read endpoint name"), "cp-1");
+    }
+
+    #[test]
+    fn source_api_server_name_unbrackets_ipv6_authorities() {
+        let directory = tempfile::tempdir().expect("create kubeconfig directory");
+        let kubeconfig = directory.path().join("admin.conf");
+        fs::write(
+            &kubeconfig,
+            "apiVersion: v1\nkind: Config\ncurrent-context: migrate\ncontexts:\n- name: migrate\n  context:\n    cluster: source\nclusters:\n- name: source\n  cluster:\n    server: https://[2001:db8::1]:6443\n",
+        )
+        .expect("write kubeconfig");
+        let api = KubeApi { kubeconfig };
+        assert_eq!(api.api_server_name().expect("read endpoint name"), "2001:db8::1");
     }
 
     #[test]

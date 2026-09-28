@@ -89,8 +89,27 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         "admin.key",
     ];
     let present = required.iter().filter(|name| dir.join(name).exists()).count();
+    let service_ips = cfg.service_ips()?;
+    let advertise_address = cfg
+        .advertise_address
+        .clone()
+        .unwrap_or_else(crate::targets::upstream::detect_advertise_address);
+    let mut extra_sans = apiserver_extra_sans(&service_ips, &advertise_address);
+    if let Ok(configured_sans) = std::env::var("NODEBOOTSTRAP_APISERVER_EXTRA_SANS") {
+        for san in configured_apiserver_extra_sans(configured_sans) {
+            if !extra_sans.contains(&san) {
+                extra_sans.push(san);
+            }
+        }
+    }
     if present == required.len() {
-        ensure_existing_pki_matches_domain(&dir, &cfg.cluster_domain(), &cfg.service_ips()?)?;
+        ensure_existing_pki_matches_domain(&dir, &cfg.cluster_domain(), &service_ips)?;
+        ensure_existing_apiserver_extra_sans(
+            &dir,
+            &cfg.cluster_domain(),
+            &service_ips,
+            &extra_sans,
+        )?;
         ensure_front_proxy_client(&dir)?;
         tracing::info!(dir = %dir.display(), "reusing existing cluster PKI");
         return Ok(());
@@ -104,17 +123,88 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     let mut spec = ClusterPkiSpec::default();
     spec.cluster_domain = cfg.cluster_domain();
     spec.service_ip = cfg.service_ip()?;
-    let advertise_address = cfg
-        .advertise_address
-        .clone()
-        .unwrap_or_else(crate::targets::upstream::detect_advertise_address);
-    spec.extra_sans.extend(apiserver_extra_sans(
-        &cfg.service_ips()?,
-        &advertise_address,
-    ));
+    spec.extra_sans = extra_sans;
     let cluster = generate(&spec)?;
     cluster.write_to_dir(&dir)?;
     tracing::info!(dir = %dir.display(), "wrote cluster PKI");
+    Ok(())
+}
+
+fn ensure_existing_apiserver_extra_sans(
+    dir: &std::path::Path,
+    cluster_domain: &str,
+    service_ips: &[std::net::IpAddr],
+    extra_sans: &[String],
+) -> Result<()> {
+    let cert_path = dir.join("apiserver.crt");
+    let cert_pem = std::fs::read(&cert_path)
+        .with_context(|| format!("reading existing apiserver certificate from {}", dir.display()))?;
+    let parsed_pem = pem::parse(&cert_pem).context("parsing existing apiserver certificate PEM")?;
+    let (_, certificate) = x509_parser::parse_x509_certificate(parsed_pem.contents())
+        .context("parsing existing apiserver certificate DER")?;
+    let san = certificate
+        .subject_alternative_name()
+        .context("reading existing apiserver certificate SANs")?;
+    let has_extra_sans = san.is_some_and(|san| {
+        extra_sans.iter().all(|expected| {
+            if let Ok(expected_ip) = expected.parse::<std::net::IpAddr>() {
+                let expected_ip = match expected_ip {
+                    std::net::IpAddr::V4(ip) => ip.octets().to_vec(),
+                    std::net::IpAddr::V6(ip) => ip.octets().to_vec(),
+                };
+                san.value.general_names.iter().any(|name| {
+                    matches!(name, x509_parser::extensions::GeneralName::IPAddress(ip) if *ip == expected_ip.as_slice())
+                })
+            } else {
+                san.value.general_names.iter().any(|name| {
+                    matches!(name, x509_parser::extensions::GeneralName::DNSName(name) if *name == expected.as_str())
+                })
+            }
+        })
+    });
+    if has_extra_sans {
+        return Ok(());
+    }
+
+    let key_path = dir.join("apiserver.key");
+    let serving_key_pem = std::fs::read_to_string(&key_path)
+        .with_context(|| format!("reading existing apiserver key from {}", dir.display()))?;
+    let serving_key = KeyPair::from_pem(&serving_key_pem)
+        .context("parsing existing apiserver serving key")?;
+    let ca_cert_pem = std::fs::read_to_string(dir.join("ca.crt"))
+        .with_context(|| format!("reading cluster CA from {}", dir.display()))?;
+    let ca_key_pem = std::fs::read_to_string(dir.join("ca.key"))
+        .with_context(|| format!("reading cluster CA key from {}", dir.display()))?;
+    let ca_key = rcgen::KeyPair::from_pem(&ca_key_pem).context("parsing cluster CA key")?;
+    let ca_params = rcgen::CertificateParams::from_ca_cert_pem(&ca_cert_pem)
+        .context("parsing cluster CA certificate")?;
+    let ca_cert = ca_params
+        .self_signed(&ca_key)
+        .context("reconstructing cluster CA for API certificate refresh")?;
+
+    let mut dns_sans = vec![
+        "kubernetes".to_string(),
+        "kubernetes.default".to_string(),
+        "kubernetes.default.svc".to_string(),
+        format!("kubernetes.default.svc.{cluster_domain}"),
+        "localhost".to_string(),
+    ];
+    let mut ip_sans = vec![std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)];
+    if let Some(service_ip) = service_ips.first() {
+        ip_sans.push(*service_ip);
+    }
+    for extra_san in extra_sans {
+        if let Ok(ip) = extra_san.parse() {
+            ip_sans.push(ip);
+        } else if !dns_sans.contains(extra_san) {
+            dns_sans.push(extra_san.clone());
+        }
+    }
+    let serving = issue_serving_cert_with_key(&ca_cert, &ca_key, &serving_key, &dns_sans, &ip_sans)
+        .context("refreshing apiserver serving certificate SANs")?;
+    atomic_write(&cert_path, &serving.cert_pem)
+        .with_context(|| format!("writing refreshed API certificate to {}", cert_path.display()))?;
+    tracing::info!(dir = %dir.display(), "refreshed apiserver serving certificate with required migration endpoint SANs");
     Ok(())
 }
 
@@ -131,6 +221,15 @@ fn apiserver_extra_sans(
         sans.push(advertise_address.to_string());
     }
     sans
+}
+
+fn configured_apiserver_extra_sans(value: String) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|san| !san.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn ensure_existing_pki_matches_domain(
@@ -355,6 +454,17 @@ fn issue_serving_cert(
     dns_sans: &[String],
     ip_sans: &[std::net::IpAddr],
 ) -> Result<IssuedCert> {
+    let key = KeyPair::generate().context("generating serving cert keypair")?;
+    issue_serving_cert_with_key(ca_cert, ca_key, &key, dns_sans, ip_sans)
+}
+
+fn issue_serving_cert_with_key(
+    ca_cert: &rcgen::Certificate,
+    ca_key: &KeyPair,
+    key: &KeyPair,
+    dns_sans: &[String],
+    ip_sans: &[std::net::IpAddr],
+) -> Result<IssuedCert> {
     let mut params = CertificateParams::new(dns_sans.to_vec()).context("building serving cert params")?;
     for ip in ip_sans {
         params.subject_alt_names.push(SanType::IpAddress(*ip));
@@ -362,11 +472,52 @@ fn issue_serving_cert(
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, "kube-apiserver");
     params.distinguished_name = dn;
-    let key = KeyPair::generate().context("generating serving cert keypair")?;
     let cert = params
-        .signed_by(&key, ca_cert, ca_key)
+        .signed_by(key, ca_cert, ca_key)
         .context("signing serving cert with cluster CA")?;
     Ok(IssuedCert { cert_pem: cert.pem(), key_pem: key.serialize_pem() })
+}
+
+fn atomic_write(path: &std::path::Path, contents: &str) -> Result<()> {
+    use std::io::Write;
+
+    let parent = path.parent().context("target path has no parent directory")?;
+    let file_name = path
+        .file_name()
+        .context("target path has no file name")?
+        .to_string_lossy();
+    let mut temporary = None;
+    for attempt in 0..16 {
+        let candidate = parent.join(format!(
+            ".{file_name}.tmp.{}.{}",
+            std::process::id(),
+            attempt
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error).context("creating temporary PKI file"),
+        }
+    }
+    let (temporary_path, mut file) = temporary.context("could not allocate temporary PKI file")?;
+    let result = (|| -> Result<()> {
+        file.write_all(contents.as_bytes())
+            .context("writing temporary PKI file")?;
+        file.sync_all().context("syncing temporary PKI file")?;
+        std::fs::rename(&temporary_path, path).context("atomically replacing PKI file")?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary_path);
+    }
+    result
 }
 
 /// Issues a client cert for a single identity: CN=`common_name`,
@@ -542,6 +693,69 @@ mod tests {
         assert!(san_ext.value.general_names.iter().any(|name| {
             matches!(name, x509_parser::extensions::GeneralName::IPAddress(ip) if *ip == expected_ip.as_slice())
         }));
+    }
+
+    #[test]
+    fn configured_apiserver_sans_include_the_source_api_endpoint_name() {
+        let mut spec = ClusterPkiSpec::default();
+        spec.extra_sans = configured_apiserver_extra_sans("cp-1,api.example.test".to_string());
+        let pki = generate(&spec).expect("generate migration API certificate");
+        let der = pem::parse(&pki.apiserver_serving.cert_pem).expect("parse apiserver cert PEM");
+        let (_, cert) = x509_parser::parse_x509_certificate(der.contents())
+            .expect("parse apiserver cert DER");
+        let san_ext = cert
+            .subject_alternative_name()
+            .expect("read apiserver SAN extension")
+            .expect("apiserver cert should have a SAN extension");
+        for expected in ["cp-1", "api.example.test"] {
+            assert!(san_ext.value.general_names.iter().any(|name| {
+                matches!(name, x509_parser::extensions::GeneralName::DNSName(name) if *name == expected)
+            }));
+        }
+    }
+
+    #[test]
+    fn existing_api_certificate_is_refreshed_for_new_migration_endpoint_sans() {
+        let directory = std::env::temp_dir().join(format!(
+            "nodebootstrap-pki-extra-san-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let original = generate(&ClusterPkiSpec::default()).expect("generate original PKI");
+        original.write_to_dir(&directory).expect("write original PKI");
+        let original_key = std::fs::read(directory.join("apiserver.key"))
+            .expect("read existing API key");
+        let service_ips = ["10.43.0.1".parse().expect("service IP")];
+        ensure_existing_apiserver_extra_sans(
+            &directory,
+            "cluster.local",
+            &service_ips,
+            &["192.0.2.10".to_string(), "cp-1".to_string()],
+        )
+        .expect("refresh existing API certificate");
+        assert_eq!(
+            std::fs::read(directory.join("apiserver.key")).expect("read refreshed API key"),
+            original_key,
+            "refreshing SANs must preserve the serving key"
+        );
+
+        let refreshed = std::fs::read(directory.join("apiserver.crt"))
+            .expect("read refreshed API certificate");
+        let der = pem::parse(refreshed).expect("parse refreshed API certificate PEM");
+        let (_, cert) = x509_parser::parse_x509_certificate(der.contents())
+            .expect("parse refreshed API certificate DER");
+        let san = cert
+            .subject_alternative_name()
+            .expect("read refreshed API certificate SAN")
+            .expect("refreshed API certificate has SANs");
+        assert!(san.value.general_names.iter().any(|name| {
+            matches!(name, x509_parser::extensions::GeneralName::DNSName(name) if *name == "cp-1")
+        }));
+        let expected_ip = [192_u8, 0, 2, 10];
+        assert!(san.value.general_names.iter().any(|name| {
+            matches!(name, x509_parser::extensions::GeneralName::IPAddress(ip) if *ip == expected_ip.as_slice())
+        }));
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

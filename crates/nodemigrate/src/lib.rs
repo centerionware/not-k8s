@@ -1459,7 +1459,8 @@ fn bootstrap_command(
     if let Some(node_name) = &config.node_name {
         args.push(format!("--node-name={node_name}"));
     }
-    bootstrap_command_with_config(args, config)
+    let source_api_server_name = transfer::KubeApi::source_api_server_name(installation)?;
+    bootstrap_command_with_config(args, config, source_api_server_name)
 }
 
 fn replacement_worker_command(
@@ -1490,7 +1491,7 @@ fn replacement_worker_command(
         node_name,
         disable_nodeproxy,
     );
-    bootstrap_command_with_config(args, config)
+    bootstrap_command_with_config(args, config, None)
 }
 
 fn replace_member_command(old_member_id: &str) -> Result<Command> {
@@ -1580,6 +1581,7 @@ fn append_nodeproxy_mode(args: &mut Vec<String>, disable_nodeproxy: bool) {
 fn bootstrap_command_with_config(
     mut args: Vec<String>,
     config: &detect::ClusterConfig,
+    source_api_server_name: Option<String>,
 ) -> Result<Command> {
     if let Some(domain) = &config.cluster_domain {
         if !args.iter().any(|arg| arg.starts_with("--cluster-domain=")) {
@@ -1634,6 +1636,9 @@ fn bootstrap_command_with_config(
         .env("NODEBOOTSTRAP_IPV4_CLUSTER_CIDR", ipv4_cluster_cidr)
         .env("NODEBOOTSTRAP_IPV6_CLUSTER_CIDR", ipv6_cluster_cidr)
         .env("NODELET_CSI_STAGING_ROOT", csi_staging_root);
+    if let Some(name) = source_api_server_name {
+        command.env("NODEBOOTSTRAP_APISERVER_EXTRA_SANS", name);
+    }
     if config.cni.as_deref() != Some("flannel")
         || config.flannel_backend.as_deref().unwrap_or("vxlan") != "vxlan"
     {
