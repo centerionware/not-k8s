@@ -8,6 +8,24 @@ is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
 Latest branch-runtime run
+[36377385003](https://github.com/centerionware/not-k8s/actions/runs/36377385003)
+at SHA `d2a7e06abeed8ce349fd8c53795809486004c876` is terminal failure. Each
+lane built `nodemigrate` and branch `notk8s --features cri`, including the
+packaged runtime component crates. K3s completed forward migration and
+119-resource parity; return rolled back after the fixture selected a Running
+Pod with an exited container. The fixture now selects only a non-terminating,
+fully Ready Pod and prints candidates if none qualify. Upstream completed both
+migrations and return readiness after a transient cert-manager webhook HTTP
+500 was retried, but its standalone source-running Pod had become Failed
+(exit 137) and was not restarted. The importer now records that source state
+in the protected export and recreates a terminal same-name destination Pod;
+focused CI validation is pending. The five-node Docker preflight built both
+binaries and recovered Kubernetes API/Node readiness, but Cilium could not
+restart because `/sys/fs/bpf` lost shared mount propagation. The preflight now
+restores `/sys`, bpffs, and `/run` propagation before enabling kubelet; runtime
+verification is pending. No general build or full e2e workflow was dispatched.
+
+Latest branch-runtime run
 [36373995554](https://github.com/centerionware/not-k8s/actions/runs/36373995554)
 at SHA `539ea445a7d7bc1c73e94ffe5c759eb5e9232751` compiled both `nodemigrate`
 and the branch `notk8s --features cri` combined runtime in all three jobs; this

@@ -2234,9 +2234,17 @@ verify_stage() {
     }
     kubectl rollout status -n migration-apps deployment/migration-emptydir-nonroot --timeout=5m
     emptydir_pod="$(kubectl get pods -n migration-apps -l app=migration-emptydir-nonroot \
-        -o json | jq -r '[.items[] | select(.status.phase == "Running") | .metadata.name][0] // empty')"
+        -o json | jq -r '
+          [.items[] | select(.metadata.deletionTimestamp == null and
+            .status.phase == "Running" and
+            any(.status.conditions[]?; .type == "Ready" and .status == "True") and
+            ((.status.containerStatuses // []) | length) > 0 and
+            all(.status.containerStatuses[]; .ready == true))]
+          | sort_by(.metadata.creationTimestamp) | last.metadata.name // empty
+        ' )"
     [[ -n "$emptydir_pod" ]] || {
-        echo "non-root emptyDir probe Pod is not running at stage $stage" >&2
+        echo "no Ready non-root emptyDir probe Pod is available at stage $stage" >&2
+        kubectl get pods -n migration-apps -l app=migration-emptydir-nonroot -o wide >&2 || true
         return 1
     }
     [[ "$(kubectl exec -n migration-apps "$emptydir_pod" -- cat /tmp/marker)" == emptydir-write-ok ]] || {

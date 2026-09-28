@@ -133,6 +133,10 @@ for index in "${!NODES[@]}"; do
             echo "FAIL: network namespace creation is unavailable" >&2
             exit 1
         }
+        mount --make-rshared /sys || {
+            echo "FAIL: making the node /sys mount shared is unavailable" >&2
+            exit 1
+        }
         test -r /sys/kernel/btf/vmlinux || {
             echo "FAIL: host kernel BTF is unavailable in the node container" >&2
             exit 1
@@ -427,6 +431,7 @@ echo "Verifying the three-member etcd control plane survives cp-1 loss"
 cp2="$(node_container cp-2)"
 docker exec "$cp2" kubectl config set-cluster kubernetes \
     --server=https://cp-2:6443 --kubeconfig=/etc/kubernetes/admin.conf
+docker exec "$cp1" systemctl disable --now kubelet
 docker stop --time 2 "$cp1" >/dev/null
 docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
     kubectl --request-timeout=20s get --raw=/readyz >/dev/null
@@ -438,6 +443,13 @@ for node in cp-2 cp-3 worker-1 worker-2; do
 done
 docker start "$cp1" >/dev/null
 wait_systemd "$cp1"
+docker exec "$cp1" bash -ec '
+    mount --make-rshared /sys
+    mountpoint -q /sys/fs/bpf || mount -t bpf bpffs /sys/fs/bpf
+    mount --make-rshared /sys/fs/bpf
+    mount --make-rshared /run
+    systemctl enable --now kubelet
+'
 echo "Waiting for cp-1 API, all five Nodes, and Cilium to recover before migration"
 cp1_recovered=false
 for _ in $(seq 1 180); do

@@ -9,6 +9,27 @@ compile or unit test does not mark a real migration path as verified.
 
 ## Latest integration result
 
+Branch-runtime run
+[36377385003](https://github.com/centerionware/not-k8s/actions/runs/36377385003)
+at SHA `d2a7e06abeed8ce349fd8c53795809486004c876` is terminal failure. All
+three lanes built `nodemigrate` and branch `notk8s --features cri`; that
+combined binary build compiles the packaged runtime component crates, including
+their branch changes. K3s completed forward migration and 119-resource parity,
+then its return rolled back after the fixture selected a Running Pod whose
+container had exited. The selector now requires a non-terminating Pod with a
+Ready condition and all containers Ready. Upstream completed forward and
+return import and replacement Node readiness; its transient cert-manager
+webhook HTTP 500 recovered through the bounded retry. The return checkpoint
+then found a standalone Pod that had been Running in the source but had
+terminated with exit 137. The exporter now records source-running Pod state,
+and the importer recreates a terminal same-name Pod from the source spec.
+The five-node Docker preflight built both binaries and recovered the Kubernetes
+API and all Nodes, but Cilium remained unready after cp-1 restart because
+`/sys/fs/bpf` was not shared with the CNI mount namespace. The preflight now
+restores shared propagation for `/sys`, bpffs, and `/run` before kubelet starts.
+These latest fixes are pending migration CI. No general build or full e2e
+workflow was dispatched.
+
 The latest run
 [36373995554](https://github.com/centerionware/not-k8s/actions/runs/36373995554)
 used branch runtime at `539ea445a7d7bc1c73e94ffe5c759eb5e9232751`. All three

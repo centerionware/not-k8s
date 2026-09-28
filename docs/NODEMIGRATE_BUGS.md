@@ -4,6 +4,32 @@ Last updated: 2026-09-28
 
 ## Latest branch-run findings
 
+- **K3s fixture chose a Running Pod with no running container.** In branch
+  run [36377385003](https://github.com/centerionware/not-k8s/actions/runs/36377385003),
+  forward migration and 119-resource parity passed, but return rollback left
+  the old non-root `emptyDir` Pod in phase Running with its container exited.
+  The fixture now selects the newest non-terminating Pod only when the Pod and
+  all containers are Ready, and prints candidates when none qualify. Runtime
+  validation is pending.
+
+- **`nodemigrate`: restore a standalone Pod that was live in the source.** In
+  the upstream lane of run `36377385003`, return migration and Node readiness
+  succeeded, but the `restartPolicy: Never` standalone Pod had become Failed
+  with exit 137 during cutover. Importing its source spec over the same-name
+  terminal object left it terminal. The protected export now marks Pods whose
+  source phase was Running; import strips the marker before API writes and
+  deletes/recreates a terminal same-name destination Pod with its UID
+  precondition. A focused regression covers marker generation and terminal
+  detection; migration verification is pending.
+
+- **Five-node Docker preflight lost Cilium mount propagation after cp-1
+  restart.** In run `36377385003`, kubelet/API and all five Nodes recovered,
+  but Cilium remained unready because `/sys/fs/bpf` was not shared with the
+  CNI mount namespace. The preflight now makes `/sys` shared before initial
+  setup and restores `/sys`, bpffs, and `/run` propagation before re-enabling
+  kubelet after restart. Shell validation passed; runtime verification is
+  pending.
+
 - **`nodemigrate`: transient admission failure aborts reference repair.** In
   branch-runtime run
   [36373995554](https://github.com/centerionware/not-k8s/actions/runs/36373995554),

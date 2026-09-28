@@ -2435,6 +2435,13 @@ async fn apply_object(
         "destination does not allow reading existing {kind} objects before migration"
     );
     let mut apply_value = value.clone();
+    let source_was_running = apply_value
+        .get("_nodemigrateSourceWasRunning")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if let Some(object) = apply_value.as_object_mut() {
+        object.remove("_nodemigrateSourceWasRunning");
+    }
     if resource.api_version != type_meta {
         let name = apply_value
             .pointer("/metadata/name")
@@ -2483,6 +2490,69 @@ async fn apply_object(
             .await
             .with_context(|| format!("reading destination {type_meta}/{kind} {name}"))?;
         let result = if let Some(existing) = existing {
+            if source_was_running
+                && kind == "Pod"
+                && pod_status_is_terminal_or_exited(&existing)
+            {
+                let uid = existing
+                    .metadata
+                    .uid
+                    .clone()
+                    .context("terminal destination Pod has no UID")?;
+                match api
+                    .delete(
+                        name,
+                        &DeleteParams {
+                            grace_period_seconds: Some(0),
+                            propagation_policy: Some(
+                                kube::api::PropagationPolicy::Background,
+                            ),
+                            preconditions: Some(Preconditions {
+                                uid: Some(uid),
+                                resource_version: None,
+                            }),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(kube::Error::Api(response)) if response.code == 404 => {}
+                    Err(kube::Error::Api(response))
+                        if response.code == 409 && attempt + 1 < WRITE_ATTEMPTS =>
+                    {
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("removing terminal destination Pod {name} before restart")
+                        });
+                    }
+                }
+                let mut removed = false;
+                for _ in 0..50 {
+                    if api
+                        .get_opt(name)
+                        .await
+                        .with_context(|| {
+                            format!("checking removal of terminal destination Pod {name}")
+                        })?
+                        .is_none()
+                    {
+                        removed = true;
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                ensure!(
+                    removed,
+                    "terminal destination Pod {name} was not removed before restart"
+                );
+                eprintln!(
+                    "nodemigrate: recreated terminal Pod {name} that was Running in the source cluster"
+                );
+                continue;
+            }
             ensure!(
                 capabilities.supports_operation(verbs::UPDATE),
                 "destination does not allow replacing existing {kind} objects"
@@ -2519,6 +2589,29 @@ async fn apply_object(
         }
     }
     bail!("destination kept changing {type_meta}/{kind} {name} during migration")
+}
+
+fn pod_status_is_terminal_or_exited(pod: &DynamicObject) -> bool {
+    let Some(status) = pod.data.get("status").and_then(Value::as_object) else {
+        return false;
+    };
+    if matches!(
+        status.get("phase").and_then(Value::as_str),
+        Some("Failed" | "Succeeded")
+    ) {
+        return true;
+    }
+    status
+        .get("containerStatuses")
+        .and_then(Value::as_array)
+        .is_some_and(|containers| {
+            !containers.is_empty()
+                && containers.iter().all(|container| {
+                    container
+                        .pointer("/state/terminated")
+                        .is_some_and(Value::is_object)
+                })
+        })
 }
 
 fn custom_resource_gvks(value: &Value) -> BTreeSet<(String, String, String)> {
@@ -2839,6 +2932,18 @@ fn sanitize(mut object: Value) -> Option<SanitizedObject> {
     if skip_object(&object) {
         return None;
     }
+    if object.get("kind").and_then(Value::as_str) == Some("Pod")
+        && object
+            .pointer("/status/phase")
+            .and_then(Value::as_str)
+            == Some("Running")
+    {
+        // Pod status is not portable across clusters. Keep this source-state
+        // bit in the protected export so a same-name terminal Pod on return
+        // can be recreated and run again; apply_object strips it before API
+        // writes.
+        object["_nodemigrateSourceWasRunning"] = Value::Bool(true);
+    }
     object.as_object_mut()?.remove("status");
     let metadata = object.get_mut("metadata")?.as_object_mut()?;
     let source_uid = metadata
@@ -2973,6 +3078,7 @@ mod tests {
         custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
         namespace_ca_bundle_matches, node_scheduling_patch, object_rank, object_skip_reason,
         object_type_label, parse_cilium_kube_proxy_replacement, persistent_host_paths,
+        pod_status_is_terminal_or_exited,
         preserve_discovered_type_meta, remapped_node_owner_references, restore_cni_path_backups,
         retryable_import_error, same_group_kind, sanitize, service_account_token_secret_patch,
         service_account_token_secret_value, skip_kind_reason, skip_object,
@@ -3398,6 +3504,54 @@ current-context: test
         );
         assert!(sanitized.value["metadata"].get("uid").is_none());
         assert!(sanitized.value.get("status").is_none());
+    }
+
+    #[test]
+    fn migration_export_marks_running_standalone_pods_for_terminal_restart() {
+        let sanitized = sanitize(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": "standalone", "namespace": "apps"},
+            "spec": {"restartPolicy": "Never", "containers": [{"name": "app", "image": "busybox"}]},
+            "status": {"phase": "Running"}
+        }))
+        .expect("running standalone Pod should be exported");
+        assert_eq!(
+            sanitized.value["_nodemigrateSourceWasRunning"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(sanitized.value.get("status").is_none());
+
+        let failed: DynamicObject = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": "standalone", "namespace": "apps"},
+            "status": {"phase": "Failed"}
+        }))
+        .unwrap();
+        let exited: DynamicObject = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": "standalone", "namespace": "apps"},
+            "status": {
+                "phase": "Running",
+                "containerStatuses": [{"name": "app", "state": {"terminated": {"exitCode": 137}}}]
+            }
+        }))
+        .unwrap();
+        let running: DynamicObject = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": "standalone", "namespace": "apps"},
+            "status": {
+                "phase": "Running",
+                "containerStatuses": [{"name": "app", "ready": true, "state": {"running": {}}}]
+            }
+        }))
+        .unwrap();
+        assert!(pod_status_is_terminal_or_exited(&failed));
+        assert!(pod_status_is_terminal_or_exited(&exited));
+        assert!(!pod_status_is_terminal_or_exited(&running));
     }
 
     #[test]
