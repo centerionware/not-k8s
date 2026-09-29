@@ -3,11 +3,17 @@
 Last updated: 2026-09-29
 
 The latest full migration run,
-[36608846633](https://github.com/centerionware/not-k8s/actions/runs/36608846633),
-built the branch `notk8s` and `nodemigrate` binaries in all three lanes, but
-K3s, upstream Kubernetes, and Docker migration failed. The new blockers and
-current fixes are tracked in [CI status](NODEMIGRATE_CI_STATUS.md) and
-[the bug tracker](NODEMIGRATE_BUGS.md). The corrected
+[36614282579](https://github.com/centerionware/not-k8s/actions/runs/36614282579),
+built the branch `notk8s` and `nodemigrate` binaries in all three lanes. K3s
+and upstream Kubernetes both completed forward migration and passed storage
+checks, then strict parity caught the same test-fixture-only CSI StatefulSet
+mount added after the source snapshot. The fixture now adds that mount before
+the source checkpoint so the comparison can remain strict. The five-node lane
+completed three control-plane migrations and one worker join, then timed out
+waiting for the imported CSI StatefulSet on cp-1; this separate failure remains
+unverified after the Nodelet resolver correction. Details and logs are tracked
+in [CI status](NODEMIGRATE_CI_STATUS.md) and [the bug tracker](NODEMIGRATE_BUGS.md).
+The corrected
 `nodeapiserver,nodelet,nodestore` quick-check passed in
 [run 36613539517](https://github.com/centerionware/not-k8s/actions/runs/36613539517)
 at SHA `30b0894778bac62be3187f68ac8f839470313a34`; migration-specific

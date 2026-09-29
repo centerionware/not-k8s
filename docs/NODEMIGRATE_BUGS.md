@@ -2,6 +2,37 @@
 
 Last updated: 2026-09-29
 
+## Findings from migration run 36614282579
+
+At SHA `6d91d1df7f3837dca583d359e3aba76030634500`, forward migration and
+storage checks passed in both single-node lanes. Each then stopped at strict
+API parity on the same test-only CSI change. The five-node lane migrated three
+control planes and joined one worker before the imported HostPath CSI
+StatefulSet remained unready on cp-1.
+
+- **Component:** migration integration fixture. The target-only
+  `nodemigrate-nodelet-root` hostPath mount changed five CSI StatefulSet spec
+  fields after the source snapshot. The parity failure was correct; the fixture
+  now installs and verifies that exact mount on the source before capturing its
+  baseline. The existing target setup is idempotent, so full spec comparison
+  remains enabled. Shell validation is pending; no migration retry has run.
+- **Component:** `nodelet` resolver handoff / five-node CSI recovery. Run
+  36614282579 timed out during `kubectl rollout status
+  statefulset/csi-hostpathplugin` after cp-1 migration. The kubeadm source had
+  `resolvConf: /etc/kubernetes/nodemigrate-resolv.conf`, but Nodelet ignored the
+  retained KubeletConfiguration and read the Docker node's `/etc/resolv.conf`.
+  CoreDNS then detected a resolver loop and crash-looped; its Pods remained
+  unready and Nodelet's startup gate held imported CSI Pods in `Unknown`. Nodelet
+  now prefers the retained kubelet `resolvConf` path and has focused parser
+  regressions. The `nodelet` quick-check and five-node runtime recheck are
+  pending.
+
+The `nodeapiserver,nodelet,nodestore` quick-check passed at the preceding code
+SHA `30b0894778bac62be3187f68ac8f839470313a34` in
+[run 36613539517](https://github.com/centerionware/not-k8s/actions/runs/36613539517).
+Both fixes are in the current worktree; focused `nodelet` and migration-script
+validation are pending, and no migration retry has run.
+
 ## Findings from migration run 36608846633
 
 At SHA `5f64d13dc932c88c722325eaa79abc16628f7222`, all branch binary builds

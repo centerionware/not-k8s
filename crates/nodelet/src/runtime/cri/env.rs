@@ -139,6 +139,28 @@ pub(crate) fn resolve_resource_field_ref(
 }
 
 
+/// Return the resolver path explicitly configured for kubelet, when its
+/// standard KubeletConfiguration file remains on the node after migration.
+/// `dnsPolicy: Default` is defined in terms of kubelet's configured resolver
+/// file, which can differ from the host's `/etc/resolv.conf` (for example, a
+/// kubeadm node can point at a non-loopback resolver file in a containerized
+/// test environment).
+fn configured_kubelet_resolv_conf_path(contents: &str) -> Option<std::path::PathBuf> {
+    let config: serde_yaml::Value = serde_yaml::from_str(contents).ok()?;
+    let path = config.get("resolvConf")?.as_str()?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let path = std::path::PathBuf::from(path);
+    path.is_absolute().then_some(path)
+}
+
+fn retained_kubelet_resolv_conf_path() -> Option<std::path::PathBuf> {
+    let config = std::fs::read_to_string("/var/lib/kubelet/config.yaml").ok()?;
+    let path = configured_kubelet_resolv_conf_path(&config)?;
+    path.is_file().then_some(path)
+}
+
 /// On a systemd-resolved host, `/etc/resolv.conf` is a symlink/generated
 /// file pointing at the *stub* listener (`nameserver 127.0.0.53`), not the
 /// real upstream servers — CoreDNS's own loop-detection plugin treats a
@@ -146,17 +168,12 @@ pub(crate) fn resolve_resource_field_ref(
 /// self-referential forwarding loop and deliberately crashes (`exit 1`,
 /// "Loop ... detected for zone") rather than risk actually looping.
 ///
-/// Real kubelet has no systemd awareness built in — it just reads whatever
-/// file its own `--resolv-conf` flag points at (default `/etc/resolv.conf`
-/// on Linux). It's kubeadm's own preflight tooling and most distro/cloud
-/// install docs that carry the operational convention of explicitly
-/// pointing `--resolv-conf` at `/run/systemd/resolve/resolv.conf` on hosts
-/// known to run systemd-resolved — a manual/install-time workaround, not
-/// something kubelet auto-detects. This does the detection automatically
-/// instead (prefer the real-upstream-servers file whenever the default
-/// looks like the stub and the real one exists), rather than requiring an
-/// operator to already know their host's resolver setup and configure
-/// around it.
+/// Kubelet uses its configured `resolvConf` path when one is present in the
+/// retained KubeletConfiguration. Otherwise, on a systemd-resolved host,
+/// `/etc/resolv.conf` is a stub listener and the real upstream resolver file
+/// is selected below when available. This preserves kubelet's explicit
+/// resolver choice across a runtime replacement and keeps the systemd stub
+/// fallback for hosts without a retained kubelet config.
 ///
 /// Found live (not hypothetical): round 123's CI e2e run hit this for
 /// real — CoreDNS crash-looped for the entire run on a GitHub Actions
@@ -164,14 +181,17 @@ pub(crate) fn resolve_resource_field_ref(
 /// into ~15 unrelated test failures downstream of DNS being broken. Never
 /// manifested in this project's own local testing because that happened
 /// on hosts without systemd-resolved's stub in the picture.
-fn effective_host_resolv_conf_path() -> &'static str {
+fn effective_host_resolv_conf_path() -> std::path::PathBuf {
     const STUB: &str = "/etc/resolv.conf";
     const REAL: &str = "/run/systemd/resolve/resolv.conf";
+    if let Some(path) = retained_kubelet_resolv_conf_path() {
+        return path;
+    }
     let looks_like_stub = std::fs::read_to_string(STUB).map(|s| s.contains("127.0.0.53")).unwrap_or(false);
     if looks_like_stub && std::path::Path::new(REAL).exists() {
-        REAL
+        std::path::PathBuf::from(REAL)
     } else {
-        STUB
+        std::path::PathBuf::from(STUB)
     }
 }
 

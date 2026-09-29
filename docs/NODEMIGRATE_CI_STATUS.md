@@ -2,6 +2,32 @@
 
 Last updated: 2026-09-29
 
+## 2026-09-29 migration run 36614282579
+
+Run [36614282579](https://github.com/centerionware/not-k8s/actions/runs/36614282579)
+tested SHA `6d91d1df7f3837dca583d359e3aba76030634500` with branch binaries,
+Cilium KPR, and the five-node path. Both single-node lanes completed forward
+migration and passed the source-storage/PV checks, then failed the strict API
+parity checkpoint because the test harness added a `/var/lib/nodelet` hostPath
+mount to the imported CSI StatefulSet only after migration. This came from the
+CSI visibility fix in `30b08947`; the comparator correctly reported the
+changed mount/volume paths. The fixture now installs that mount before taking
+the source checkpoint, preserving strict parity. The five-node lane also
+completed migrations through the first worker, then timed out waiting for the
+imported hostpath CSI StatefulSet to become Ready; its Pods were `Unknown` on
+cp-1 while all five Nodes and Cilium agents reported Ready. The logs show the
+source kubelet used `/etc/kubernetes/nodemigrate-resolv.conf`, while Nodelet
+read the Docker node's `/etc/resolv.conf`; that loopback resolver caused
+CoreDNS to crash-loop and held the CSI Pods behind Nodelet's DNS startup gate.
+Nodelet now reads the retained kubelet `resolvConf` setting first. This fix is
+awaiting focused CI and a migration runtime check. Full logs are saved once
+under `/tmp/nodemigrate-36614282579/`.
+
+The corrected `nodeapiserver,nodelet,nodestore` quick-check remains green at
+SHA `30b0894778bac62be3187f68ac8f839470313a34` in
+[run 36613539517](https://github.com/centerionware/not-k8s/actions/runs/36613539517).
+No regular build or full e2e gate ran.
+
 ## 2026-09-29 migration run 36608846633
 
 Run [36608846633](https://github.com/centerionware/not-k8s/actions/runs/36608846633)

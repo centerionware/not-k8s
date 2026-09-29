@@ -1250,6 +1250,43 @@ install_hostpath_driver() {
     kubectl get storageclass csi-hostpath-sc
 }
 
+ensure_csi_can_access_nodelet_root() {
+    local plugin_json container_index root_volume=nodemigrate-nodelet-root
+    plugin_json="$(kubectl get statefulset csi-hostpathplugin -n default -o json)"
+    container_index="$(jq -r '
+        [.spec.template.spec.containers | to_entries[] | select(.value.name == "hostpath") | .key][0] // empty
+    ' <<<"$plugin_json")"
+    [[ "$container_index" =~ ^[0-9]+$ ]] || {
+        echo "hostpath CSI StatefulSet has no hostpath container" >&2
+        return 1
+    }
+    if ! jq -e --arg name "$root_volume" \
+        'any(.spec.template.spec.volumes[]?; .name == $name)' <<<"$plugin_json" >/dev/null; then
+        kubectl patch statefulset csi-hostpathplugin -n default --type=json -p \
+            "$(jq -cn --arg name "$root_volume" \
+                '[{op:"add",path:"/spec/template/spec/volumes/-",value:{name:$name,hostPath:{path:"/var/lib/nodelet",type:"DirectoryOrCreate"}}}]')"
+        plugin_json="$(kubectl get statefulset csi-hostpathplugin -n default -o json)"
+    fi
+    if ! jq -e --arg name "$root_volume" \
+        '.spec.template.spec.containers[] | select(.name == "hostpath")
+         | any(.volumeMounts[]?; .name == $name)' <<<"$plugin_json" >/dev/null; then
+        kubectl patch statefulset csi-hostpathplugin -n default --type=json -p \
+            "$(jq -cn --arg name "$root_volume" --argjson container "$container_index" '
+                [{op:"add",path:("/spec/template/spec/containers/" + ($container|tostring) + "/volumeMounts/-"),value:{name:$name,mountPath:"/var/lib/nodelet",mountPropagation:"Bidirectional"}}]')"
+    fi
+    kubectl rollout status statefulset/csi-hostpathplugin -n default --timeout=5m
+    plugin_json="$(kubectl get statefulset csi-hostpathplugin -n default -o json)"
+    jq -e --arg name "$root_volume" '
+        any(.spec.template.spec.volumes[]?; .name == $name and .hostPath.path == "/var/lib/nodelet") and
+        any(.spec.template.spec.containers[] | select(.name == "hostpath")
+            | .volumeMounts[]?; .name == $name and .mountPath == "/var/lib/nodelet"
+                and .mountPropagation == "Bidirectional")
+    ' <<<"$plugin_json" >/dev/null || {
+        echo "hostpath CSI container cannot access Nodelet's volume target root" >&2
+        return 1
+    }
+}
+
 apply_fixture_manifest_with_conflict_retry() {
     local manifest_file="$1"
     local attempt output
@@ -4126,6 +4163,10 @@ main() {
     install_source
     install_cilium
     KUBECONFIG="$SOURCE_KUBECONFIG" install_hostpath_driver /var/lib/kubelet
+    # Put the Nodelet target mount in the source fixture before the baseline is
+    # captured. The target-side setup below is then idempotent, and the parity
+    # comparison continues to check the complete CSI StatefulSet spec.
+    KUBECONFIG="$SOURCE_KUBECONFIG" ensure_csi_can_access_nodelet_root
     install_workloads
     verify_stage source "$SOURCE_KUBECONFIG"
     capture_source_csi_device_volume
