@@ -24,6 +24,22 @@ static-validation job passed in
 The migration fixture has not run against a cluster with these assertions; the
 known Cilium return-routing failure still blocks a migration rerun.
 
+## Pod ephemeral-container import
+
+Commit `5d93e2d68cd4946aac7fd28e44815f29f2b55388` added import through the
+Pod's `ephemeralcontainers` subresource and a fixture probe that exercises an
+ephemeral container at each checkpoint, then removes the probe Pod before
+parity capture. Its first nodemigrate crate test
+[36525076582](https://github.com/centerionware/not-k8s/actions/runs/36525076582)
+found that the typed Pod helper cannot be called on the importer's dynamically
+discovered `Api<DynamicObject>`. Commit `62c4e1c8a2f3e83f56ebd7ffde11abf61d616fbf`
+uses the generic dynamic subresource request. Nodemigrate crate tests passed in
+[36525276094](https://github.com/centerionware/not-k8s/actions/runs/36525276094),
+and migration-script validation passed in
+[36525276074](https://github.com/centerionware/not-k8s/actions/runs/36525276074).
+No cluster migration has exercised this import path; migration remains
+blocked on the Cilium return-routing issue recorded below.
+
 ## Source shutdown strategy update
 
 The migration code now exports API objects before source shutdown, then stops

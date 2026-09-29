@@ -8,14 +8,18 @@ separate living documents below.
 
 ## Current state
 
-Latest change `875efcd1cdf59a64b830a07e3e171426e6e1306f` adds per-stage
-TokenReview identity and allowed/denied SubjectAccessReview checks to the
-migration fixture. PR script validation passed in
-[run 36523684540](https://github.com/centerionware/not-k8s/actions/runs/36523684540),
-and the focused nodemigrate crate tests passed in
-[run 36523684432](https://github.com/centerionware/not-k8s/actions/runs/36523684432).
+Latest change `62c4e1c8a2f3e83f56ebd7ffde11abf61d616fbf` makes standalone Pod
+ephemeral-container specs import through the Pod's `ephemeralcontainers`
+subresource. Focused nodemigrate crate tests passed in
+[run 36525276094](https://github.com/centerionware/not-k8s/actions/runs/36525276094),
+and migration-script validation passed in
+[run 36525276074](https://github.com/centerionware/not-k8s/actions/runs/36525276074).
 No cluster migration ran; the cross-cluster Cilium routing failure below is
-still unresolved.
+still unresolved. Per-stage TokenReview identity and allowed/denied
+SubjectAccessReview fixture checks were added at
+`875efcd1cdf59a64b830a07e3e171426e6e1306f`; their focused checks passed in
+[run 36523684540](https://github.com/centerionware/not-k8s/actions/runs/36523684540)
+and [run 36523684432](https://github.com/centerionware/not-k8s/actions/runs/36523684432).
 
 The latest batch [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212)
 at SHA `7bb853b462aaaad48ca3708e59a082c24e0b8525` passed the upstream

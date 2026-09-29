@@ -32,8 +32,12 @@ failure still blocks a migration rerun.
 The importer now preserves standalone Pod ephemeral-container specifications
 by applying them after Pod creation through `pods/ephemeralcontainers`; the
 stage fixture creates a short-lived debug container, verifies its runtime
-status and logs, and removes its probe Pod before parity capture. Unit and CI
-validation are pending, and no cluster migration has exercised the import.
+status and logs, and removes its probe Pod before parity capture. Focused crate
+tests passed in [nodemigrate checks run 36525276094](https://github.com/centerionware/not-k8s/actions/runs/36525276094)
+at SHA `62c4e1c8a2f3e83f56ebd7ffde11abf61d616fbf`; migration-script validation
+passed in [run 36525276074](https://github.com/centerionware/not-k8s/actions/runs/36525276074).
+The initial test attempt caught and led to correction of an incompatible typed
+API helper. No cluster migration has exercised this import path yet.
 
 The goal allows broader, conflict-driven retirement of old control-plane
 services or files when an in-place destination needs their ports or paths.

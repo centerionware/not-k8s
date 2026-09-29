@@ -13,7 +13,13 @@ Last updated: 2026-09-29
   merge patch after the Pod exists. Strategic merge keys by container name,
   making a retried import append the same debug entries without duplication.
   The migration fixture now exercises adding and running an ephemeral
-  container at every stage. Unit and PR checks are pending; no live round trip
+  container at every stage. Nodemigrate crate tests and the migration-script
+  validation passed at SHA `62c4e1c8a2f3e83f56ebd7ffde11abf61d616fbf` in
+  [nodemigrate checks run 36525276094](https://github.com/centerionware/not-k8s/actions/runs/36525276094)
+  and [migration validation run 36525276074](https://github.com/centerionware/not-k8s/actions/runs/36525276074).
+  The first focused crate run, [36525076582](https://github.com/centerionware/not-k8s/actions/runs/36525076582),
+  caught use of the typed Pod helper on a dynamically discovered API; the
+  importer now uses the generic dynamic subresource request. No live round trip
   has verified this path.
 
 ## Current source-cutover correction (focused quick-check passed)
