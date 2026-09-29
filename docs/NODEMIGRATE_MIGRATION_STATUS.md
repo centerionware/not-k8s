@@ -2,7 +2,28 @@
 
 Last updated: 2026-09-29
 
-## Latest migration result: 36573504554
+## Latest migration result: 36578066781
+
+Run [36578066781](https://github.com/centerionware/not-k8s/actions/runs/36578066781)
+at SHA `092099a1f8e62fc25c161d70e0501bfe3d192aa0` used branch-built
+`nodemigrate` and combined runtime with Cilium KPR and the five-node Docker
+path enabled. Both K3s and upstream Kubernetes completed forward and return
+migration, normalized source/destination API parity, workload and RBAC checks,
+Cilium checks, and PV payload verification. The Docker 3-control-plane/2-worker
+source topology and pre-migration checks passed, but migration failed removing
+a stopped Cilium Envoy sandbox: containerd reported StopPodSandbox and network
+teardown success while `crictl rmp` exceeded its default two-second deadline.
+The code now allows 60 seconds for CRI sandbox stop/removal and orders
+non-agent Cilium sandbox cleanup before the local agent. The failure path
+restarted source services; the immediate diagnostic capture showed kubelet
+active while the local API still refused connections, so complete rollback
+readiness is not yet proven. Docker forward migration and return remain
+unverified. Logs: `/tmp/nodemigrate-36578066781/`.
+
+The checked-in correction is pending focused CI. No regular build or full e2e
+gate ran.
+
+## Previous migration result: 36573504554
 
 Dedicated migration run
 [36573504554](https://github.com/centerionware/not-k8s/actions/runs/36573504554)

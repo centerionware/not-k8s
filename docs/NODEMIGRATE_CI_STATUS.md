@@ -2,6 +2,31 @@
 
 Last updated: 2026-09-29
 
+## 2026-09-29 migration run 36578066781
+
+Completed with failure at exact tested SHA
+`092099a1f8e62fc25c161d70e0501bfe3d192aa0`; inputs were
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+The K3s and upstream Kubernetes single-node jobs built the branch combined
+runtime and `nodemigrate`; the Docker lane built its five-node image. The
+workflow is [36578066781](https://github.com/centerionware/not-k8s/actions/runs/36578066781).
+
+Both single-node lanes completed forward and return migration. Their normalized
+source/destination API snapshots matched; workload, Cilium, RBAC, CRD status,
+and PV payload checks passed. Docker preflight passed its isolated kubeadm
+3-control-plane/2-worker topology, Cilium KPR without kube-proxy, storage, and
+source workload checks. Migration then stopped while removing a Cilium Envoy
+sandbox: containerd logged successful StopPodSandbox and network teardown, but
+`crictl rmp` exceeded crictl's default two-second request deadline. Failure
+recovery restarted source services. At immediate diagnostics kubelet was
+active but the local API still refused connections, so complete source API
+recovery is not proven by this run.
+
+The correction adds a 60-second timeout for sandbox stop/removal and removes
+non-agent Cilium sandboxes before the local Cilium agent. Focused validation is
+pending. Docker migration forward/return remains unverified. Logs and artifacts
+were captured once under `/tmp/nodemigrate-36578066781/`.
+
 ## 2026-09-29 migration run 36573504554
 
 Completed with failure at exact tested SHA

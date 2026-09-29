@@ -25,6 +25,10 @@ pub(crate) struct SourceCiliumIdentity {
     pod_uids: Vec<String>,
 }
 
+// cri-tools defaults CRI calls to a two second deadline. Removing a stopped
+// sandbox can take longer while the runtime tears down its network namespace.
+const CRICTL_CLEANUP_TIMEOUT: &str = "60s";
+
 #[derive(Debug, Clone)]
 struct ServiceState {
     name: String,
@@ -191,9 +195,9 @@ fn stop_nodelet_source_sandboxes(
         .or_else(|| installation.runtime_endpoint.clone())
         .unwrap_or_else(|| "unix:///run/containerd/containerd.sock".to_string());
     for id in sandbox_ids {
-        checked("crictl", &["--runtime-endpoint", &endpoint, "stopp", id])
+        checked_cri_cleanup(&endpoint, "stopp", id)
             .with_context(|| format!("stopping nodelet-managed pod sandbox {id}"))?;
-        checked("crictl", &["--runtime-endpoint", &endpoint, "rmp", id])
+        checked_cri_cleanup(&endpoint, "rmp", id)
             .with_context(|| format!("removing nodelet-managed pod sandbox {id}"))?;
     }
     if !sandbox_ids.is_empty() {
@@ -241,6 +245,7 @@ fn capture_cilium_identity_at(
 
 fn cilium_source_sandbox_ids(pods: &serde_json::Value) -> (Vec<String>, Vec<String>) {
     let mut sandbox_ids = Vec::new();
+    let mut cilium_agent_sandbox_ids = Vec::new();
     let mut pod_uids = Vec::new();
     for pod in pods
         .get("items")
@@ -252,10 +257,11 @@ fn cilium_source_sandbox_ids(pods: &serde_json::Value) -> (Vec<String>, Vec<Stri
             .pointer("/metadata/namespace")
             .and_then(serde_json::Value::as_str)
             == Some("kube-system");
-        let pod_name_is_cilium = pod
+        let pod_name = pod
             .pointer("/metadata/name")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|name| name.starts_with("cilium"));
+            .unwrap_or_default();
+        let pod_name_is_cilium = pod_name.starts_with("cilium");
         let cilium_app_label = pod
             .pointer("/labels/k8s-app")
             .and_then(serde_json::Value::as_str)
@@ -269,7 +275,11 @@ fn cilium_source_sandbox_ids(pods: &serde_json::Value) -> (Vec<String>, Vec<Stri
             .and_then(serde_json::Value::as_str)
             .filter(|id| !id.is_empty())
         {
-            sandbox_ids.push(id.to_string());
+            if pod_name.starts_with("cilium-agent") {
+                cilium_agent_sandbox_ids.push(id.to_string());
+            } else {
+                sandbox_ids.push(id.to_string());
+            }
         }
         if let Some(uid) = pod
             .pointer("/metadata/uid")
@@ -287,6 +297,9 @@ fn cilium_source_sandbox_ids(pods: &serde_json::Value) -> (Vec<String>, Vec<Stri
             pod_uids.push(uid.to_string());
         }
     }
+    // Keep the Cilium agent alive until other Cilium sandboxes are removed;
+    // CNI teardown for those sandboxes may still need the local agent.
+    sandbox_ids.extend(cilium_agent_sandbox_ids);
     (sandbox_ids, pod_uids)
 }
 
@@ -303,9 +316,9 @@ fn stop_cilium_source_sandboxes(
         .or_else(|| installation.runtime_endpoint.clone())
         .unwrap_or_else(|| "unix:///run/containerd/containerd.sock".to_string());
     for id in &identity.sandbox_ids {
-        checked("crictl", &["--runtime-endpoint", &endpoint, "stopp", id])
+        checked_cri_cleanup(&endpoint, "stopp", id)
             .with_context(|| format!("stopping source Cilium pod sandbox {id}"))?;
-        checked("crictl", &["--runtime-endpoint", &endpoint, "rmp", id])
+        checked_cri_cleanup(&endpoint, "rmp", id)
             .with_context(|| format!("removing source Cilium pod sandbox {id}"))?;
     }
     Ok(())
@@ -465,7 +478,8 @@ pub fn disable(installation: &Installation) -> Result<PreviousServiceState> {
                     "stopping source Cilium sandboxes failed ({error:#}) and restoring the source failed ({restore_error:#})"
                 );
             }
-            return Err(error).context("stopping source Cilium sandboxes; source was restored");
+            return Err(error)
+                .context("stopping source Cilium sandboxes; source services were restarted");
         }
     }
     if let Some(runtime) = &previous.runtime {
@@ -531,9 +545,9 @@ fn stop_upstream_static_pods_inner(
     );
     tracing::info!(count = ids.len(), "stopping kubeadm static pod sandboxes");
     for id in &ids {
-        checked("crictl", &["--runtime-endpoint", &endpoint, "stopp", id])
+        checked_cri_cleanup(&endpoint, "stopp", id)
             .with_context(|| format!("stopping source static pod sandbox {id}"))?;
-        checked("crictl", &["--runtime-endpoint", &endpoint, "rmp", id])
+        checked_cri_cleanup(&endpoint, "rmp", id)
             .with_context(|| format!("removing source static pod sandbox {id}"))?;
     }
     wait_for_api_port_release()
@@ -1498,6 +1512,20 @@ fn checked(program: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+fn checked_cri_cleanup(endpoint: &str, action: &str, sandbox_id: &str) -> Result<()> {
+    checked(
+        "crictl",
+        &[
+            "--timeout",
+            CRICTL_CLEANUP_TIMEOUT,
+            "--runtime-endpoint",
+            endpoint,
+            action,
+            sandbox_id,
+        ],
+    )
+}
+
 fn command(program: &str, args: &[&str]) -> Result<Output> {
     Command::new(program)
         .args(args)
@@ -1570,6 +1598,7 @@ mod tests {
         let pods = serde_json::json!({
             "items": [
                 {"id": "cilium-agent-id", "metadata": {"name": "cilium-agent-node-a", "namespace": "kube-system", "uid": "agent-uid"}},
+                {"id": "cilium-envoy-id", "metadata": {"name": "cilium-envoy-node-a", "namespace": "kube-system", "uid": "envoy-uid"}},
                 {"id": "cilium-operator-id", "metadata": {"name": "cilium-operator-abc", "namespace": "kube-system", "uid": "operator-uid"}},
                 {"id": "workload-id", "metadata": {"name": "app", "namespace": "apps", "uid": "workload-uid"}},
                 {"id": "other-system-id", "metadata": {"name": "cilium-agent", "namespace": "default", "uid": "other-uid"}}
@@ -1580,10 +1609,15 @@ mod tests {
             cilium_source_sandbox_ids(&pods),
             (
                 vec![
-                    "cilium-agent-id".to_string(),
-                    "cilium-operator-id".to_string()
+                    "cilium-operator-id".to_string(),
+                    "cilium-envoy-id".to_string(),
+                    "cilium-agent-id".to_string()
                 ],
-                vec!["agent-uid".to_string(), "operator-uid".to_string()]
+                vec![
+                    "agent-uid".to_string(),
+                    "envoy-uid".to_string(),
+                    "operator-uid".to_string()
+                ]
             )
         );
     }

@@ -2,6 +2,28 @@
 
 Last updated: 2026-09-29
 
+## Findings from migration run 36578066781
+
+- **Component:** `nodemigrate` CRI cleanup. The K3s and upstream single-node
+  migrations completed forward and return with semantic state, API objects,
+  Cilium, and persistent data checks passing. The five-node kubeadm migration
+  passed topology, Cilium KPR, storage, and source workload checks, then failed
+  while removing a stopped Cilium Envoy sandbox. Containerd logged successful
+  StopPodSandbox/network teardown, but `crictl rmp` returned DeadlineExceeded at
+  its default two-second request timeout. Cleanup now gives CRI sandbox stop
+  and removal 60 seconds, and removes non-agent Cilium sandboxes before the
+  local Cilium agent so CNI teardown can still reach it. The failure handler
+  restarted source services; the diagnostic snapshot captured kubelet active
+  but the local API still refusing connections immediately afterward, so full
+  source API recovery is not yet established. Logs: `/tmp/nodemigrate-36578066781/`.
+- **Component:** Docker migration verification. The isolated three-control-plane
+  and two-worker cluster passed its source checks, but forward migration and
+  reverse migration remain unverified because of the CRI cleanup failure above.
+- Single-node K3s and upstream round trips passed at SHA
+  `092099a1f8e62fc25c161d70e0501bfe3d192aa0`; Docker migration failed at that
+  same SHA. Do not retry the migration until the CRI cleanup correction and
+  scoped validation are pushed together.
+
 ## Findings from migration run 36573504554
 
 - **Component:** Migration fixture parity. At SHA
