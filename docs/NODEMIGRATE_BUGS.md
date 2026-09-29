@@ -2,6 +2,20 @@
 
 Last updated: 2026-09-29
 
+## Custom-resource status fixture CRD placement
+
+- **Component:** Migration integration fixture. Diagnostic run
+  [36525843073](https://github.com/centerionware/not-k8s/actions/runs/36525843073)
+  built the branch runtime and reached source fixture setup, but Kubernetes
+  rejected the `MigrationRecord` CRD because `spec.subresources` was placed at
+  the CRD spec level. In apiextensions/v1, each version owns its subresource
+  declaration. The fixture now declares `subresources.status` under each
+  served version, and a focused source check rejects a top-level placement or a
+  missing per-version declaration. Shell syntax, fixture-structure,
+  diagnostics, API-inventory, and whitespace checks pass locally. The source
+  fixture and Cilium cutover diagnostic still need a live rerun; the failed run
+  did not reach the Cilium handoff and provides no new datapath evidence.
+
 ## Standalone Pod ephemeral-container import
 
 - **Component:** `nodemigrate` API transfer and integration fixture.

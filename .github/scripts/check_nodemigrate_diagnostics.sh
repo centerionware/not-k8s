@@ -5,6 +5,26 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TEST_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+python3 - "$ROOT/.github/scripts/nodemigrate-integration.sh" <<'PY'
+import re
+import sys
+
+source = open(sys.argv[1], encoding="utf-8").read()
+marker = "name: migrationrecords.migration.nodemigrate.io"
+start = source.index(marker)
+end = source.index("\nYAML", start)
+crd = source[start:end]
+if re.search(r"(?m)^  subresources:", crd):
+    raise SystemExit("CRD status subresource is invalidly placed at the CRD spec level")
+versions = re.split(r"(?m)^  - name: ", crd)[1:]
+if len(versions) != 2:
+    raise SystemExit(f"expected two custom-resource API versions, found {len(versions)}")
+for version in versions:
+    if not re.search(r"(?m)^    subresources:\n      status: \{\}$", version):
+        raise SystemExit("each served custom-resource version must declare its status subresource")
+print("PASS custom-resource status subresources are declared per API version")
+PY
+
 cat > "$TEST_DIR/kubectl" <<'STUB'
 #!/usr/bin/env bash
 case "${KUBECTL_FIXTURE:-}" in

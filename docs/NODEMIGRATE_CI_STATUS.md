@@ -137,13 +137,11 @@ Probe job `109237219508` passed; migration `109237220849`, validation
 recreation does not reproduce the cross-cluster routing outage. Its cause and
 fix remain unestablished; no migration retry is queued.
 
-The next non-migration diagnostic exercises the complete source cutover
-boundary: stop and remove every CRI pod sandbox with Cilium sandboxes last,
-restart K3s, verify that the Cilium container changed while Node UID stayed
-constant, then repeat workload, storage, API inventory, and Pod-to-API TCP
-checks before the same-name Node replacement phase. A focused local stub
-checks CRI ordering and removal. This probe does not run nodemigrate and
-cannot establish a migration fix by itself.
+The next non-migration diagnostic uses the current source cleanup rule: remove
+the source Cilium sandboxes, retain ordinary sandboxes, restart K3s, and check
+the Cilium agent container identity, unchanged Node UID, workloads, storage,
+API inventory, and Pod-to-API TCP reachability before Node replacement. It
+does not run nodemigrate and cannot establish a migration fix by itself.
 
 Run [36518048359](https://github.com/centerionware/not-k8s/actions/runs/36518048359)
 failed at SHA `652538eefea844c0b4e609f6867e27993536c38c` during source sandbox
@@ -157,6 +155,16 @@ recoverable removals, and proceeds to the service restart; its stub test
 injects a remove deadline and verifies later sandbox removals still run.
 Migration `109244652203`, validation `109244652107`, and Docker preflight
 `109244652924` were skipped. Corrected live diagnostic pending.
+
+Diagnostic [36525843073](https://github.com/centerionware/not-k8s/actions/runs/36525843073)
+at SHA `c1c952aed9da1bdf83d0f52689a7b35817eef7e5` built the branch runtime and
+passed tool setup, then failed during source fixture creation: Kubernetes
+rejected the user `MigrationRecord` CRD because its status subresource was
+declared at the wrong schema level. The run never reached Cilium sandbox
+handoff and says nothing about the cross-cluster Cilium failure. The CRD now
+declares status subresources under both served versions; a focused local guard
+checks placement. The repaired source fixture and diagnostic need another
+live run. Migration, general validation, and Docker preflight were skipped.
 
 ## Latest completed migration batch
 

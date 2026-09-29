@@ -1213,12 +1213,12 @@ spec:
     listKind: MigrationRecordList
   conversion:
     strategy: None
-  subresources:
-    status: {}
   versions:
   - name: v1alpha1
     served: true
     storage: false
+    subresources:
+      status: {}
     schema:
       openAPIV3Schema:
         type: object
@@ -1237,6 +1237,8 @@ spec:
   - name: v1
     served: true
     storage: true
+    subresources:
+      status: {}
     schema:
       openAPIV3Schema:
         type: object
