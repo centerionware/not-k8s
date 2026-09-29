@@ -32,6 +32,22 @@ The focused `quick-check.yml` run [36501891816](https://github.com/centerionware
 passed for `nodemigrate,nodecontroller` at this SHA. No regular build gate or
 full e2e ran.
 
+The PR checks triggered by diagnostics/fixture commit `4c85d3afaf96b10a0790043d761baa4343713c27`
+passed: migration validation and [crate tests](https://github.com/centerionware/not-k8s/actions/runs/36505426284)
+(crate-tests job `109205704966`), packaging, publish policy, and commit
+conventions. The workflow skipped its migration, Docker-preflight, and regular
+build jobs for the pull-request event. These results validate compilation and
+static checks only; the Docker transfer is not yet exercised at runtime.
+
+The K3s artifact also showed Cilium endpoint link and CiliumEndpoint
+reconciliation warnings around the Service-routing failure, without enough
+service-map evidence to establish causality. The migration workflow now has a
+`k3s_cilium_restart_probe` mode that installs the K3s+Cilium workload fixture,
+restarts K3s without invoking nodemigrate, and repeats behavior and API-state
+checks. It isolates plain K3s restart behavior from migration effects and does
+not count as a migration run. This probe is pending static PR validation and
+runtime dispatch; no migration rerun is queued.
+
 Run [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)
 completed at SHA `1f6b5064936ca2001dea2527483848aebc7e14ad` with
 `runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.

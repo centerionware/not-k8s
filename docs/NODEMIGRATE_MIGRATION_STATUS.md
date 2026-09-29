@@ -1749,6 +1749,24 @@ K3s `109195297576`, upstream `109195297739`; one-time captured logs are under
 [`nodemigrate,nodecontroller` quick-check run 36501891816](https://github.com/centerionware/not-k8s/actions/runs/36501891816)
 passed on the tested SHA. No regular build or full e2e gate ran.
 
+The `4c85d3af` PR validation and crate-test workflows passed at commit
+`4c85d3afaf96b10a0790043d761baa4343713c27`, including the newly extended
+Cilium diagnostic command path's shell syntax. The workflow skipped runtime
+migration and Docker-preflight jobs. The completed K3s artifact also contains
+repeated Cilium warnings about missing endpoint links and deleted
+`CiliumEndpoint` objects. Those warnings are diagnostic leads only; absent
+service/BPF maps prevent establishing whether they explain the ClusterIP
+failure. No migration rerun has been started.
+
+To isolate the Cilium issue before another migration attempt, the branch adds
+an optional CI restart-only probe mode. It builds the branch's combined
+`notk8s` runtime, creates the K3s+Cilium workload fixture, restarts the K3s
+service without running `nodemigrate`, and reruns the same behavioral and API
+inventory checks. A pass would establish that plain K3s restart recovers; a
+failure would narrow the outage to the K3s+Cilium service lifecycle. Either
+result is diagnostic only and cannot satisfy a migration merge gate. The mode
+has not yet been validated or dispatched.
+
 ## Current follow-up (2026-09-27)
 
 Run [36300720876](https://github.com/centerionware/not-k8s/actions/runs/36300720876) at SHA `958f75fd85c7a8145765432a6f80590f7995c9b9` failed both the K3s+Cilium and upstream Kubernetes+Cilium lanes. Docker five-node preflight and utility/runtime builds passed. K3s never reached its nodestore workload checkpoint because API discovery continued to omit `nodes.metrics.k8s.io` and `pods.metrics.k8s.io` after the 60-second inventory retry, despite APIService `Available=True`; upstream reached its checkpoint but strict source-object parity failed. Neither lane completed reverse migration. Full logs are under `/tmp/nodemigrate-36300720876/`.

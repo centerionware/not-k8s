@@ -16,8 +16,17 @@ Last updated: 2026-09-29
   collected. This is a real post-return Cilium datapath failure with an
   unconfirmed mechanism. Do not count the run as passed, hide the failed
   workload check, or dispatch another migration until the cause is fixed.
+  Additional captured agent logs repeatedly report endpoint devices such as
+  `lxc0bd1f34c7d60` missing and say a `CiliumEndpoint` was deleted externally
+  while endpoint synchronization would recreate it. The pod IP and endpoint
+  identity still appear in agent state. These stale-endpoint messages are a
+  lead, not proof that they caused the Service routing failure.
   Failure diagnostics now capture `cilium-dbg service list`, `bpf lb list`,
   and `endpoint list` to expose the missing or stale datapath state.
+  An optional K3s+Cilium restart-only probe has been added to test the retained
+  K3s service restart without invoking nodemigrate; it can separate an ordinary
+  restart failure from a migration-specific failure. It is not a fix and has
+  not yet run.
 - **Five-node fixture used unsupported container-to-container `docker cp`.**
   Docker job `109195297329` in run `36502166212` passed topology, Cilium, and
   control-plane recovery checks, then failed while copying PKI/kubeconfig

@@ -18,7 +18,10 @@ affecting `metrics-server`. The five-node Docker fixture passed recovery
 preflight but hit an unsupported container-to-container file copy. The Docker
 copy helper is fixed and Cilium datapath diagnostics are expanded; both changes
 need live CI verification. The Cilium cause is unresolved, so no migration
-retry is queued. No regular build gate or full e2e ran. See the [CI status](NODEMIGRATE_CI_STATUS.md)
+retry is queued. An optional K3s+Cilium restart-only CI probe now tests the
+retained service and workloads without invoking nodemigrate, to distinguish
+ordinary restart behavior from a migration-specific problem. It has not yet
+run. No regular build gate or full e2e ran. See the [CI status](NODEMIGRATE_CI_STATUS.md)
 and [bug tracker](NODEMIGRATE_BUGS.md).
 
 Latest batch migration run

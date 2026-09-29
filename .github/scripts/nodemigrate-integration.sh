@@ -689,10 +689,19 @@ fi
 
 need_root() {
     [[ "$(id -u)" == 0 ]] || { echo "run this integration script as root" >&2; exit 2; }
-    [[ -x "$NK" && -x "$MIGRATE" ]] || {
+    if [[ "${NODEMIGRATE_K3S_CILIUM_RESTART_PROBE:-false}" == true ]]; then
+        [[ "$SOURCE_DIST" == k3s && "${NODEMIGRATE_CILIUM_KPR:-false}" == true ]] || {
+            echo "the Cilium restart probe requires K3s with Cilium KPR enabled" >&2
+            exit 2
+        }
+        [[ -x "$NK" ]] || {
+            echo "build target/release/notk8s for the K3s Cilium restart probe" >&2
+            exit 2
+        }
+    elif [[ ! -x "$NK" || ! -x "$MIGRATE" ]]; then
         echo "build target/release/notk8s and target/release/nodemigrate first" >&2
         exit 2
-    }
+    fi
     [[ "$SOURCE_DIST" == k3s || "$SOURCE_DIST" == kubernetes ]] || {
         echo "unsupported source distribution: $SOURCE_DIST" >&2
         exit 2
@@ -3596,6 +3605,31 @@ main() {
     install_workloads
     verify_stage source "$SOURCE_KUBECONFIG"
     capture_source_csi_device_volume
+
+    if [[ "${NODEMIGRATE_K3S_CILIUM_RESTART_PROBE:-false}" == true ]]; then
+        MIGRATION_STARTED_AT="$(date -u --iso-8601=seconds)"
+        echo "Restarting the K3s service without running nodemigrate"
+        systemctl restart k3s
+        local attempt
+        for attempt in $(seq 1 90); do
+            if KUBECONFIG="$SOURCE_KUBECONFIG" kubectl --request-timeout=2s \
+                get --raw=/readyz >/dev/null 2>&1; then
+                break
+            fi
+            sleep 2
+        done
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl --request-timeout=5s \
+            get --raw=/readyz >/dev/null || {
+            echo "K3s API did not recover after the restart-only probe" >&2
+            return 1
+        }
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl wait \
+            --for=condition=Ready node --all --timeout=5m
+        verify_stage restarted "$SOURCE_KUBECONFIG"
+        assert_migratable_api_objects_retained source restarted
+        echo "PASS: K3s+Cilium Service and workload behavior survived a K3s service restart without nodemigrate"
+        return 0
+    fi
 
     export NOTK8S_COMBINED_PREBUILT="$NK"
     export NODEBOOTSTRAP_COMBINED_SELF="$NK"

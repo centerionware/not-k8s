@@ -336,6 +336,12 @@ instructions in `AGENTS.md` for nodemigrate work:
   checkpoint independently.
 - Static checks such as `bash -n`, formatting checks, and documentation/link
   review are allowed. Do not represent them as runtime migration evidence.
+- For the current K3s+Cilium return-routing failure, the migration workflow has
+  a `k3s_cilium_restart_probe` mode. It installs the K3s+Cilium workload
+  fixture, restarts K3s without running `nodemigrate`, then repeats the
+  functional and API-state checks. Use this diagnostic mode to separate a
+  plain K3s/Cilium restart failure from a migration-specific failure; it does
+  not count as a migration round trip or satisfy either merge scenario.
 - A release workflow run is required only when carrying out the separately
   authorized publication. The initial `v0.8.1` nodemigrate publication must
   use the matching regular `v0.8.1` version built from this branch's accepted

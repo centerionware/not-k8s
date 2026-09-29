@@ -29,6 +29,11 @@ on:
         required: false
         type: boolean
         default: false
+      k3s_cilium_restart_probe:
+        description: Restart K3s with Cilium KPR and run workload checks without migration
+        required: false
+        type: boolean
+        default: false
   pull_request:
     paths:
       - '.github/scripts/nodemigrate-integration.sh'
@@ -96,7 +101,7 @@ jobs:
         run: bash .github/scripts/check_nodemigrate_diagnostics.sh
 
   docker-preflight:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.k3s_cilium_restart_probe != true
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -145,8 +150,51 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  k3s-cilium-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.k3s_cilium_restart_probe == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
+
+      - name: Build notk8s
+        run: cargo build --release --features cri -p notk8s
+
+      - name: Fetch CSI setup
+        run: |
+          git fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
+          git show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > "$RUNNER_TEMP/nodemigrate-hostpath-setup.sh"
+          grep -q '^# ── DRA: ' "$RUNNER_TEMP/nodemigrate-hostpath-setup.sh"
+
+      - name: Run restart probe
+        env:
+          NODEMIGRATE_K3S_CILIUM_RESTART_PROBE: "true"
+          NODEMIGRATE_CILIUM_KPR: "true"
+          NODEMIGRATE_SOURCE_DIST: k3s
+          NODEMIGRATE_TEST_LOG: ${{ runner.temp }}/nodemigrate-k3s-cilium-restart.log
+          NODEMIGRATE_HOSTPATH_SETUP: ${{ runner.temp }}/nodemigrate-hostpath-setup.sh
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,NODEMIGRATE_K3S_CILIUM_RESTART_PROBE,NODEMIGRATE_CILIUM_KPR,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG,NODEMIGRATE_HOSTPATH_SETUP \
+            bash .github/scripts/nodemigrate-integration.sh
+
+      - name: Upload probe log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nodemigrate-k3s-cilium-restart-${{ github.run_id }}
+          path: ${{ runner.temp }}/nodemigrate-k3s-cilium-restart.log
+          if-no-files-found: warn
+          retention-days: 7
+
   migrate:
-    if: github.event_name == 'workflow_dispatch' && inputs.docker_only != true
+    if: github.event_name == 'workflow_dispatch' && inputs.docker_only != true && inputs.k3s_cilium_restart_probe != true
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
