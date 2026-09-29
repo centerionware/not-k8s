@@ -336,6 +336,14 @@ instructions in `AGENTS.md` for nodemigrate work:
   checkpoint independently.
 - Static checks such as `bash -n`, formatting checks, and documentation/link
   review are allowed. Do not represent them as runtime migration evidence.
+- Before another migration attempt after a failed run, review the complete
+  failure output and the existing bug tracker for every confirmed actionable
+  defect in the same migration paths. Fix all such implementation and harness
+  defects together, then run the focused checks for the entire fix batch before
+  dispatching migration again. Do not rerun migration just to discover the
+  next already-known issue one at a time. When a failure mechanism is still
+  unknown, use non-migration diagnostics to establish it; do not treat another
+  migration retry as the diagnostic.
 - For the current K3s+Cilium return-routing failure, the migration workflow has
   a `k3s_cilium_restart_probe` mode. It installs the K3s+Cilium workload
   fixture, first restarts K3s without changing Node identity, then performs a
@@ -360,7 +368,12 @@ instructions in `AGENTS.md` for nodemigrate work:
   the packet-flow and workload checks.
   First attempt `36514477496` failed before the restart because jq returned a
   boolean instead of the Pod object. The selector is fixed and covered by a
-  focused local test; the corrected live diagnostic is pending.
+  focused local test. Corrected probe `36515656678` passed: the replacement
+  agent Pod reached Ready with a new UID and a temporary Pod connected to API
+  ClusterIP `10.43.0.1:443`; workload, storage, API inventory, normalized
+  state, and Node replacement checks passed. Agent Pod recreation alone does
+  not reproduce the cross-cluster outage. Keep migration skipped until its
+  specific cause is understood and fixed.
 - A release workflow run is required only when carrying out the separately
   authorized publication. The initial `v0.8.1` nodemigrate publication must
   use the matching regular `v0.8.1` version built from this branch's accepted

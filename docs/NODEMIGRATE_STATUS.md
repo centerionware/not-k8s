@@ -31,12 +31,20 @@ reproduce the outage. It does not identify or fix the cross-cluster migration
 cause, so no migration retry is queued. No regular build gate or full e2e ran.
 Pod-to-API-ClusterIP TCP probes also passed at all three checkpoints in run
 [36513067748](https://github.com/centerionware/not-k8s/actions/runs/36513067748).
-The Cilium agent Pod UID remained unchanged throughout, so the next diagnostic
-will explicitly restart that Pod before repeating the checks. No migration
-retry is queued until the migration-specific Cilium issue is fixed.
+The Cilium agent Pod UID remained unchanged throughout. The subsequent
+diagnostic recreated that Pod explicitly and passed; details follow. No
+migration retry is queued until the migration-specific Cilium issue is fixed.
 The first restart attempt [36514477496](https://github.com/centerionware/not-k8s/actions/runs/36514477496)
 failed in the harness's Pod selector before any agent restart. That selector
-is fixed and locally checked; the corrected live diagnostic is pending.
+is fixed and locally checked. Corrected probe
+[36515656678](https://github.com/centerionware/not-k8s/actions/runs/36515656678)
+passed at SHA `b3fbd01f5d5bcf438727a7aecd3a515eff9f7f6a`: the Cilium agent Pod
+was recreated with a new UID, a temporary Pod connected to API ClusterIP
+`10.43.0.1:443`, and workload, storage, all 119 discovered API resources,
+normalized state, and Node replacement checks passed. Migration, validation,
+and Docker-preflight jobs were skipped. Agent Pod recreation alone does not
+reproduce the cross-cluster outage. Its cause and fix remain unestablished, so
+no migration retry is queued.
 See the [CI status](NODEMIGRATE_CI_STATUS.md) and
 [bug tracker](NODEMIGRATE_BUGS.md).
 

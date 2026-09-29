@@ -59,9 +59,9 @@ and durable-state checks passed. Probe job `109229270880` passed; validation
 `109229272191`, Docker preflight `109229272215`, and migration `109229272225`
 were skipped. CRI and Kubernetes identity records show the Cilium agent Pod
 UID remained unchanged through restart and Node replacement. Since nodemigrate
-stops and recreates source Pod sandboxes, the next non-migration probe will
-restart the Cilium agent Pod explicitly, then repeat the API ClusterIP and
-workload checks.
+stops and recreates source Pod sandboxes, the subsequent non-migration probe
+explicitly recreated the Cilium agent Pod before repeating the API ClusterIP
+and workload checks; its result is recorded below.
 
 Run [36514477496](https://github.com/centerionware/not-k8s/actions/runs/36514477496)
 failed at SHA `1ef6e06993d0b9712bf2f3b82cce08b1dc2e3f4d` before restarting the
@@ -69,8 +69,17 @@ agent Pod. The source fixture and first Pod-to-API-ClusterIP TCP probe passed;
 the harness jq selector returned a boolean instead of the sole Cilium Pod
 object and failed on metadata lookup. The selector now returns `.items[0]`
 only when exactly one Pod exists, with a focused test for old-UID to new-UID
-Ready Pod replacement. Local shell/diagnostic checks pass; corrected live
-agent-recreation check pending. All migration jobs were skipped.
+Ready Pod replacement. Local shell/diagnostic checks pass. Corrected probe
+[36515656678](https://github.com/centerionware/not-k8s/actions/runs/36515656678)
+passed at SHA `b3fbd01f5d5bcf438727a7aecd3a515eff9f7f6a` in 18m34s. It deleted
+the sole Cilium agent Pod and waited for a Ready replacement with a new UID.
+A temporary Pod then connected to API ClusterIP `10.43.0.1:443`; Cilium
+service/BPF state, workload, storage, 119-resource API inventory, normalized
+object, durable-state, and same-name Node replacement checks all passed.
+Probe job `109237219508` passed; migration `109237220849`, validation
+`109237220957`, and Docker preflight `109237221300` were skipped. Agent Pod
+recreation does not reproduce the cross-cluster routing outage. Its cause and
+fix remain unestablished; no migration retry is queued.
 
 ## Latest completed migration batch
 

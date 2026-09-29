@@ -28,12 +28,23 @@ Run [36513067748](https://github.com/centerionware/not-k8s/actions/runs/36513067
 passed temporary Pod TCP probes to the API ClusterIP before restart, after
 restart, and after Node replacement, along with all fixture checks. The Cilium
 agent Pod UID remained unchanged through these transitions. The next diagnostic
-explicitly recreates the Cilium agent Pod before repeating these checks; its
-first attempt [36514477496](https://github.com/centerionware/not-k8s/actions/runs/36514477496)
+was designed to explicitly recreate the Cilium agent Pod before repeating
+these checks. Its first attempt
+[36514477496](https://github.com/centerionware/not-k8s/actions/runs/36514477496)
 stopped before restart because a jq selector returned a boolean instead of the
-Pod object. That selector is fixed and its old-to-new UID transition is covered
-by a focused local check. Corrected live diagnostic pending. The
-migration-specific failure remains unresolved.
+Pod object. The selector is fixed, covered by a focused local check, and the
+corrected probe result is recorded below. The migration-specific failure
+remains unresolved.
+
+The corrected Cilium agent-recreation probe
+[36515656678](https://github.com/centerionware/not-k8s/actions/runs/36515656678)
+passed at SHA `b3fbd01f5d5bcf438727a7aecd3a515eff9f7f6a`. The replacement agent
+Pod reached Ready with a new UID, a temporary Pod connected to API ClusterIP
+`10.43.0.1:443`, and workload, storage, resource-inventory, normalized-state,
+and Node-replacement assertions passed. This diagnostic does not run
+nodemigrate. Recreating the agent Pod alone does not reproduce the
+cross-cluster-only failure; cause and fix remain unverified, and migration
+must not be retried yet.
 
 Latest batch migration run
 [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)
