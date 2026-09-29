@@ -37,8 +37,10 @@ Saved logs are under `/tmp/nodemigrate-36608846633/`.
   the destination API was stopped, not evidence of an independent pre-failure
   worker authorization defect.
 
-No retry has run with these corrections. The previous targeted quick-check
-passed `nodelet,nodemigrate` at the tested SHA. No regular build or full e2e
+The `nodeapiserver,nodelet,nodestore` quick-check passed at the corrected SHA
+`30b0894778bac62be3187f68ac8f839470313a34` in run
+[36613539517](https://github.com/centerionware/not-k8s/actions/runs/36613539517).
+The migration-specific rerun is now eligible. No regular build or full e2e
 gate ran.
 
 ## Findings from migration run 36603273571

@@ -7,8 +7,11 @@ The latest full migration run,
 built the branch `notk8s` and `nodemigrate` binaries in all three lanes, but
 K3s, upstream Kubernetes, and Docker migration failed. The new blockers and
 current fixes are tracked in [CI status](NODEMIGRATE_CI_STATUS.md) and
-[the bug tracker](NODEMIGRATE_BUGS.md). The preceding targeted quick-check
-passed `nodelet,nodemigrate`; the current corrections still need scoped CI.
+[the bug tracker](NODEMIGRATE_BUGS.md). The corrected
+`nodeapiserver,nodelet,nodestore` quick-check passed in
+[run 36613539517](https://github.com/centerionware/not-k8s/actions/runs/36613539517)
+at SHA `30b0894778bac62be3187f68ac8f839470313a34`; migration-specific
+verification is pending.
 
 Focused quick-check [36597286663](https://github.com/centerionware/not-k8s/actions/runs/36597286663)
 passed the changed `nodeapiserver` and `nodestore` crates at SHA

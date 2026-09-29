@@ -16,8 +16,11 @@ The failure mechanisms and fixes are recorded in
 [NODEMIGRATE_BUGS.md](NODEMIGRATE_BUGS.md). Corrections now in the worktree
 cover scheduler Binding protobuf decoding, the fixture's Nodelet CSI target
 mount, bounded Raft catch-up retry, and legacy sandbox metadata lookup.
-They still need the scoped quick-check and one migration-specific rerun. Do not
-run the regular build or full e2e gates for this task.
+The focused `nodeapiserver,nodelet,nodestore` quick-check passed at corrected
+SHA `30b0894778bac62be3187f68ac8f839470313a34` in
+[run 36613539517](https://github.com/centerionware/not-k8s/actions/runs/36613539517).
+A migration-specific rerun is next. Do not run the regular build or full e2e
+gates for this task.
 
 ## 2026-09-29 migration run 36603273571
 
