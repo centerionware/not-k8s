@@ -74,8 +74,15 @@ Last updated: 2026-09-29
   migration path requires; it did not reproduce or clear the post-return
   Cilium datapath failure. The probe now stops/removes only running Cilium
   containers before removing their sandboxes, then requires a new ready agent
-  container identity. Shell/static validation is pending, and no migration was
-  run. The saved log is `/tmp/nodemigrate-36526954453/`.
+  container identity. The correction passed at SHA
+  `76e2e3712c1e6b39781b305f00261307fabe6403` in
+  [run 36528530369](https://github.com/centerionware/not-k8s/actions/runs/36528530369):
+  Cilium's container ID changed; the API ClusterIP probe, complete source
+  fixture checks, unchanged-UID restart, and same-name Node replacement all
+  passed. This validates a single-node K3s+Cilium source teardown/restart, not
+  cross-cluster migration; the post-return datapath issue remains unresolved.
+  The saved logs are `/tmp/nodemigrate-36526954453/` and
+  `/tmp/nodemigrate-36528530369/`.
 
 - **K3s return leaves ClusterIP/pod routing broken after Cilium reports ready.**
   In K3s job `109195297576` of run

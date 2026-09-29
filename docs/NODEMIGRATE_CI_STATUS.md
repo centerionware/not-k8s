@@ -75,9 +75,19 @@ restarted K3s, but the Cilium agent container ID did not change, so the probe
 failed before its Node-replacement phase. Migration jobs were skipped. The
 diagnostic now stops/removes only running Cilium containers in addition to
 their sandboxes before restart, and requires a new ready agent container ID.
-Targeted shell/static checks and a corrected diagnostic run are pending; this
-result provides no evidence about cross-cluster routing. Saved log:
-`/tmp/nodemigrate-36526954453/`.
+That correction passed in
+[run 36528530369](https://github.com/centerionware/not-k8s/actions/runs/36528530369)
+at SHA `76e2e3712c1e6b39781b305f00261307fabe6403` (probe job
+`109276775515`, 20m47s). The agent container ID changed after full Cilium
+container and sandbox removal; unchanged-UID K3s restart, same-name Node
+replacement, all fixture workload/storage/API-state checks, and Pod-to-API
+ClusterIP probes passed at source, sandbox-restarted, and replacement stages.
+Cilium's `10.43.0.1:443` BPF backend was active after restart and replacement.
+Validation, Docker preflight, and migration jobs were skipped. This confirms
+that targeted source Cilium teardown/restart and Node replacement work on the
+single-node K3s+Cilium fixture; it does not reproduce or resolve the
+cross-cluster post-return routing failure. Saved log:
+`/tmp/nodemigrate-36528530369/`.
 
 Run [36508298004](https://github.com/centerionware/not-k8s/actions/runs/36508298004)
 failed at SHA `264e6491a36e961e586fb58f0ad205835824a55c` before Node replacement:

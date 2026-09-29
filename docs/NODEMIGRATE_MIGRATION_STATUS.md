@@ -9,14 +9,18 @@ compile or unit test does not mark a real migration path as verified.
 
 The source cutover exports API objects while the source API is live, then stops
 the source service/runtime before copying node-local PV data. Ordinary Pod
-sandboxes are retained; explicit removal is limited to Cilium sandboxes and
-kubeadm control-plane static Pods needed to release API/etcd ports. Upstream
-runtime service state is captured so a failed snapshot/import can stop the
-partial destination, restore saved PV/CNI payloads, and restart the original
-runtime and source services. Late failures during node join, readiness, and
-scheduling use the same rollback path. Target rollback removes only identified
-Cilium sandboxes/processes and kubeadm API/etcd static Pods; ordinary Pod
-sandboxes remain on disk. The implementation passed nodemigrate-only
+sandboxes are retained; Cilium teardown is targeted, and kubeadm control-plane
+static Pods are removed when their API/etcd ports must be released. A
+conflict-detected in-place migration may also need to retire other old
+control-plane services or files; snapshot their state first and order removal
+to preserve source quorum and rollback until destination quorum/API/data are
+verified. Upstream runtime service state is captured so a failed
+snapshot/import can stop the partial destination, restore saved PV/CNI
+payloads, and restart the original runtime and source services. Late failures
+during node join, readiness, and scheduling use the same rollback path. Target
+rollback removes only identified Cilium sandboxes/processes and kubeadm
+API/etcd static Pods; ordinary Pod sandboxes remain on disk. The implementation
+passed nodemigrate-only
 [quick-check run 36522042632](https://github.com/centerionware/not-k8s/actions/runs/36522042632)
 at `6c55fba88c47a7e1f0a5e5ef565cdec9cdfed825`. The real migration paths remain
 unverified; the known post-return Cilium routing failure still blocks a rerun.
@@ -64,6 +68,19 @@ same-name Node replacement each passed fixture, storage, API-inventory, and
 normalized state checks, with an active Cilium API ClusterIP datapath. This
 still isolates only restart/replacement; the cross-cluster migration-specific
 cause needs a concrete fix before nodemigrate is rerun.
+
+The stricter source Cilium restart diagnostic
+[36528530369](https://github.com/centerionware/not-k8s/actions/runs/36528530369)
+passed at SHA `76e2e3712c1e6b39781b305f00261307fabe6403`. It stopped/removed
+only running Cilium containers and their CRI sandboxes, then passed a full
+K3s service restart with the original Node UID and same-name Node replacement
+with new UID. The Cilium agent received a new container ID, all fixture
+workloads, storage, API inventory and normalized source state checks passed,
+and the Pod-to-API-ClusterIP probe succeeded at each stage with an active
+`10.43.0.1:443` BPF backend. Migration jobs were skipped. This verifies source
+Cilium teardown and recovery in the single-node fixture; it does not verify
+cross-cluster routing or broader old-control-plane conflict teardown. The
+post-return datapath issue still blocks migration retry.
 
 Run [36513067748](https://github.com/centerionware/not-k8s/actions/runs/36513067748)
 passed temporary Pod TCP probes to the API ClusterIP before restart, after
