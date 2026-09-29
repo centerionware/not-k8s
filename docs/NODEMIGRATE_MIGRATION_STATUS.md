@@ -7,17 +7,19 @@ This is the living implementation status record for the full scope in
 that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
-The source cutover implementation is being changed to export API objects while
-the source API is live, then stop the source service/runtime before copying
-node-local PV data. Ordinary Pod sandboxes are retained; explicit removal is
-limited to Cilium sandboxes and kubeadm control-plane static Pods needed to
-release API/etcd ports. Upstream runtime service state is captured so a failed
-snapshot/import can stop the partial destination, restore saved PV/CNI
-payloads, and restart the original runtime and source services. Late failures
-during node join, readiness, and scheduling use the same rollback path. Target
-rollback removes only identified Cilium sandboxes/processes and kubeadm API/etcd
-static Pods; ordinary Pod sandboxes remain on disk. This code is not yet
-CI-verified, and no migration run has been started for it.
+The source cutover exports API objects while the source API is live, then stops
+the source service/runtime before copying node-local PV data. Ordinary Pod
+sandboxes are retained; explicit removal is limited to Cilium sandboxes and
+kubeadm control-plane static Pods needed to release API/etcd ports. Upstream
+runtime service state is captured so a failed snapshot/import can stop the
+partial destination, restore saved PV/CNI payloads, and restart the original
+runtime and source services. Late failures during node join, readiness, and
+scheduling use the same rollback path. Target rollback removes only identified
+Cilium sandboxes/processes and kubeadm API/etcd static Pods; ordinary Pod
+sandboxes remain on disk. The implementation passed nodemigrate-only
+[quick-check run 36522042632](https://github.com/centerionware/not-k8s/actions/runs/36522042632)
+at `6c55fba88c47a7e1f0a5e5ef565cdec9cdfed825`. The real migration paths remain
+unverified; the known post-return Cilium routing failure still blocks a rerun.
 
 The non-migration K3s+Cilium diagnostic [36509703232](https://github.com/centerionware/not-k8s/actions/runs/36509703232)
 completed a same-name Node UID replacement. Workload, storage, all 119 API

@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-29
 
-## Current source-cutover correction (focused verification pending)
+## Current source-cutover correction (focused quick-check passed)
 
 - **Forward cutover bulk-removed ordinary CRI sandboxes before migration.**
   This destroyed runtime records that should remain available for recovery and
@@ -12,18 +12,21 @@ Last updated: 2026-09-29
   control-plane API/etcd sandboxes when needed, then snapshots local PV data
   with writers stopped. Ordinary sandboxes and runtime data remain on disk.
   Failed snapshots/imports stop the partial destination, restore saved local
-  PV/CNI payloads, and restore the prior runtime/service state. K3s/upstream
-  focused utility CI is still required;
-  no migration run has exercised this change.
+  PV/CNI payloads, and restore the prior runtime/service state. Nodemigrate-only
+  quick-check [36522042632](https://github.com/centerionware/not-k8s/actions/runs/36522042632)
+  passed at SHA `6c55fba88c47a7e1f0a5e5ef565cdec9cdfed825`; no migration run has
+  exercised this change.
 - **Late migration errors could leave the destination running and source
   disabled.** Forward control-plane/worker checks after destination startup and
   reverse worker readiness/scheduling failures now route through rollback to
   stop the partial target, remove only identified Cilium sandboxes/processes,
   restore local payloads, and restart the source. Ordinary Pod sandboxes remain
-  untouched. The first focused quick-check
+  untouched. The earlier quick-check
   [36521140201](https://github.com/centerionware/not-k8s/actions/runs/36521140201)
-  found one unit-test type mismatch in the targeted Cilium sandbox selector;
-  it is fixed in the pending batch. No migration retry has been dispatched.
+  found a unit-test type mismatch in the targeted Cilium sandbox selector;
+  the fix and rollback changes passed nodemigrate-only quick-check
+  [36522042632](https://github.com/centerionware/not-k8s/actions/runs/36522042632).
+  No migration retry has been dispatched.
 
 ## Latest branch-run findings
 

@@ -9,17 +9,15 @@ this objective.
 
 ## Source shutdown strategy update
 
-The migration code is being revised to export API objects before source
-shutdown, then stop the source service/runtime before copying local volume
-payloads. Cleanup retains ordinary CRI sandboxes, targets Cilium sandboxes,
-and removes kubeadm control-plane static Pods only when needed to release
-local API/etcd ports. The previous all-sandbox probe
+The migration code now exports API objects before source shutdown, then stops
+the source service/runtime before copying local volume payloads. Cleanup
+retains ordinary CRI sandboxes, targets Cilium sandboxes, and removes kubeadm
+control-plane static Pods only when needed to release local API/etcd ports. The previous all-sandbox probe
 [36519169676](https://github.com/centerionware/not-k8s/actions/runs/36519169676)
 was canceled because it exercised the superseded teardown design. No migration
-run or replacement diagnostic has been dispatched for the new code. Run a
-focused nodemigrate quick-check after the changes are complete; do not rerun a
-full migration until the outstanding Cilium migration failure and other known
-issues are fixed together.
+run or replacement diagnostic has been dispatched for the new code. The
+outstanding Cilium migration failure remains unresolved, so do not rerun a
+migration until it and all other known issues are fixed together.
 
 Focused quick-check [36521140201](https://github.com/centerionware/not-k8s/actions/runs/36521140201)
 at SHA `a65611fa` compiled the crate, then failed while compiling the new unit
@@ -28,7 +26,9 @@ vectors. That assertion is corrected. Review also found late post-start
 failure paths without rollback; those now stop the partial target, remove only
 identified Cilium artifacts, restore captured local PV/CNI data, and restart
 the source/runtime. Ordinary Pod sandboxes remain untouched. The complete fix
-batch is pending another nodemigrate-only quick-check.
+batch passed nodemigrate-only quick-check [36522042632](https://github.com/centerionware/not-k8s/actions/runs/36522042632)
+at SHA `6c55fba88c47a7e1f0a5e5ef565cdec9cdfed825` (job
+`109256827982`). No full build, e2e gate, or migration run was dispatched.
 
 ## Cilium restart/replacement diagnostic
 
