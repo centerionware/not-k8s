@@ -145,7 +145,7 @@ pub(crate) fn resolve_resource_field_ref(
 /// file, which can differ from the host's `/etc/resolv.conf` (for example, a
 /// kubeadm node can point at a non-loopback resolver file in a containerized
 /// test environment).
-fn configured_kubelet_resolv_conf_path(contents: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn configured_kubelet_resolv_conf_path(contents: &str) -> Option<std::path::PathBuf> {
     let config: serde_yaml::Value = serde_yaml::from_str(contents).ok()?;
     let path = config.get("resolvConf")?.as_str()?.trim();
     if path.is_empty() {
