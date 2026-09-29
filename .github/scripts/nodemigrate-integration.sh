@@ -488,6 +488,68 @@ capture_cilium_datapath() {
         cilium-dbg endpoint list 2>&1 || true
 }
 
+probe_api_clusterip_from_pod() {
+    local kubeconfig="${1:?missing probe kubeconfig}"
+    local stage="${2:?missing probe stage}"
+    local cluster_ip pod_name phase deadline
+    cluster_ip="$(KUBECONFIG="$kubeconfig" kubectl get service kubernetes \
+        -n default -o jsonpath='{.spec.clusterIP}')"
+    [[ "$cluster_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || {
+        echo "Kubernetes Service has an invalid ClusterIP at stage=$stage: $cluster_ip" >&2
+        return 1
+    }
+    pod_name="nodemigrate-api-route-$stage"
+    KUBECONFIG="$kubeconfig" kubectl delete pod "$pod_name" -n kube-system \
+        --ignore-not-found --wait=true --timeout=30s >/dev/null
+    KUBECONFIG="$kubeconfig" kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $pod_name
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: nodemigrate-api-route-probe
+spec:
+  restartPolicy: Never
+  containers:
+  - name: probe
+    image: busybox:1.36.1
+    imagePullPolicy: IfNotPresent
+    command: ["sh", "-ec", "nc -z -w 5 $cluster_ip 443"]
+    resources:
+      requests:
+        cpu: 1m
+        memory: 1Mi
+EOF
+    deadline=$((SECONDS + 90))
+    while (( SECONDS < deadline )); do
+        phase="$(KUBECONFIG="$kubeconfig" kubectl get pod "$pod_name" \
+            -n kube-system -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+        case "$phase" in
+            Succeeded)
+                echo "PASS Pod-to-Service API TCP probe at stage=$stage clusterIP=$cluster_ip"
+                KUBECONFIG="$kubeconfig" kubectl delete pod "$pod_name" \
+                    -n kube-system --wait=true --timeout=30s >/dev/null
+                return 0
+                ;;
+            Failed)
+                KUBECONFIG="$kubeconfig" kubectl logs "$pod_name" -n kube-system >&2 || true
+                KUBECONFIG="$kubeconfig" kubectl describe pod "$pod_name" -n kube-system >&2 || true
+                KUBECONFIG="$kubeconfig" kubectl delete pod "$pod_name" \
+                    -n kube-system --wait=true --timeout=30s >/dev/null || true
+                echo "Pod-to-Service API TCP probe failed at stage=$stage clusterIP=$cluster_ip" >&2
+                return 1
+                ;;
+        esac
+        sleep 2
+    done
+    KUBECONFIG="$kubeconfig" kubectl describe pod "$pod_name" -n kube-system >&2 || true
+    KUBECONFIG="$kubeconfig" kubectl delete pod "$pod_name" \
+        -n kube-system --wait=true --timeout=30s >/dev/null || true
+    echo "Pod-to-Service API TCP probe timed out at stage=$stage clusterIP=$cluster_ip" >&2
+    return 1
+}
+
 capture_cni_host_diagnostics() {
     local config file
     for config in /etc/containerd/config.toml \
@@ -3652,6 +3714,7 @@ main() {
 
     if [[ "${NODEMIGRATE_K3S_CILIUM_RESTART_PROBE:-false}" == true ]]; then
         MIGRATION_STARTED_AT="$(date -u --iso-8601=seconds)"
+        probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" source
         echo "Cilium datapath before K3s restart"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
         echo "Restarting the K3s service without running nodemigrate"
@@ -3673,6 +3736,7 @@ main() {
             --for=condition=Ready node --all --timeout=5m
         verify_stage restarted "$SOURCE_KUBECONFIG"
         assert_migratable_api_objects_retained source restarted
+        probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" restarted
         echo "Cilium datapath after K3s restart with unchanged Node identity"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
 
@@ -3729,6 +3793,7 @@ main() {
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
         verify_stage replaced "$SOURCE_KUBECONFIG"
         assert_migratable_api_objects_retained source replaced "$node_name"
+        probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" replaced
         echo "PASS: K3s+Cilium Service and workload behavior survived restart and same-name Node replacement without nodemigrate"
         return 0
     fi

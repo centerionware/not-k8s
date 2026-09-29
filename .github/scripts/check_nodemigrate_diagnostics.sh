@@ -19,6 +19,13 @@ case "${KUBECTL_FIXTURE:-}" in
         echo 'warning: harmless kubectl warning' >&2
         printf '{"items":[{"metadata":{"name":"test"},"data":{"ca.crt":"Y2E="}}]}\n'
         ;;
+    api-route)
+        case "$*" in
+            *"get service kubernetes"*) printf '10.43.0.1\n' ;;
+            *"get pod nodemigrate-api-route-"*) printf 'Succeeded\n' ;;
+            *"apply -f -"*) cat > "${NODEMIGRATE_TEST_APPLY_CAPTURE:?}" ;;
+        esac
+        ;;
     *)
         echo "unknown fixture" >&2
         exit 2
@@ -183,6 +190,22 @@ fi
 grep -Fq 'Normalized source API object data changed' "$TEST_DIR/user-object-change.out" || {
     echo "changed user fixture data did not fail parity clearly" >&2
     cat "$TEST_DIR/user-object-change.out" >&2
+    exit 1
+}
+
+export KUBECTL_FIXTURE=api-route
+export NODEMIGRATE_TEST_APPLY_CAPTURE="$TEST_DIR/api-route-pod.yaml"
+output="$(probe_api_clusterip_from_pod /tmp/test-kubeconfig source 2>&1)" || {
+    echo "successful Pod-to-API-Service probe fixture failed: $output" >&2
+    exit 1
+}
+grep -Fq 'PASS Pod-to-Service API TCP probe at stage=source clusterIP=10.43.0.1' <<< "$output" || {
+    echo "successful Pod-to-API-Service probe was not reported: $output" >&2
+    exit 1
+}
+grep -Fq 'nc -z -w 5 10.43.0.1 443' "$NODEMIGRATE_TEST_APPLY_CAPTURE" || {
+    echo "Pod probe does not test TCP access to the Kubernetes API ClusterIP" >&2
+    cat "$NODEMIGRATE_TEST_APPLY_CAPTURE" >&2
     exit 1
 }
 

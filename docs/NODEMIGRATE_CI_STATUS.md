@@ -45,6 +45,11 @@ and Node replacement do not reproduce the failure; the post-migration Cilium
 routing failure remains without an established cause or fix. No nodemigrate
 migration rerun has started.
 
+The next non-migration diagnostic adds a TCP connection from a temporary Pod to
+the Kubernetes API ClusterIP at the source, unchanged-UID restart, and
+replacement checkpoints. This checks actual Pod packet flow alongside the
+Cilium service/BPF map snapshots; dispatch and result are pending.
+
 ## Latest completed migration batch
 
 Run [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212)

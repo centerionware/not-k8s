@@ -29,6 +29,8 @@ only in this diagnostic, with regression checks that reject other data
 changes. This result shows plain K3s restart/Node replacement does not
 reproduce the outage. It does not identify or fix the cross-cluster migration
 cause, so no migration retry is queued. No regular build gate or full e2e ran.
+The next diagnostic adds a Pod-to-API-ClusterIP TCP probe at each transition
+to check actual in-cluster packet delivery. Live result is pending.
 See the [CI status](NODEMIGRATE_CI_STATUS.md) and
 [bug tracker](NODEMIGRATE_BUGS.md).
 

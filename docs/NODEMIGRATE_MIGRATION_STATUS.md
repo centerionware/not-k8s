@@ -24,6 +24,11 @@ normalized state checks, with an active Cilium API ClusterIP datapath. This
 still isolates only restart/replacement; the cross-cluster migration-specific
 cause needs a concrete fix before nodemigrate is rerun.
 
+The current diagnostic follow-up adds a temporary Pod TCP probe to the API
+ClusterIP before restart, after restart, and after Node replacement. This
+validates actual in-cluster service packet delivery in addition to Cilium map
+presence. Local shell and focused diagnostic checks pass; live run pending.
+
 Latest batch migration run
 [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)
 at SHA `1f6b5064936ca2001dea2527483848aebc7e14ad` passed all migration builds
