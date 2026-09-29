@@ -30,6 +30,16 @@ Exact jobs: K3s `109181807925`, upstream `109181808320`, five-node Docker
 `109181808357`. The PR validation job was skipped. No general build or full
 e2e ran.
 
+The first focused unit-check for these grouped fixes,
+[36501530890](https://github.com/centerionware/not-k8s/actions/runs/36501530890),
+failed to compile the nodemigrate test module because its explicit `super`
+imports omitted the two new helper functions; the reported errors were all
+unresolved references to those helpers. The nodecontroller code built during
+that job before nodemigrate failed. Both imports are now added together; the
+corrected combined focused check is required before another migration run.
+The completed failure log was fetched once with `gh run view` and is not being
+re-read.
+
 ## Previous completed migration batch
 
 Run [36490156839](https://github.com/centerionware/not-k8s/actions/runs/36490156839)
