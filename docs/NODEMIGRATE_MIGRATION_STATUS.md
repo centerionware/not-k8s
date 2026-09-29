@@ -10,10 +10,11 @@ at SHA `9d6fab17f856899b4885cfb20309dd2571ce6706` used branch-built
 path enabled. K3s and upstream Kubernetes completed both migration directions,
 normalized API parity, workload/RBAC checks, Cilium checks, and PV payload
 verification. Docker built the combined `notk8s` and five-node image, but its
-preflight job `109455502184` failed. The cause is not yet available: REST API
-rate limiting prevented the completed Docker log/artifact download through
-`gh`. Artifact name: `nodemigrate-docker-preflight-36582910964`. Do not retry
-until its diagnostics are retrieved and all confirmed issues are fixed.
+`Probe kubeadm nodes` step in job `109455502184` failed with exit code 1. The
+cause is not yet available: REST API rate limiting prevented the completed
+Docker log/artifact download through `gh`. Artifact name:
+`nodemigrate-docker-preflight-36582910964`. Do not retry until its diagnostics
+are retrieved and all confirmed issues are fixed.
 
 No regular build or full e2e gate ran.
 

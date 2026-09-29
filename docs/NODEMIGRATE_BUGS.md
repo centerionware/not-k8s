@@ -6,11 +6,12 @@ Last updated: 2026-09-29
 
 - **Component:** Docker five-node migration lane. At SHA
   `9d6fab17f856899b4885cfb20309dd2571ce6706`, both single-node Cilium KPR
-  round trips passed. Docker's preflight job failed, but its cause is not yet
-  known: GitHub REST API rate limiting currently blocks retrieval of the
-  completed job log and artifact through `gh`. GraphQL check metadata confirms
-  Docker failed, while both single-node jobs succeeded. Do not retry until the
-  Docker failure artifact is retrieved and every confirmed cause is fixed.
+  round trips passed. Docker's `Probe kubeadm nodes` step failed with exit code
+  1; the cause is not yet known. GitHub REST API rate limiting currently
+  blocks retrieval of the completed job log and artifact through `gh`.
+  GraphQL check metadata confirms Docker failed, while both single-node jobs
+  succeeded. Do not retry until the Docker failure artifact is retrieved and
+  every confirmed cause is fixed.
   Run: [36582910964](https://github.com/centerionware/not-k8s/actions/runs/36582910964),
   Docker job `109455502184`; artifact `nodemigrate-docker-preflight-36582910964`.
 - **Component:** `nodemigrate` CRI cleanup correction. The 60-second CRI

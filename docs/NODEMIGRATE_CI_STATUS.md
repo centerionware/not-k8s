@@ -11,10 +11,10 @@ Both single-node jobs built branch `nodemigrate` and combined runtime; Docker
 built `nodemigrate`, combined `notk8s`, and the five-node image. The K3s and
 upstream Kubernetes lanes completed forward and return migration, parity,
 workload, Cilium, RBAC, and PV payload checks. Docker job
-`109455502184` failed; the run check suite records both single-node jobs as
-success and Docker as failure. Its cause is not yet identified because the
-GitHub REST API rate limit blocked the one-time log/artifact retrieval attempt
-through `gh`. The workflow artifact is
+`109455502184` failed in `Probe kubeadm nodes` with exit code 1; the cause is
+not yet identified because the GitHub REST API rate limit blocked the log and
+artifact retrieval attempts through `gh`. GraphQL check metadata records both
+single-node jobs as success and Docker as failure. The workflow artifact is
 `nodemigrate-docker-preflight-36582910964`.
 
 Do not retry migration until the artifact is retrieved and all confirmed
