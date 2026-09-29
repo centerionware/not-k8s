@@ -11,7 +11,9 @@ Last updated: 2026-09-29
   CRD status writes were already supported. Added generic status GET through
   REST resolution, gated on the requested CRD version declaring the status
   subresource. Extended the API e2e regression and the migration checkpoint
-  to GET `/status`; scoped validation is pending.
+  to GET `/status`; the `nodeapiserver,nodelet` scoped quick-check passed in
+  [run 36545378947](https://github.com/centerionware/not-k8s/actions/runs/36545378947)
+  at SHA `2cb26b82e8f9fc9efb6bc30dd647ad82616e61d7`.
 - **Component:** `nodelet` CRI cgroup layout. The five-node migration imported
   535 API objects and accepted all 55 CRDs. Cilium's cleanup init exited 0 on
   `cp-1`, but its replacement agent container could not start. containerd's
@@ -19,7 +21,8 @@ Last updated: 2026-09-29
   such as `/kubepods/burstable/pod<uid>`, and runc rejected them because it
   expected systemd slice syntax. Nodelet now queries CRI `RuntimeConfig` and
   builds QoS-scoped cgroupfs or systemd parents accordingly, with focused
-  path regressions. Scoped validation is pending. The TLS unknown-authority
+  path regressions. The nodelet CRI-feature quick-check passed at SHA
+  `2cb26b82e8f9fc9efb6bc30dd647ad82616e61d7`. The TLS unknown-authority
   errors in the same artifact were emitted during post-rollback diagnostics,
   not as the migration's initiating failure.
 
@@ -35,7 +38,9 @@ retry is considered until both fixes pass their scoped CI checks.
   enum. The independent nodemigrate check
   [36544899266](https://github.com/centerionware/not-k8s/actions/runs/36544899266)
   passed packaging validation and all crate tests. Corrected scoped checks are
-  pending; no migration rerun has started.
+  pending, then passed both affected crates in
+  [run 36545378947](https://github.com/centerionware/not-k8s/actions/runs/36545378947)
+  after the correction at `2cb26b82`. No build.yml or full e2e gate was run.
 
 ## Custom-resource status fixture CRD placement
 

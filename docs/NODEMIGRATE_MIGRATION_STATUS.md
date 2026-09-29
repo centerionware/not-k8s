@@ -44,9 +44,12 @@ failed while rebuilding Cilium on `cp-1`: `clean-cilium-state` exited 0, but
 nodelet's cgroupfs-style `cgroup_parent` conflicted with containerd's systemd
 cgroup driver, so runc rejected replacement pod sandboxes. The visible TLS
 unknown-authority messages occurred during post-rollback diagnostics and are
-not the initiating migration failure. Both fixes are now in the worktree;
-scoped quick-check and migration verification are pending. No new migration
-run has been started.
+not the initiating migration failure. The `nodeapiserver,nodelet` scoped
+quick-check passed in [run 36545378947](https://github.com/centerionware/not-k8s/actions/runs/36545378947)
+at `2cb26b82e8f9fc9efb6bc30dd647ad82616e61d7`; nodemigrate packaging and crate
+checks passed in [run 36544899266](https://github.com/centerionware/not-k8s/actions/runs/36544899266)
+at `983058be`. A new migration run is being started; round-trip behavior and
+five-node Cilium recovery remain unverified until it completes.
 
 Control-plane teardown remains conflict driven. Export API state and snapshot
 affected node-local data/configuration first. Retire old services, manifests,
