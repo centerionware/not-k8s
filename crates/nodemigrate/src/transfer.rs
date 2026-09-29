@@ -871,24 +871,34 @@ impl KubeApi {
         runtime.block_on(async {
             let pods: Api<Pod> = Api::namespaced(client.clone(), "kube-system");
             let config: Api<ConfigMap> = Api::namespaced(client, "kube-system");
-            let initial_pods = pods
-                .list(&ListParams::default().labels("k8s-app=cilium"))
-                .await
-                .context("listing Cilium agent Pods")?;
-            let pod = initial_pods.items.into_iter().find(|pod| {
-                pod.spec
-                    .as_ref()
-                    .and_then(|spec| spec.node_name.as_deref())
-                    == Some(node_name)
-                    && pod
-                        .metadata
-                        .owner_references
+            // A joining node is registered before its Cilium DaemonSet Pod is
+            // necessarily scheduled. Do not roll back a healthy node join just
+            // because the controller has not observed the new Node yet.
+            let schedule_deadline =
+                tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+            let pod = loop {
+                let current_pods = pods
+                    .list(&ListParams::default().labels("k8s-app=cilium"))
+                    .await
+                    .context("listing Cilium agent Pods")?;
+                if let Some(pod) = current_pods.items.into_iter().find(|pod| {
+                    pod.spec
                         .as_ref()
-                        .is_some_and(|owners| owners.iter().any(|owner| owner.kind == "DaemonSet"))
-            });
-            let pod = pod.with_context(|| {
-                format!("no DaemonSet-managed Cilium agent Pod is scheduled on node {node_name}")
-            })?;
+                        .and_then(|spec| spec.node_name.as_deref())
+                        == Some(node_name)
+                        && pod
+                            .metadata
+                            .owner_references
+                            .as_ref()
+                            .is_some_and(|owners| owners.iter().any(|owner| owner.kind == "DaemonSet"))
+                }) {
+                    break pod;
+                }
+                if tokio::time::Instant::now() >= schedule_deadline {
+                    bail!("no DaemonSet-managed Cilium agent Pod was scheduled on node {node_name} within 300 seconds");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            };
             let name = pod
                 .metadata
                 .name

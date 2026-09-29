@@ -2447,6 +2447,32 @@ The branch changed APIService route resolution and group discovery to read APISe
 
 ## 2026-09-29 migration workflow failures
 
+- **Component:** `nodeapiserver` TokenRequest and projected ServiceAccount tokens.
+  Run [36598031291](https://github.com/centerionware/not-k8s/actions/runs/36598031291)
+  showed kubelet requests for live Pods failing because the handler required
+  `spec.boundObjectRef.uid`. The handler now accepts an omitted UID, resolves
+  the live Pod by namespace/name, and signs the actual current UID; an explicitly
+  supplied stale UID is still rejected. A focused parser regression was added.
+  Targeted `nodeapiserver` CI remains pending.
+- **Component:** migration fixture's hostpath CSI redeployment. In the upstream
+  lane of run `36598031291`, the fixture reapplied the upstream StatefulSet over
+  the imported CSI workload before validation. The NodeStageVolume errors then
+  reported that the imported volume IDs were absent from the driver's catalog.
+  Forward migration now reuses the imported StatefulSet/catalog and only applies
+  the nodelet staging mount. A migration rerun is pending.
+- **Component:** `nodemigrate` Cilium join readiness. The five-node lane in run
+  `36598031291` rolled back on cp-2 because its Cilium DaemonSet Pod had not yet
+  been scheduled when host-state cleanup began. The utility now waits up to five
+  minutes for that node's DaemonSet-owned agent before touching Cilium state.
+  Targeted `nodemigrate` CI remains pending.
+- **Component:** nodelet CRI sandbox reconciliation. The upstream lane also
+  logged repeated `RunPodSandbox` failures because containerd still reserved
+  CoreDNS sandbox names for older IDs after pod reconciliation timeouts. Stale
+  sandbox replacement now stops/removes containers first, requires sandbox
+  removal to succeed, and verifies the stale ID is gone before creating its
+  replacement. Focused nodelet CI and migration validation are pending. Logs:
+  `/tmp/nodemigrate-36598031291/`.
+
 - **Component:** K3s migration-test fixture setup. In
   [run 36533241937](https://github.com/centerionware/not-k8s/actions/runs/36533241937),
   the K3s lane exited 22 before K3s was installed or a migration started. The

@@ -113,9 +113,16 @@ macro_rules! handle_tokens {
             .pointer("/metadata/uid")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
-        if let Some((pod_name, pod_uid)) = &request.bound_pod {
-            match rest::get(&mut client, None, "", "v1", "pods", Some(&$info.namespace), pod_name).await {
-                Ok(rest::GetOutcome::Found(pod)) if pod.pointer("/metadata/uid").and_then(serde_json::Value::as_str) == Some(pod_uid) => {
+        if let Some((pod_name, requested_pod_uid)) = request.bound_pod.clone() {
+            match rest::get(&mut client, None, "", "v1", "pods", Some(&$info.namespace), &pod_name).await {
+                Ok(rest::GetOutcome::Found(pod)) => {
+                    let Some(pod_uid) = pod.pointer("/metadata/uid").and_then(serde_json::Value::as_str).filter(|uid| !uid.is_empty()) else {
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
+                    };
+                    if requested_pod_uid.as_deref().is_some_and(|requested| requested != pod_uid) {
+                        return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, "bound Pod UID does not match the current Pod")));
+                    }
+                    request.bound_pod = Some((pod_name, Some(pod_uid.to_owned())));
                     if let Some(node_name) = pod
                         .pointer("/spec/nodeName")
                         .and_then(serde_json::Value::as_str)
@@ -135,9 +142,6 @@ macro_rules! handle_tokens {
                         };
                         request.bound_pod_node = Some((node_name.to_string(), node_uid));
                     }
-                }
-                Ok(rest::GetOutcome::Found(_)) => {
-                    return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, "bound Pod UID does not match the current Pod")));
                 }
                 Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
                     return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&$path_str)));

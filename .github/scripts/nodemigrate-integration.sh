@@ -1092,7 +1092,15 @@ install_hostpath_driver() {
     mkdir -p "$kubelet_data_dir/plugins" "$kubelet_data_dir/plugins_registry"
     watch_cilium_mount_cgroup_logs >&2 &
     local cilium_log_watcher_pid=$!
-    if ! NODELET_DATA_DIR="$kubelet_data_dir" timeout 600 bash /tmp/nodemigrate-hostpath-setup.sh; then
+    # Forward migration imports the CSI StatefulSet and its durable /csi-data-dir
+    # hostPath from the source cluster. Reapplying the upstream manifest here
+    # would reset that volume to the driver's emptyDir default before its
+    # existing volume catalog can be checked, orphaning every imported CSI PV.
+    # Keep the imported driver and only apply the local staging mount below.
+    if [[ "$kubelet_data_dir" == /var/lib/nodelet ]] \
+        && kubectl get statefulset csi-hostpathplugin -n default >/dev/null 2>&1; then
+        echo "Using the imported hostpath CSI deployment and preserved volume catalog"
+    elif ! NODELET_DATA_DIR="$kubelet_data_dir" timeout 600 bash /tmp/nodemigrate-hostpath-setup.sh; then
         kill "$cilium_log_watcher_pid" 2>/dev/null || true
         wait "$cilium_log_watcher_pid" 2>/dev/null || true
         echo "Hostpath CSI setup failed; collecting nodelet and pod teardown diagnostics" >&2

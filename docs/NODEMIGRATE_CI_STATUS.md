@@ -3499,3 +3499,26 @@ later green run.
 | `012f1b7351da10cd78bec309e1efc6a2e9de439e` | Latest regular runtime, K3s+Cilium and upstream+Cilium | Run terminal failure after both source fixtures passed. Both lanes' source PV/PVC/data checks passed and protected exports were retained; no PV deletion was reported. Release runtime rejected Gateway API CRDs on CEL rule-cost overflow/type errors, preventing nodestore checks and return migration. Upstream also returned HTTP 500 for CertificateRequest and CSR imports. | [Migration 36332106663](https://github.com/centerionware/not-k8s/actions/runs/36332106663); logs `/tmp/nodemigrate-36332106663/nodemigrate-k3s-36332106663/nodemigrate-k3s.log` and `/tmp/nodemigrate-36332106663/nodemigrate-kubernetes-36332106663/nodemigrate-kubernetes.log` |
 | `7ba45556862d3ecd90cffe22cde4ac4d71a9f71b` | Branch-runtime K3s+Cilium and upstream+Cilium migration | Both lanes passed source StatefulSet PVC/PV/data checks and reached nodestore verification, then failed because the hostpath `CSINode` lacked its Node owner reference. No nodestore storage checkpoint or return leg passed. | [Migration 36308845021](https://github.com/centerionware/not-k8s/actions/runs/36308845021); logs `/tmp/nodemigrate-36308845021/artifacts/` |
 | `f8ff6a93b719453df806ee366d5d6403829d6bb8` | APIService freshness quick-check and migration run | Focused `nodeapiserver` quick-check passed. Dedicated migration run failed both lanes after branch builds; five-node Docker preflight passed. K3s still omitted metrics resources even after APIService `Available=True`, disproving stale reflector state as the failure cause; both lanes also reproduced CSI NodeStageVolume volume-catalog misses. Neither lane completed a return migration. | [Quick-check 36301964871](https://github.com/centerionware/not-k8s/actions/runs/36301964871); [migration 36301989587](https://github.com/centerionware/not-k8s/actions/runs/36301989587); logs `/tmp/nodemigrate-36301989587/`. |
+
+## 2026-09-29 latest migration attempt
+
+Migration run [36598031291](https://github.com/centerionware/not-k8s/actions/runs/36598031291)
+tested SHA `e5af2e7ab1a7183320db3925e1f22bdeeb16c640` with branch runtime,
+Cilium kube-proxy replacement, and the five-node migration enabled. K3s passed
+the round trip. Upstream Kubernetes failed before completing its workload stage:
+projected Pod token requests were rejected when kubelet omitted
+`boundObjectRef.uid`, the CSI driver returned `NotFound` for imported volume IDs,
+and nodelet logged CRI sandbox-name reservations for prior CoreDNS IDs. The
+five-node Docker lane passed its topology/Cilium preflight, then cp-2 migration
+rolled back because its Cilium DaemonSet Pod was not scheduled at the moment
+the utility started datapath cleanup. No PV deletion was reported.
+
+Confirmed fixes are now in the worktree: resolve an omitted bound Pod UID against
+the live Pod in `nodeapiserver`; avoid redeploying the imported CSI StatefulSet
+on forward migration; and wait for Cilium scheduling on joining nodes. Local
+format/script checks are passing; targeted quick-checks are pending. Stale
+nodelet sandbox replacement now removes its containers before the sandbox and
+verifies the old sandbox ID is gone before creating a replacement. This is
+intended to release the source CoreDNS name reservation; CI and migration
+verification remain pending. No general build or full e2e gate ran. Saved logs:
+`/tmp/nodemigrate-36598031291/`.

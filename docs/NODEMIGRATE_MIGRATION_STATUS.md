@@ -2120,3 +2120,19 @@ a migration merge gate; no migration rerun has started.
 Run [36300720876](https://github.com/centerionware/not-k8s/actions/runs/36300720876) at SHA `958f75fd85c7a8145765432a6f80590f7995c9b9` failed both the K3s+Cilium and upstream Kubernetes+Cilium lanes. Docker five-node preflight and utility/runtime builds passed. K3s never reached its nodestore workload checkpoint because API discovery continued to omit `nodes.metrics.k8s.io` and `pods.metrics.k8s.io` after the 60-second inventory retry, despite APIService `Available=True`; upstream reached its checkpoint but strict source-object parity failed. Neither lane completed reverse migration. Full logs are under `/tmp/nodemigrate-36300720876/`.
 
 The branch APIService freshness change passed focused quick-check [36301964871](https://github.com/centerionware/not-k8s/actions/runs/36301964871), but migration run `36301989587` still omitted metrics resources after APIService `Available=True`, so stale informer state was not the cause. Source review found v2 aggregated discovery returned empty resources for APIService groups. The current follow-up fetches each backend APIResourceList and converts base resources/subresources into the v2 response; check and runtime retry are pending. Both lanes also reproduced the independent CSI volume-catalog mismatch. No PV/PVC/backing-volume deletion was observed.
+
+## 2026-09-29 latest migration attempt
+
+[Run 36598031291](https://github.com/centerionware/not-k8s/actions/runs/36598031291)
+at SHA `e5af2e7ab1a7183320db3925e1f22bdeeb16c640` passed the K3s round trip.
+The upstream Kubernetes lane stopped before its workload checkpoint. Its token
+requests omitted an optional Pod UID that nodeapiserver incorrectly required;
+its imported hostpath CSI volume catalog was lost when the fixture reapplied the
+upstream driver manifest; and nodelet logged old CoreDNS sandbox IDs retaining
+containerd name reservations after reconciliation timeouts. The five-node
+Docker run passed topology/Cilium setup but cp-2 rolled back because the target
+Cilium agent had not yet been scheduled. No PV was deleted. Fixes for TokenRequest
+UID resolution, imported CSI driver preservation, bounded Cilium scheduling
+wait, and strict cleanup of stale nodelet sandboxes are in the worktree. CI and
+migration verification are pending; no migration retry has started. Logs are saved at
+`/tmp/nodemigrate-36598031291/`.
