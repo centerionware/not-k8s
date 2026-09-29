@@ -68,6 +68,7 @@ macro_rules! handle_tokens {
         && !$info.namespace.is_empty()
         && !$info.name.is_empty()
     {
+        let content_type = $req.headers().get("content-type").and_then(|value| value.to_str().ok()).map(str::to_owned);
         let Some(mut client) = $storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
         };
@@ -81,9 +82,15 @@ macro_rules! handle_tokens {
                 return Ok(body_read_error_response(&$path_str, &e));
             }
         };
-        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
-            Ok(v) => v,
-            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e.to_string()))),
+        let body_value = match decode_virtual_request(
+            &body_bytes,
+            content_type.as_deref(),
+            "authentication.k8s.io",
+            "v1",
+            "TokenRequest",
+        ) {
+            Ok(value) => value,
+            Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &error))),
         };
         let mut request = match crate::authn::service_account::parse_token_request(&body_value) {
             Ok(request) => request,

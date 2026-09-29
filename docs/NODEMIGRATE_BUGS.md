@@ -2173,5 +2173,23 @@ The branch changed APIService route resolution and group discovery to read APISe
   and failed to decode the response as JSON. The exact request validation error
   was not logged. The parser now treats `audiences: null` like an omitted
   audience list (the Kubernetes default), adds a regression for that wire form,
-  and logs TokenRequest validation/issuance errors so any remaining cause is
-  visible. Focused nodeapiserver CI and the migration workflow are pending.
+  and logs TokenRequest validation/issuance errors. The scoped nodeapiserver
+  quick-check passed at SHA `188bbf736920211c53fa1244d1746b5c0e250a39`, but
+  migration run [36536494864](https://github.com/centerionware/not-k8s/actions/runs/36536494864)
+  reproduced the same HTTP 400 in both K3s and upstream lanes. Its audit entry
+  confirms the TokenRequest path and status; no corresponding validation or
+  issuance warning was captured. The failure detail was `JSON: expected value`,
+  because the handler unconditionally passed request bytes to the JSON decoder
+  even when kubectl negotiated protobuf. The handler now uses the declared
+  format through `decode_virtual_request`, and the listener codec regression
+  round-trips a protobuf TokenRequest and verifies the parsed audience and
+  expiration. `audiences: null` remains accepted for the JSON representation.
+  Scoped CI is pending; logs: `/tmp/nodemigrate-36536494864/`.
+
+- **Component:** Migration integration diagnostics. Run `36536494864` confirms
+  both lanes fail with the same protobuf/JSON mismatch detail. The audit record
+  captures the HTTP 400 and endpoint, and the client-visible Status detail
+  identifies the decoder error. The request and response bodies are not
+  otherwise retained; if the negotiated-codec fix does not resolve the next
+  focused migration attempt, capture bounded wire diagnostics without logging
+  issued credentials.

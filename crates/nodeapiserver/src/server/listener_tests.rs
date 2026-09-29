@@ -13,6 +13,12 @@ mod tests {
              serde_json::json!({"preconditions":{"uid":"original-uid"}})),
             ("authorization.k8s.io", "SelfSubjectAccessReview", "io.k8s.api.authorization.v1.SelfSubjectAccessReview",
              serde_json::json!({"spec":{"resourceAttributes":{"verb":"get","resource":"pods"}}})),
+            (
+                "authentication.k8s.io",
+                "TokenRequest",
+                "io.k8s.api.authentication.v1.TokenRequest",
+                serde_json::json!({"spec":{"audiences":[],"expirationSeconds":600}}),
+            ),
         ] {
             let version = if group.is_empty() { "v1".to_string() } else { format!("{group}/v1") };
             let raw = crate::codec::protobuf::encode_message(schema, &value).unwrap();
@@ -20,6 +26,11 @@ mod tests {
             let decoded = decode_virtual_request(&wire, Some("application/vnd.kubernetes.protobuf"), group, "v1", kind).unwrap();
             for (key, expected) in value.as_object().unwrap() {
                 assert_eq!(&decoded[key], expected);
+            }
+            if kind == "TokenRequest" {
+                let request = crate::authn::service_account::parse_token_request(&decoded).unwrap();
+                assert_eq!(request.audiences, Vec::<String>::new());
+                assert_eq!(request.expiration_seconds, Some(600));
             }
             assert!(decode_virtual_request(&wire, Some("application/vnd.kubernetes.protobuf"), group, "v1", "WrongKind").is_err());
         }

@@ -64,7 +64,30 @@ Cilium state; it does not yet retire manifests, old datastore membership, or
 other control-plane files. Any broader cleanup must first be implemented with
 recovery snapshots and ordered to preserve source quorum until destination
 quorum and API/data checks pass. No general old-control-plane teardown has
-been verified.
+been verified. This is a topology-dependent safety rule, not a promise to keep
+every old control-plane artifact: on a real multi-control-plane cluster,
+remove or retire old members when the destination cannot safely own the node
+otherwise. Keep enough captured state and source quorum for rollback until the
+destination's control plane, API, and migrated data are verified.
+
+At SHA `188bbf736920211c53fa1244d1746b5c0e250a39`, migration run
+[36536494864](https://github.com/centerionware/not-k8s/actions/runs/36536494864)
+passed the five-node Docker fixture preflight and compiled both `nodemigrate`
+and branch `notk8s` in the K3s and upstream lanes. K3s setup now successfully
+uses the pinned official release asset and checksum. Both lanes migrated
+forward to the `nodestore` checkpoint and ran the new Cilium host-state reset;
+the fresh agent Pod's `clean-cilium-state` init completed. Both then failed at
+`kubectl create token migration-reader --duration=10m`: nodeapiserver audit
+records HTTP 400, and the returned BadRequest message contains a JSON decode
+error. The
+`audiences: null` parser change did not resolve it. The handler was decoding
+all TokenRequest bodies as JSON even when kubectl negotiated protobuf, which
+matches the `JSON: expected value` BadRequest detail. The handler now decodes
+the virtual TokenRequest with its declared wire format, and a focused protobuf
+round-trip regression covers the request schema and fields. No return
+migration, full-cluster teardown, or parity comparison ran.
+Logs are under `/tmp/nodemigrate-36536494864/`. Do not retry until the common
+TokenRequest failure and any other confirmed blockers are fixed together.
 
 Forensic review of failed K3s run [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212)
 found that the returned source Cilium agent restarted inside its original Pod

@@ -28,10 +28,33 @@ release using `gh`, verifies the binary, and fetches that tag's official
 installer through the GitHub API. The exact release asset/checksum and installer
 fetch were validated separately. The nodeapiserver now treats
 `TokenRequest.spec.audiences: null` as the API's default audience and logs
-TokenRequest validation/issuance errors. These code changes are not yet covered
-by CI. The Cilium reset remains unverified, so do not start another migration
-until focused nodeapiserver/nodemigrate checks and migration-script validation
-pass for the updated commit.
+TokenRequest validation/issuance errors. The run below exercised the Cilium
+reset; its behavior through a full round trip remains unverified. The scoped
+nodeapiserver check and nodemigrate/static migration validations passed on the
+tested commit, but the TokenRequest failure below requires a runtime fix before
+another migration.
+
+## 2026-09-29 branch-runtime migration attempt
+
+At SHA `188bbf736920211c53fa1244d1746b5c0e250a39`,
+[run 36536494864](https://github.com/centerionware/not-k8s/actions/runs/36536494864)
+passed the five-node Docker fixture preflight and built `nodemigrate` plus the
+branch `notk8s` runtime in both single-node lanes. The K3s lane passed the new
+official-release setup. Both migration lanes reached the `nodestore`
+checkpoint and exercised the targeted Cilium reset; each new agent Pod's
+`clean-cilium-state` init completed. Both failed at the same short-lived
+ServiceAccount TokenRequest with nodeapiserver HTTP 400. The response detail
+was `JSON: expected value`: the handler always decoded JSON, although kubectl
+can negotiate protobuf for this Kubernetes API. The handler now uses the
+declared request wire format, with a protobuf TokenRequest regression in the
+existing listener codec test. No return, round-trip, or parity stage ran. Job logs and artifacts were captured once at
+`/tmp/nodemigrate-36536494864/`. Scoped `nodeapiserver` quick-check
+[36536020101](https://github.com/centerionware/not-k8s/actions/runs/36536020101),
+nodemigrate checks [36535991773](https://github.com/centerionware/not-k8s/actions/runs/36535991773),
+and migration workflow validation
+[36535991698](https://github.com/centerionware/not-k8s/actions/runs/36535991698)
+passed on the tested commit. Do not dispatch another migration until the
+remaining common failure is diagnosed and all observed blockers are addressed.
 
 ## Authentication and authorization review fixture
 
