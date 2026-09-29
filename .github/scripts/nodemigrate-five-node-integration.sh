@@ -19,6 +19,39 @@ node_env() {
     docker exec "$(container "$host")" env "$@"
 }
 
+capture_cilium_failure_state() {
+    local kubeconfig pod_names pod_name
+    for kubeconfig in /etc/kubernetes/admin.conf /etc/nodebootstrap/admin.kubeconfig; do
+        if ! node cp-1 test -r "$kubeconfig"; then
+            continue
+        fi
+        echo "Cilium cleanup configuration via $kubeconfig:"
+        node cp-1 env KUBECONFIG="$kubeconfig" kubectl -n kube-system \
+            get configmap cilium-config \
+            -o go-template='clean-cilium-state={{index .data "clean-cilium-state"}} clean-cilium-bpf-state={{index .data "clean-cilium-bpf-state"}}{{"\n"}}' \
+            2>&1 || true
+        pod_names="$(node cp-1 env KUBECONFIG="$kubeconfig" kubectl -n kube-system \
+            get pods -l k8s-app=cilium -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+            2>/dev/null || true)"
+        while IFS= read -r pod_name; do
+            [[ -n "$pod_name" ]] || continue
+            echo "Cilium datapath diagnostics kubeconfig=$kubeconfig pod=$pod_name:"
+            node cp-1 env KUBECONFIG="$kubeconfig" kubectl -n kube-system \
+                get pod "$pod_name" \
+                -o jsonpath='uid={.metadata.uid} node={.spec.nodeName} clean-cilium-state-init-exit-code={.status.initContainerStatuses[?(@.name=="clean-cilium-state")].state.terminated.exitCode}{"\n"}' \
+                2>&1 || true
+            node cp-1 env KUBECONFIG="$kubeconfig" kubectl -n kube-system \
+                exec "$pod_name" -c cilium-agent -- cilium-dbg status --verbose 2>&1 || true
+            node cp-1 env KUBECONFIG="$kubeconfig" kubectl -n kube-system \
+                exec "$pod_name" -c cilium-agent -- cilium-dbg service list 2>&1 || true
+            node cp-1 env KUBECONFIG="$kubeconfig" kubectl -n kube-system \
+                exec "$pod_name" -c cilium-agent -- cilium-dbg bpf lb list 2>&1 || true
+            node cp-1 env KUBECONFIG="$kubeconfig" kubectl -n kube-system \
+                exec "$pod_name" -c cilium-agent -- cilium-dbg endpoint list 2>&1 || true
+        done <<<"$pod_names"
+    done
+}
+
 fail() {
     echo "FAIL: $*" >&2
     exit 1
@@ -57,6 +90,7 @@ failure_diagnostics() {
         done
         node cp-1 env KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig \
             kubectl get nodes -o wide || true
+        capture_cilium_failure_state
     fi
     exit "$status"
 }
