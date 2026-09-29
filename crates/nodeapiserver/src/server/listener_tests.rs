@@ -17,7 +17,7 @@ mod tests {
                 "authentication.k8s.io",
                 "TokenRequest",
                 "io.k8s.api.authentication.v1.TokenRequest",
-                serde_json::json!({"spec":{"audiences":[],"expirationSeconds":600}}),
+                serde_json::json!({"spec":{"expirationSeconds":600}}),
             ),
         ] {
             let version = if group.is_empty() { "v1".to_string() } else { format!("{group}/v1") };

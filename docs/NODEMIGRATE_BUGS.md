@@ -2182,9 +2182,11 @@ The branch changed APIService route resolution and group discovery to read APISe
   because the handler unconditionally passed request bytes to the JSON decoder
   even when kubectl negotiated protobuf. The handler now uses the declared
   format through `decode_virtual_request`, and the listener codec regression
-  round-trips a protobuf TokenRequest and verifies the parsed audience and
-  expiration. `audiences: null` remains accepted for the JSON representation.
-  Scoped CI is pending; logs: `/tmp/nodemigrate-36536494864/`.
+  round-trips a protobuf TokenRequest and verifies the default audience and
+  expiration. The first quick-check caught a test expectation that protobuf
+  preserve an empty repeated `audiences` field; protobuf correctly omits it, so
+  the fixture now exercises the default by leaving that field empty. A scoped
+  rerun is pending; logs: `/tmp/nodemigrate-36536494864/`.
 
 - **Component:** Migration integration diagnostics. Run `36536494864` confirms
   both lanes fail with the same protobuf/JSON mismatch detail. The audit record
