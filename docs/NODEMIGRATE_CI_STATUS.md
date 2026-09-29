@@ -2,6 +2,58 @@
 
 Last updated: 2026-09-29
 
+## 2026-09-29 migration run 36573504554
+
+Completed with failure at exact tested SHA
+`8cc222a1fe492f9e6caa760ad752387448f8b2e6`; inputs were
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+All three jobs built `nodemigrate`; the single-node jobs also built the
+combined branch runtime, and Docker built the five-node node image. Run
+[36573504554](https://github.com/centerionware/not-k8s/actions/runs/36573504554).
+Job results: upstream Kubernetes
+[109423106119](https://github.com/centerionware/not-k8s/actions/runs/36573504554/job/109423106119),
+K3s
+[109423106415](https://github.com/centerionware/not-k8s/actions/runs/36573504554/job/109423106415),
+Docker preflight
+[109423106790](https://github.com/centerionware/not-k8s/actions/runs/36573504554/job/109423106790).
+Validation and the standalone Cilium probe were skipped because the workflow's
+dispatch inputs did not select those jobs.
+
+The upstream Kubernetes migration completed forward into nodestore and passed
+the returned-target workload, storage/PV payload, RBAC/token, Cilium KPR,
+Ingress, and CRD `/status` checks. Its source-versus-nodestore parity check
+then rejected Cilium's regenerated `CiliumNode` Cilium address and IPAM
+podCIDR. The return migration did not run. The fixture now treats those
+Cilium-owned per-node allocations as generated state; direct Cilium readiness
+and networking checks remain strict.
+
+The K3s lane completed both directions. Returned-stage checks passed for
+source CSI volume preservation, API CA continuity, Ingress, trust bundles,
+HostPath CSI registration, non-root `emptyDir`, StatefulSet/PVC data, legacy
+ServiceAccount identity and RBAC, TokenReview/SubjectAccessReview,
+CRD `/status`, and ephemeral containers. The parity check rejected the
+`data.hash` rotation in the replaced node's `kube-system/<node>.node-password.k3s`
+Secret. The round-trip comparison now allows only that exact Secret and only
+that exact field. Metrics-server's first startup attempt logged a timeout when
+connecting through the Kubernetes Service IP; it recovered, its rollout
+completed, and subsequent returned-stage checks passed. This was observed as
+a transient readiness delay, not the lane's exit cause.
+
+Docker preflight established the isolated three-control-plane/two-worker
+kubeadm cluster with Cilium KPR and no kube-proxy, lost and recovered a
+control plane, and passed namespace/CRI/BPF/storage/inter-node isolation
+checks. Migration did not start: applying the source fixture hit a transient
+ResourceQuota resourceVersion conflict while its controller updated status.
+The fixture now retries the complete idempotent apply only for that specific
+conflict, up to five attempts.
+
+Full job logs and uploaded probe artifacts were saved once under
+`/tmp/nodemigrate-36573504554/`. The consolidated fixture corrections have
+passed local `bash -n`, a focused Cilium snapshot-normalization filter check,
+and `git diff --check`; they are not yet covered by CI. Do not retry the
+migration workflow until the corrections are pushed and scoped validation
+passes.
+
 ## 2026-09-29 migration run 36552342215
 
 At SHA `a91fc102b553248dd697d17f97896f6b0f84680f`, the K3s lane failed after

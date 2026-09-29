@@ -2,6 +2,37 @@
 
 Last updated: 2026-09-29
 
+## Findings from migration run 36573504554
+
+- **Component:** Migration fixture parity. At SHA
+  `8cc222a1fe492f9e6caa760ad752387448f8b2e6`, the upstream Kubernetes lane
+  completed forward migration and passed nodestore workload, storage/PV,
+  Cilium KPR, API trust, RBAC/token, and CRD `/status` checks. Parity then
+  rejected the regenerated CiliumNode Cilium address and IPAM podCIDR. These
+  are Cilium-owned per-node allocations; the snapshot normalizer now excludes
+  those exact generated fields while the live Cilium/networking assertions
+  remain strict. The return path remains unverified.
+- **Component:** Migration fixture parity. K3s completed the return migration
+  and all returned-stage workload/storage/API assertions, then the round-trip
+  comparison rejected the replaced node's `kube-system/<node>.node-password.k3s`
+  Secret `data.hash`. K3s rotates this hash when a Node UID is replaced. The
+  comparator now permits only that named Secret and only `/data/hash`; all
+  other API object fields remain strict. The workflow also logged one
+  metrics-server timeout through the API ClusterIP on its first startup; its
+  rollout and subsequent returned-stage checks passed, so the logs show
+  recovery rather than a persistent datapath failure.
+- **Component:** Five-node migration fixture. Docker preflight built an isolated
+  kubeadm 3-control-plane/2-worker Cilium KPR cluster, passed its control-plane
+  loss/recovery and isolation checks, then fixture apply hit a transient
+  ResourceQuota resourceVersion conflict while its controller updated status.
+  No nodemigrate operation ran in this lane. Fixture setup now retries the
+  idempotent manifest apply only when the API reports that specific conflict,
+  up to five times; other failures remain fatal.
+- Full job logs and uploaded artifacts are preserved once under
+  `/tmp/nodemigrate-36573504554/`. Local `bash -n`, focused Cilium filter
+  validation, and `git diff --check` pass. The consolidated corrections still
+  need scoped CI before another migration attempt.
+
 ## Findings from migration run 36556999686
 
 - **Component:** `nodelet` CRI cgroup configuration. The five-node Docker lane
@@ -75,14 +106,14 @@ Last updated: 2026-09-29
   rollback fixes passed focused CI. The upstream return/rollback and nodelet
   cgroup corrections remain unvalidated pending the current migration run.
 
-## Validation in progress
+## Previous migration run 36556999686
 
-Migration run [36556999686](https://github.com/centerionware/not-k8s/actions/runs/36556999686)
-is running at exact SHA `457a7f6305ea6ebc2317a2e100d3c3b0a23b7fd2` with
-branch-built runtime, Cilium KPR, and the five-node migration enabled. It
-covers K3s, upstream Kubernetes, and the three-control-plane/two-worker path.
-No lane result is known yet. Capture the complete logs after the run finishes
-and update this record with every new finding before retrying.
+Migration run
+[36556999686](https://github.com/centerionware/not-k8s/actions/runs/36556999686)
+completed with failures at SHA `457a7f6305ea6ebc2317a2e100d3c3b0a23b7fd2`.
+Its three confirmed failure mechanisms and their fixes are documented above.
+The later migration result 36573504554 is the current verification record;
+do not use this older run as evidence for the latest changes.
 
 ## Findings from migration run 36546160178
 

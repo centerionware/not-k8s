@@ -1207,6 +1207,23 @@ install_hostpath_driver() {
     kubectl get storageclass csi-hostpath-sc
 }
 
+apply_fixture_manifest_with_conflict_retry() {
+    local manifest_file="$1"
+    local attempt output
+    for attempt in 1 2 3 4 5; do
+        if output="$(kubectl apply -f "$manifest_file" 2>&1)"; then
+            printf '%s\n' "$output"
+            return 0
+        fi
+        printf '%s\n' "$output" >&2
+        if [[ "$output" != *"the object has been modified"* || "$attempt" == 5 ]]; then
+            return 1
+        fi
+        echo "Fixture apply conflicted with a concurrent controller update; retry $attempt/5" >&2
+        sleep "$attempt"
+    done
+}
+
 install_workloads() {
     local stage=source
     if [[ -z "${NODEMIGRATE_KUBECTL_IMAGE:-}" ]]; then
@@ -1313,7 +1330,9 @@ spec:
 YAML
 
     mkdir -p "$STATIC_PATH"
-    kubectl apply -f - <<'YAML'
+    local fixture_manifest
+    fixture_manifest="$(mktemp)"
+    cat > "$fixture_manifest" <<'YAML'
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -1960,6 +1979,11 @@ spec:
   dnsNames:
   - migration.test
 YAML
+    if ! apply_fixture_manifest_with_conflict_retry "$fixture_manifest"; then
+        rm -f "$fixture_manifest"
+        return 1
+    fi
+    rm -f "$fixture_manifest"
     kubectl create namespace migration-policy-client --dry-run=client -o yaml | kubectl apply -f -
     kubectl label namespace migration-policy-client \
         nodemigrate.io/policy-client=true --overwrite
@@ -3969,8 +3993,14 @@ canonicalize_api_object() {
 assert_round_trip_unchanged() {
     local initial="$CHECKPOINT_DIR/source"
     local returned="$CHECKPOINT_DIR/returned"
+    local replaced_node_name=""
+    if [[ "$SOURCE_DIST" == k3s ]]; then
+        replaced_node_name="$(KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get nodes \
+            -o jsonpath='{.items[0].metadata.name}')" || return 1
+    fi
     assert_migratable_api_objects_unchanged \
-        "$initial/migratable-objects.jsonl" "$returned/migratable-objects.jsonl" source returned
+        "$initial/migratable-objects.jsonl" "$returned/migratable-objects.jsonl" \
+        source returned "$replaced_node_name"
     assert_discovered_api_resources_preserved \
         "$initial/api-resources.txt" "$returned/api-resources.txt" returned
     jq -S 'del(.migratableObjects)' "$initial/semantic-state.json" \

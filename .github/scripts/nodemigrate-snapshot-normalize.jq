@@ -97,6 +97,15 @@ select(
     .metadata.labels = ((.metadata.labels // {})
       | del(."node.kubernetes.io/instance-type", ."nodelet.dev/managed"))
     | if .spec.health then .spec.health |= del(.ipv4) else . end
+    # Cilium owns per-node datapath addresses and IPAM podCIDRs. It can
+    # allocate new values after a replacement node joins; the migration
+    # fixture separately checks Cilium readiness and live Service routing.
+    | if .spec.addresses then
+        .spec.addresses |= map(
+          if ((.type // "") | startswith("Cilium")) then del(.ip) else . end
+        )
+      else . end
+    | if .spec.ipam then .spec.ipam |= del(.podCIDRs) else . end
   else . end
 | if .kind == "Secret" and .type == "kubernetes.io/service-account-token" then
     .metadata.annotations |= del(."kubernetes.io/service-account.uid")

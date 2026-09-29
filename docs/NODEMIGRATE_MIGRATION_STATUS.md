@@ -2,14 +2,29 @@
 
 Last updated: 2026-09-29
 
-## Current run: 36556999686
+## Latest migration result: 36573504554
 
 Dedicated migration run
-[36556999686](https://github.com/centerionware/not-k8s/actions/runs/36556999686)
-is in progress at `457a7f6305ea6ebc2317a2e100d3c3b0a23b7fd2` with branch
-runtime, Cilium KPR, and five-node migration enabled. It includes the K3s and
-upstream Kubernetes round trips and the three-control-plane/two-worker
-Kubernetes path. No result is verified until the complete workflow finishes.
+[36573504554](https://github.com/centerionware/not-k8s/actions/runs/36573504554)
+completed with failures at exact SHA
+`8cc222a1fe492f9e6caa760ad752387448f8b2e6`, with branch runtime, Cilium KPR,
+and five-node migration enabled. All lanes built `nodemigrate`; the two
+single-node lanes also built the combined branch runtime, and the Docker lane
+built its five-node image. K3s completed the full return and returned-stage
+workload/storage/API checks, then parity rejected the intentional K3s
+node-password Secret `data.hash` rotation after Node replacement. Upstream
+Kubernetes completed forward migration and its nodestore workload, storage,
+API, Cilium, RBAC, and token checks, then parity rejected Cilium-regenerated
+per-node address/IPAM allocations; return was not attempted. The Docker
+preflight passed its isolated 3-control-plane/2-worker Cilium cluster,
+control-plane loss/recovery, and namespace/CRI/BPF/storage/network checks, but
+fixture creation stopped on a transient ResourceQuota resourceVersion conflict
+before migration began. These three fixture/parity corrections are in progress;
+no retry is underway.
+
+Full logs and uploaded artifacts are under
+`/tmp/nodemigrate-36573504554/`. The exact job links and verified assertions
+are recorded in [NODEMIGRATE_CI_STATUS.md](NODEMIGRATE_CI_STATUS.md).
 
 ## Previous completed run: 36552342215
 
