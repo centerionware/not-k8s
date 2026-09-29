@@ -23,6 +23,12 @@ unverified. Logs: `/tmp/nodemigrate-36578066781/`.
 The checked-in correction is pending focused CI. No regular build or full e2e
 gate ran.
 
+Focused nodemigrate quick-check [36582345104](https://github.com/centerionware/not-k8s/actions/runs/36582345104)
+at `37dcc70e2bac26e971075cceba686e12609ea9aa` reported 114 passed and one
+failed: the new Cilium ordering assertion incorrectly expected operator before
+Envoy. It now follows the CRI input order for non-agent sandboxes, with the
+agent last. Migration has not been retried.
+
 ## Previous migration result: 36573504554
 
 Dedicated migration run

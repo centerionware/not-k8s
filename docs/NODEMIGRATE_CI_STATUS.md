@@ -27,6 +27,13 @@ non-agent Cilium sandboxes before the local Cilium agent. Focused validation is
 pending. Docker migration forward/return remains unverified. Logs and artifacts
 were captured once under `/tmp/nodemigrate-36578066781/`.
 
+Focused quick-check [36582345104](https://github.com/centerionware/not-k8s/actions/runs/36582345104)
+at SHA `37dcc70e2bac26e971075cceba686e12609ea9aa` failed one new ordering
+assertion (114 of 115 nodemigrate tests passed). The regression expected the
+operator before Envoy although the implementation preserves their CRI listing
+order and only moves the agent last. The expectation is corrected; rerun the
+focused quick-check before migration.
+
 ## 2026-09-29 migration run 36573504554
 
 Completed with failure at exact tested SHA

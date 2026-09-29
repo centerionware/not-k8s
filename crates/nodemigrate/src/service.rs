@@ -1609,8 +1609,8 @@ mod tests {
             cilium_source_sandbox_ids(&pods),
             (
                 vec![
-                    "cilium-operator-id".to_string(),
                     "cilium-envoy-id".to_string(),
+                    "cilium-operator-id".to_string(),
                     "cilium-agent-id".to_string()
                 ],
                 vec![

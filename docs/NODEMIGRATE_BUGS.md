@@ -23,6 +23,12 @@ Last updated: 2026-09-29
   `092099a1f8e62fc25c161d70e0501bfe3d192aa0`; Docker migration failed at that
   same SHA. Do not retry the migration until the CRI cleanup correction and
   scoped validation are pushed together.
+- **Component:** `nodemigrate` cleanup-order regression. Focused quick-check
+  [36582345104](https://github.com/centerionware/not-k8s/actions/runs/36582345104)
+  at `37dcc70e2bac26e971075cceba686e12609ea9aa` ran 115 tests; 114 passed.
+  The new assertion incorrectly reordered Envoy and operator IDs even though
+  the implementation preserves CRI order among non-agent sandboxes. The test
+  now expects Envoy, operator, then agent; migration has not been retried.
 
 ## Findings from migration run 36573504554
 
