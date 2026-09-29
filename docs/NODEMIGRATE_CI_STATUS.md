@@ -2,6 +2,18 @@
 
 Last updated: 2026-09-29
 
+## Docker probe log-summary instrumentation
+
+Commit `0dc2e56f3f4afd95012cda91224d47d01badfe17` adds an always-run Actions
+summary containing the tail of the Docker preflight log, so a future completed
+run can be diagnosed through GraphQL when artifact retrieval is rate-limited.
+The PR workflow validation passed in run
+[36588626636](https://github.com/centerionware/not-k8s/actions/runs/36588626636).
+A preflight-only dispatch was attempted with `docker_only=true`,
+`cilium_kpr=true`, and `five_node_migration=false`, but GitHub REST returned
+HTTP 403 rate limiting before creating a run. This provides no new Docker
+diagnostic and does not change the unknown cause recorded below.
+
 ## 2026-09-29 migration run 36582910964
 
 Completed with failure at SHA
