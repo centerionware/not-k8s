@@ -2,7 +2,22 @@
 
 Last updated: 2026-09-29
 
-## Latest migration result: 36578066781
+## Latest migration result: 36582910964
+
+Run [36582910964](https://github.com/centerionware/not-k8s/actions/runs/36582910964)
+at SHA `9d6fab17f856899b4885cfb20309dd2571ce6706` used branch-built
+`nodemigrate` and combined runtime with Cilium KPR and the five-node Docker
+path enabled. K3s and upstream Kubernetes completed both migration directions,
+normalized API parity, workload/RBAC checks, Cilium checks, and PV payload
+verification. Docker built the combined `notk8s` and five-node image, but its
+preflight job `109455502184` failed. The cause is not yet available: REST API
+rate limiting prevented the completed Docker log/artifact download through
+`gh`. Artifact name: `nodemigrate-docker-preflight-36582910964`. Do not retry
+until its diagnostics are retrieved and all confirmed issues are fixed.
+
+No regular build or full e2e gate ran.
+
+## Previous migration result: 36578066781
 
 Run [36578066781](https://github.com/centerionware/not-k8s/actions/runs/36578066781)
 at SHA `092099a1f8e62fc25c161d70e0501bfe3d192aa0` used branch-built
@@ -20,8 +35,8 @@ active while the local API still refused connections, so complete rollback
 readiness is not yet proven. Docker forward migration and return remain
 unverified. Logs: `/tmp/nodemigrate-36578066781/`.
 
-The checked-in correction is pending focused CI. No regular build or full e2e
-gate ran.
+At that time the checked-in correction was pending focused CI. No regular
+build or full e2e gate ran.
 
 Focused nodemigrate quick-check [36582345104](https://github.com/centerionware/not-k8s/actions/runs/36582345104)
 at `37dcc70e2bac26e971075cceba686e12609ea9aa` reported 114 passed and one

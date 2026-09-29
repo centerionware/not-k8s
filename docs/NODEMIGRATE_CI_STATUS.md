@@ -2,7 +2,26 @@
 
 Last updated: 2026-09-29
 
-## 2026-09-29 migration run 36578066781
+## 2026-09-29 migration run 36582910964
+
+Completed with failure at SHA
+`9d6fab17f856899b4885cfb20309dd2571ce6706`; inputs were
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+Both single-node jobs built branch `nodemigrate` and combined runtime; Docker
+built `nodemigrate`, combined `notk8s`, and the five-node image. The K3s and
+upstream Kubernetes lanes completed forward and return migration, parity,
+workload, Cilium, RBAC, and PV payload checks. Docker job
+`109455502184` failed; the run check suite records both single-node jobs as
+success and Docker as failure. Its cause is not yet identified because the
+GitHub REST API rate limit blocked the one-time log/artifact retrieval attempt
+through `gh`. The workflow artifact is
+`nodemigrate-docker-preflight-36582910964`.
+
+Do not retry migration until the artifact is retrieved and all confirmed
+Docker failure causes are fixed. The completed run is
+[36582910964](https://github.com/centerionware/not-k8s/actions/runs/36582910964).
+
+## Previous migration run 36578066781
 
 Completed with failure at exact tested SHA
 `092099a1f8e62fc25c161d70e0501bfe3d192aa0`; inputs were
