@@ -170,6 +170,36 @@ wait_five_nodes() {
     ' >/dev/null
 }
 
+assert_retained_kubeadm_is_quiescent() {
+    echo "Checking retained kubeadm services are disabled while nodestore owns the nodes"
+    for host in "${NODES[@]}"; do
+        if node "$host" systemctl is-active --quiet kubelet; then
+            fail "$host kubelet is active alongside the nodestore node agent"
+        fi
+        local enabled_state
+        enabled_state="$(node "$host" systemctl is-enabled kubelet 2>/dev/null || true)"
+        [[ "$enabled_state" == disabled ]] \
+            || fail "$host kubelet is not disabled after migration (state=$enabled_state)"
+    done
+    for host in cp-1 cp-2 cp-3; do
+        node "$host" test -s /etc/kubernetes/manifests/kube-apiserver.yaml \
+            || fail "$host lost the retained kube-apiserver manifest needed for return migration"
+        node "$host" test -s /etc/kubernetes/manifests/etcd.yaml \
+            || fail "$host lost the retained etcd manifest needed for return migration"
+        node "$host" test -d /var/lib/etcd/member \
+            || fail "$host lost its retained etcd member data needed for return migration"
+        local sandboxes
+        sandboxes="$(node "$host" crictl --runtime-endpoint=unix:///run/containerd/containerd.sock pods -o json)" \
+            || fail "$host could not list CRI sandboxes after nodestore cutover"
+        jq -e '(.items | type == "array") and all(.items[];
+          ((.metadata.namespace // "") != "kube-system") or
+          (((.metadata.name // "") | startswith("kube-apiserver-") or startswith("etcd-")) | not)
+        )' <<<"$sandboxes" >/dev/null \
+            || fail "$host still has a kubeadm API or etcd sandbox running under the nodestore target"
+    done
+    echo "PASS: old kubeadm control-plane processes are quiescent and source manifests/etcd data remain available for recovery"
+}
+
 cp1="$(container cp-1)"
 expected_image_id="$(docker image inspect --format '{{.Id}}' "$IMAGE")"
 for host in "${NODES[@]}"; do
@@ -357,6 +387,7 @@ done
 
 echo "Checking all five nodes and running the nodestore fixture checkpoint"
 wait_five_nodes /etc/nodebootstrap/admin.kubeconfig
+assert_retained_kubeadm_is_quiescent
 node cp-1 env NODEMIGRATE_HOSTPATH_SETUP="$NODEMIGRATE_HOSTPATH_SETUP" \
     NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" \
     bash "$NODE_ROOT/.github/scripts/nodemigrate-five-node-fixture.sh" nodestore

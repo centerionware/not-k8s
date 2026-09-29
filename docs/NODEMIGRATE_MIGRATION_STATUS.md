@@ -16,6 +16,14 @@ Docker log/artifact download through `gh`. Artifact name:
 `nodemigrate-docker-preflight-36582910964`. Do not retry until its diagnostics
 are retrieved and all confirmed issues are fixed.
 
+The five-node round-trip script now checks immediately after nodestore reaches
+all five Nodes that the retained kubelet services are disabled, kubeadm
+API/etcd sandboxes are absent, and each source control plane still has its
+static-pod manifests and etcd member data for recovery/return. `bash -n`,
+`git diff --check`, and positive/negative jq checks passed locally. This
+assertion has not run against the Docker cluster; the preflight failure still
+prevents the migration scenario from starting.
+
 No regular build or full e2e gate ran.
 
 ## Previous migration result: 36578066781
