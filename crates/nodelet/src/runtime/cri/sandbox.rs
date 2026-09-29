@@ -284,6 +284,20 @@ pub(crate) fn sandbox_config(
     }
 }
 
+/// CRI repeats the sandbox configuration on CreateContainer. containerd uses
+/// that copy to choose each container's cgroup path, so setting the parent only
+/// on RunPodSandbox leaves containers at the runtime default (`/k8s.io/<id>`).
+pub(crate) fn sandbox_config_with_cgroup_parent(
+    mut config: PodSandboxConfig,
+    cgroup_parent: &str,
+) -> PodSandboxConfig {
+    config
+        .linux
+        .get_or_insert_with(LinuxPodSandboxConfig::default)
+        .cgroup_parent = cgroup_parent.to_owned();
+    config
+}
+
 
 impl CriRuntime {
     /// Look up our sandbox for a pod by namespace+name. These labels are always
@@ -381,11 +395,13 @@ impl CriRuntime {
         } else {
             None
         };
-        let mut config = sandbox_config(id, userns_mapping, hostname, sysctls, pod_sc, privileged);
+        let mut config = sandbox_config_with_cgroup_parent(
+            sandbox_config(id, userns_mapping, hostname, sysctls, pod_sc, privileged),
+            &cgroup_parent,
+        );
         config.dns_config = dns;
         config.port_mappings = port_mappings;
         let linux = config.linux.get_or_insert_with(LinuxPodSandboxConfig::default);
-        linux.cgroup_parent = cgroup_parent;
         linux.overhead = overhead;
         info!(
             pod = %format!("{}/{}", id.namespace, id.name),

@@ -692,7 +692,10 @@ impl CriRuntime {
             .create_container(CreateContainerRequest {
                 pod_sandbox_id: sandbox_id.to_string(),
                 config: Some(config),
-                sandbox_config: Some(sandbox_config(id, userns_mapping, &id.name, &HashMap::new(), None, privileged)),
+                sandbox_config: Some(sandbox_config_with_cgroup_parent(
+                    sandbox_config(id, userns_mapping, &id.name, &HashMap::new(), None, privileged),
+                    &crate::cgroup::cgroup_parent_for(qos, self.cgroup_driver),
+                )),
             })
             .await
         {

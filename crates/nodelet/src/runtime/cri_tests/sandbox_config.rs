@@ -34,6 +34,25 @@ fn log_directory_matches_the_ns_name_uid_layout() {
 }
 
 #[test]
+fn repeated_create_container_sandbox_config_keeps_the_qos_cgroup_parent() {
+    let cfg = sandbox_config_with_cgroup_parent(
+        sandbox_config(
+            &id("ns", "workload", "uid-1", false),
+            None,
+            "workload",
+            &HashMap::new(),
+            None,
+            false,
+        ),
+        "/kubepods.slice/kubepods-burstable.slice",
+    );
+    assert_eq!(
+        cfg.linux.as_ref().unwrap().cgroup_parent,
+        "/kubepods.slice/kubepods-burstable.slice"
+    );
+}
+
+#[test]
 fn non_host_network_pod_sets_hostname_to_pod_name() {
     let cfg = sandbox_config(&id("ns", "myapp", "u", false), None, "myapp", &HashMap::new(), None, false);
     assert_eq!(cfg.hostname, "myapp");

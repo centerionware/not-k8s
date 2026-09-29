@@ -2,6 +2,32 @@
 
 Last updated: 2026-09-29
 
+## Findings from migration run 36556999686
+
+- **Component:** `nodelet` CRI cgroup configuration. The five-node Docker lane
+  failed on cp-1 when runc rejected `/k8s.io/<container-id>` under
+  `SystemdCgroup=true`. The previous change set the QoS parent on
+  `RunPodSandbox`, but containerd also reads the repeated sandbox config on
+  `CreateContainer`; nodelet left that copy empty. The CreateContainer request
+  now receives the same QoS parent. A focused regression covers the repeated
+  config; scoped CI and migration verification are pending.
+- **Component:** `nodemigrate` Cilium recovery. On K3s return, the replacement
+  agent's `clean-cilium-state` init exited 1. The completed artifact has no
+  logs for that replacement init, so its cause is not confirmed. Before
+  rollback, nodemigrate now records termination reason/message and attempts to
+  capture the last 80 init log lines; this is diagnostic work, not a runtime
+  fix for the exit.
+- **Component:** `nodemigrate` Cilium readiness / API restore ordering. The
+  upstream return reset reported success, but a later cluster snapshot found
+  the replacement Cilium agent and Envoy unready, the Node without Cilium
+  networking, CoreDNS reporting invalid/expired bearer tokens and then no
+  route to the API Service IP, and cert-manager's webhook with no ready
+  endpoints. Certificate, CertificateRequest, and ClusterIssuer restoration
+  then failed admission calls. This supports a shared Cilium/service-network
+  readiness failure; the exact token and datapath mechanism remains unproven.
+  Cilium must now remain Ready for ten continuous seconds before API objects
+  are restored. A stable Cilium datapath and the return path remain unverified.
+
 ## Findings from migration run 36552342215
 
 - **Component:** `nodebootstrap` migration PKI. On SHA

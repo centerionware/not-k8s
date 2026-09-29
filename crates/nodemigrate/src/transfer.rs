@@ -16,7 +16,8 @@ use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Pod};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{
     api::{
-        Api, DeleteParams, DynamicObject, ListParams, Patch, PatchParams, PostParams, Preconditions,
+        Api, DeleteParams, DynamicObject, ListParams, LogParams, Patch, PatchParams, PostParams,
+        Preconditions,
     },
     config::Kubeconfig,
     discovery::{verbs, ApiResource, Discovery},
@@ -965,6 +966,8 @@ impl KubeApi {
                     tokio::time::Instant::now() + std::time::Duration::from_secs(300);
                 let mut cleanup_init_exit_code = None;
                 let mut cleanup_flag_restored = !cleanup_flag_changed;
+                let mut ready_since = None;
+                let mut cleanup_init_failure_details = None;
                 loop {
                     let current_pods = pods
                         .list(&ListParams::default().labels("k8s-app=cilium"))
@@ -999,6 +1002,35 @@ impl KubeApi {
                                 .and_then(|state| state.terminated.as_ref())
                             {
                                 cleanup_init_exit_code = Some(terminated.exit_code);
+                                if terminated.exit_code != 0
+                                    && cleanup_init_failure_details.is_none()
+                                {
+                                    let params = LogParams {
+                                        container: Some("clean-cilium-state".to_owned()),
+                                        previous: init_state.restart_count > 0,
+                                        tail_lines: Some(80),
+                                        ..Default::default()
+                                    };
+                                    let init_logs = tokio::time::timeout(
+                                        std::time::Duration::from_secs(10),
+                                        pods.logs(
+                                            current.metadata.name.as_deref().unwrap_or(&name),
+                                            &params,
+                                        ),
+                                    )
+                                    .await
+                                    .map_err(|_| anyhow::anyhow!("reading init logs timed out"))
+                                    .and_then(|result| result)
+                                    .unwrap_or_else(|error| {
+                                        format!("unable to read init logs: {error:#}")
+                                    });
+                                    cleanup_init_failure_details = Some(format!(
+                                        "reason={}, message={:?}, logs={:?}",
+                                        terminated.reason.as_deref().unwrap_or("<unknown>"),
+                                        terminated.message,
+                                        init_logs.trim()
+                                    ));
+                                }
                             }
                             let init_started = init_state.state.as_ref().is_some_and(|state| {
                                 state.running.is_some() || state.terminated.is_some()
@@ -1013,8 +1045,9 @@ impl KubeApi {
                         if let Some(exit_code) = cleanup_init_exit_code {
                             ensure!(
                                 exit_code == 0,
-                                "Cilium clean-cilium-state init failed for replacement Pod {} with exit code {exit_code}",
-                                current.metadata.name.as_deref().unwrap_or("<unnamed>")
+                                "Cilium clean-cilium-state init failed for replacement Pod {} with exit code {exit_code}; {}",
+                                current.metadata.name.as_deref().unwrap_or("<unnamed>"),
+                                cleanup_init_failure_details.as_deref().unwrap_or("no init diagnostics available")
                             );
                             let ready = current.status.as_ref().is_some_and(|status| {
                                 status.conditions.as_ref().is_some_and(|conditions| {
@@ -1024,20 +1057,31 @@ impl KubeApi {
                                 })
                             });
                             if ready {
+                                let now = tokio::time::Instant::now();
+                                let stable_since = ready_since.get_or_insert(now);
+                                if now.duration_since(*stable_since)
+                                    < std::time::Duration::from_secs(10)
+                                {
+                                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                    continue;
+                                }
                                 eprintln!(
-                                    "nodemigrate: rebuilt Cilium host state on node {node_name} with a fresh agent Pod and clean-cilium-state init"
+                                    "nodemigrate: rebuilt Cilium host state on node {node_name}; replacement agent remained Ready for 10 seconds after clean-cilium-state"
                                 );
                                 return Ok(());
                             }
+                            ready_since = None;
                         }
+                    } else {
+                        ready_since = None;
                     }
-                    if tokio::time::Instant::now() >= deadline {
-                        bail!(
-                            "Cilium clean-cilium-state did not complete and the replacement agent did not become Ready on node {node_name}"
-                        );
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
+                if tokio::time::Instant::now() >= deadline {
+                    bail!(
+                        "Cilium clean-cilium-state did not complete and the replacement agent did not become Ready on node {node_name}"
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
             .await;
 
