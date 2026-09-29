@@ -77,7 +77,7 @@ use v1::{
     RemoveImageRequest, RemovePodSandboxRequest, RunPodSandboxRequest, StartContainerRequest,
     StopContainerRequest, StopPodSandboxRequest, ExecSyncRequest, ReopenContainerLogRequest,
     ExecRequest, AttachRequest, PortForwardRequest, ListPodSandboxStatsRequest,
-    RuntimeConfigRequest,
+    RuntimeConfigRequest, CgroupDriver,
     UpdateContainerResourcesRequest, security_profile::ProfileType, SecurityProfile,
     IdMapping, UserNamespace, PortMapping, Protocol, MountPropagation,
 };
@@ -558,11 +558,11 @@ impl CriRuntime {
         let cgroup_driver = match runtime_config
             .linux
             .map(|linux| linux.cgroup_driver)
-            .and_then(|driver| v1::linux_runtime_configuration::CgroupDriver::try_from(driver).ok())
-            .unwrap_or(v1::linux_runtime_configuration::CgroupDriver::Systemd)
+            .and_then(|driver| CgroupDriver::try_from(driver).ok())
+            .unwrap_or(CgroupDriver::Systemd)
         {
-            v1::linux_runtime_configuration::CgroupDriver::Systemd => crate::cgroup::Driver::Systemd,
-            v1::linux_runtime_configuration::CgroupDriver::Cgroupfs => crate::cgroup::Driver::Cgroupfs,
+            CgroupDriver::Systemd => crate::cgroup::Driver::Systemd,
+            CgroupDriver::Cgroupfs => crate::cgroup::Driver::Cgroupfs,
         };
         info!(?cgroup_driver, "discovered CRI cgroup driver");
 

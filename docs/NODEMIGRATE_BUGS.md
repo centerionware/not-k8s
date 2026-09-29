@@ -27,6 +27,16 @@ Migration run [36540040356](https://github.com/centerionware/not-k8s/actions/run
 used branch runtime at `4cebc30721f96c034f48653345fd5b2f22e81ca7`. No migration
 retry is considered until both fixes pass their scoped CI checks.
 
+- **Scoped build correction:** Quick-check
+  [36544899369](https://github.com/centerionware/not-k8s/actions/runs/36544899369)
+  confirmed the new cgroup logic but failed to compile because CRI's
+  `CgroupDriver` enum is top-level in the generated module, not nested under
+  `LinuxRuntimeConfiguration`. The code now imports the generated top-level
+  enum. The independent nodemigrate check
+  [36544899266](https://github.com/centerionware/not-k8s/actions/runs/36544899266)
+  passed packaging validation and all crate tests. Corrected scoped checks are
+  pending; no migration rerun has started.
+
 ## Custom-resource status fixture CRD placement
 
 - **Component:** Migration integration fixture. Diagnostic run
