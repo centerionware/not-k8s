@@ -1,8 +1,35 @@
 # nodemigrate bug and fix tracker
 
-Last updated: 2026-09-28
+Last updated: 2026-09-29
 
 ## Latest branch-run findings
+
+- **Same-name Node deletion is asynchronous during return cutover.** K3s job
+  `109181807925` in run
+  [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)
+  accepted a UID-preconditioned Node DELETE, but the still-running K3s agent
+  raced registration while that UID was terminating. The cutover then tested
+  readiness before the old UID had been removed and timed out. `delete_node`
+  now waits, with a 60-second bound, until the old Node is absent or a new UID
+  has registered before cutover continues. Focused tests cover the old, absent,
+  and new-UID states; CI validation and a live return leg remain pending.
+- **CSINode owner-reference repair omitted required spec on its patch.** The
+  five-node Docker job `109181808357` in run `36497949349` passed kubeadm,
+  Cilium, and control-plane recovery preflight, then the forward migration was
+  rejected while repairing `CSINode/cp-1` because `spec.drivers` was required.
+  Initial import already normalizes this field, but the later owner-reference
+  merge patch only sent metadata. The repair now carries forward the driver's
+  list or supplies an empty list if absent, with regressions for both cases.
+  Focused CI and a new five-node migration run remain pending.
+- **Deployment controller did not scale its only ReplicaSet down.** In the
+  K3s target audit in run `36497949349`, the fixture scaled nginx from two
+  replicas to one; its Deployment remained `spec.replicas=1` with two Ready
+  Pods and PDB `currentHealthy=2`, `desiredHealthy=1`, and
+  `disruptionsAllowed=1`. `new_rs_desired_replicas` held the current count at
+  the surge ceiling instead of reducing it to the new desired count. It now
+  explicitly scales an over-sized current ReplicaSet back to `desired` and
+  has a focused regression. CI validation is pending. The migration PDB
+  assertion remains unchanged.
 
 - **Replicated core/v1 ReplicationController default differs in snapshots.** Run
   [36490156839](https://github.com/centerionware/not-k8s/actions/runs/36490156839)

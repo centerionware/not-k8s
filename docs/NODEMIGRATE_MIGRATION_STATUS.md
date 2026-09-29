@@ -1,6 +1,6 @@
 # nodemigrate implementation and integration status
 
-Last updated: 2026-09-28
+Last updated: 2026-09-29
 
 This is the living implementation status record for the full scope in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). Capability marks describe code
@@ -8,6 +8,22 @@ that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
 Latest batch migration run
+[36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)
+at SHA `1f6b5064936ca2001dea2527483848aebc7e14ad` passed all migration builds
+and the upstream Kubernetes three-control-plane/two-worker round trip. The
+K3s return leg timed out on same-name Node UID replacement; saved audit events
+showed the delete accepted while the old UID was still being updated by K3s.
+The rollback workload check then found two Ready nginx Pods after scale-down.
+The Docker five-node topology and loss/recovery preflight passed, but forward
+import failed during CSINode owner-reference repair because its patch omitted
+required `spec.drivers`. These three findings are being fixed together:
+bounded confirmation that the old Node UID is gone, valid CSINode repair
+patches, and Deployment scale-down convergence. The fixture assertions remain
+strict. Focused validation is pending and the migration run has not been
+retried. Exact artifacts, jobs, and paths are recorded in
+[CI status](NODEMIGRATE_CI_STATUS.md).
+
+Previous batch migration run
 [36493677637](https://github.com/centerionware/not-k8s/actions/runs/36493677637) at SHA
 `0cef554bd03d53d1725e66a2d47ef2c65edd6dff` passed all nodemigrate and combined
 runtime builds but failed all three runtime paths. The new target

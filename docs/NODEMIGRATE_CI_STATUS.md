@@ -1,6 +1,6 @@
 # nodemigrate CI and integration status
 
-Last updated: 2026-09-28
+Last updated: 2026-09-29
 
 This is the living CI record for the scope in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). The user-specific testing policy
@@ -8,6 +8,29 @@ is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
 ## Latest completed migration batch
+
+Run [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)
+completed at SHA `1f6b5064936ca2001dea2527483848aebc7e14ad` with
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+All runtime builds passed. The upstream Kubernetes 3-control-plane/2-worker
+round trip passed. K3s failed during return because Node replacement observed
+the stale Node UID; the delete request returned before the old Node was gone.
+The later rollback-stage nginx PDB check found two healthy Pods after scaling
+the Deployment from two replicas back to one. The five-node kubeadm/Cilium
+preflight and control-plane recovery probe passed, then nodemigrate import
+failed repairing `CSINode/cp-1` because the destination rejected a patch whose
+effective object lacked required `spec.drivers`. This batch groups bounded
+Node deletion confirmation, CSINode repair-patch normalization, and
+Deployment scale-down correction before another migration dispatch. Focused
+CI validation is pending; no retry has been launched. Logs were captured once
+under `/tmp/nodemigrate-36497949349/`, with the K3s and Docker lane artifacts
+at `nodemigrate-k3s-36497949349/nodemigrate-k3s.log` and
+`nodemigrate-docker-preflight-36497949349/nodemigrate-docker-preflight.log`.
+Exact jobs: K3s `109181807925`, upstream `109181808320`, five-node Docker
+`109181808357`. The PR validation job was skipped. No general build or full
+e2e ran.
+
+## Previous completed migration batch
 
 Run [36490156839](https://github.com/centerionware/not-k8s/actions/runs/36490156839)
 completed at SHA `624442f622a6f8c44b72c9288ca5dbc32d5fbfa9` with

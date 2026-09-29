@@ -297,6 +297,34 @@ fn node_is_ready_replacement(node: &DynamicObject, previous_uid: &str) -> bool {
         && node_is_ready(node)
 }
 
+fn node_uid_has_been_replaced(node: Option<&DynamicObject>, previous_uid: &str) -> bool {
+    node.is_none_or(|node| {
+        node.metadata.uid.as_deref().is_some_and(|uid| uid != previous_uid)
+    })
+}
+
+fn owner_reference_repair_patch(
+    current: &Value,
+    references: Vec<Value>,
+    is_csinode: bool,
+) -> Value {
+    let mut patch = serde_json::json!({
+        "metadata": {"ownerReferences": references}
+    });
+    if is_csinode {
+        // Some API servers validate the required CSINode driver list against
+        // the complete patched object. Preserve the current list, or
+        // materialize the valid empty list if the source object omitted it.
+        let drivers = current
+            .pointer("/spec/drivers")
+            .filter(|drivers| drivers.is_array())
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        patch["spec"] = serde_json::json!({"drivers": drivers});
+    }
+    patch
+}
+
 impl KubeApi {
     fn source_kubeconfig_path(installation: &Installation) -> PathBuf {
         std::env::var_os("NODEMIGRATE_SOURCE_KUBECONFIG")
@@ -742,12 +770,9 @@ impl KubeApi {
                         .pointer("/metadata/resourceVersion")
                         .and_then(Value::as_str)
                         .context("migrated object has no resourceVersion")?;
-                    let patch = serde_json::json!({
-                        "metadata": {
-                            "resourceVersion": resource_version,
-                            "ownerReferences": references
-                        }
-                    });
+                    let mut patch = owner_reference_repair_patch(&current, references, is_csinode);
+                    patch["metadata"]["resourceVersion"] =
+                        Value::String(resource_version.to_owned());
                     match api
                         .patch(name, &PatchParams::default(), &Patch::Merge(&patch))
                         .await
@@ -818,7 +843,20 @@ impl KubeApi {
             )
             .await
             .with_context(|| format!("removing stale destination node {name}"))?;
-            Ok(())
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+            loop {
+                let current = api
+                    .get_opt(name)
+                    .await
+                    .with_context(|| format!("waiting for stale destination node {name} deletion"))?;
+                if node_uid_has_been_replaced(current.as_ref(), expected_uid) {
+                    return Ok(());
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    bail!("stale destination node {name} with UID {expected_uid} remained after deletion");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
         })
     }
 
@@ -3555,6 +3593,30 @@ mod tests {
     }
 
     #[test]
+    fn csinode_owner_reference_patch_preserves_required_driver_list() {
+        let current = serde_json::json!({
+            "metadata": {"resourceVersion": "12"},
+            "spec": {"drivers": [{"name": "hostpath.csi.k8s.io"}]}
+        });
+        let patch = owner_reference_repair_patch(
+            &current,
+            vec![serde_json::json!({"kind": "Node", "name": "cp-1", "uid": "new"})],
+            true,
+        );
+        assert_eq!(
+            patch.pointer("/spec/drivers"),
+            current.pointer("/spec/drivers")
+        );
+    }
+
+    #[test]
+    fn csinode_owner_reference_patch_materializes_missing_driver_list() {
+        let current = serde_json::json!({"metadata": {"resourceVersion": "12"}});
+        let patch = owner_reference_repair_patch(&current, Vec::new(), true);
+        assert_eq!(patch.pointer("/spec/drivers"), Some(&serde_json::json!([])));
+    }
+
+    #[test]
     fn source_api_server_name_uses_the_current_kubeconfig_context() {
         let directory = tempfile::tempdir().expect("create kubeconfig directory");
         let kubeconfig = directory.path().join("admin.conf");
@@ -4998,6 +5060,9 @@ current-context: test
         .unwrap();
 
         assert!(!node_is_ready_replacement(&old_ready, "old-node-uid"));
+        assert!(!node_uid_has_been_replaced(Some(&old_ready), "old-node-uid"));
+        assert!(node_uid_has_been_replaced(None, "old-node-uid"));
+        assert!(node_uid_has_been_replaced(Some(&new_not_ready), "old-node-uid"));
         assert!(!node_is_ready_replacement(&new_not_ready, "old-node-uid"));
         assert!(node_is_ready_replacement(&new_ready, "old-node-uid"));
     }
