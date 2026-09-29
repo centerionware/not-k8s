@@ -247,12 +247,13 @@ jobs:
 
       - name: Run migration
         env:
+          GH_TOKEN: ${{ github.token }}
           NODEMIGRATE_SOURCE_DIST: ${{ matrix.source }}
           NODEMIGRATE_TEST_LOG: ${{ runner.temp }}/nodemigrate-${{ matrix.source }}.log
           NODEMIGRATE_CILIUM_KPR: ${{ inputs.cilium_kpr }}
         run: |
           set -euo pipefail
-          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG,NODEMIGRATE_CILIUM_KPR \
+          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,GH_TOKEN,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG,NODEMIGRATE_CILIUM_KPR \
             bash .github/scripts/nodemigrate-integration.sh
 
       - name: Upload test log

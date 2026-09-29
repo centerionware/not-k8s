@@ -386,7 +386,11 @@ pub fn parse_token_request(body: &Value) -> std::result::Result<TokenRequestSpec
         .and_then(Value::as_object)
         .ok_or_else(|| "TokenRequest.spec is required".to_string())?;
     let audiences = match spec.get("audiences") {
-        None => Vec::new(),
+        // Kubernetes clients commonly serialize a nil Go slice as JSON null
+        // even though the API treats an omitted/empty audience list as the
+        // default audience. Keep that wire representation equivalent to an
+        // omitted field.
+        None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(values)) => values
             .iter()
             .map(|audience| {
@@ -526,6 +530,20 @@ mod tests {
             }
         });
         assert!(parse_token_request(&body).is_err());
+    }
+
+    #[test]
+    fn token_request_accepts_null_audiences_as_the_default_audience() {
+        let body = json!({
+            "spec": {
+                "audiences": null,
+                "expirationSeconds": 600
+            }
+        });
+
+        let request = parse_token_request(&body).unwrap();
+        assert!(request.audiences.is_empty());
+        assert_eq!(request.expiration_seconds, Some(600));
     }
 
     #[test]

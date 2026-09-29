@@ -957,7 +957,24 @@ rules:
         resources: [leases]
   - level: None
 EOF
-        curl -sfL https://get.k3s.io -o /tmp/install-k3s.sh
+        local k3s_release_dir="${RUNNER_TEMP:-/tmp}/nodemigrate-k3s-${k3s_version//+/\_}"
+        local k3s_release_ref="${k3s_version//+/\%2B}"
+        mkdir -p "$k3s_release_dir"
+        gh release download "$k3s_version" --repo k3s-io/k3s \
+            --pattern k3s --pattern sha256sum-amd64.txt --dir "$k3s_release_dir"
+        (
+            cd "$k3s_release_dir"
+            grep -E '^[[:xdigit:]]{64}  k3s$' sha256sum-amd64.txt \
+                | sha256sum --check --status
+        ) || {
+            echo "official K3s binary checksum validation failed for $k3s_version" >&2
+            return 1
+        }
+        install -m 0755 "$k3s_release_dir/k3s" /usr/local/bin/k3s
+        gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/k3s-io/k3s/contents/install.sh?ref=$k3s_release_ref" \
+            > /tmp/install-k3s.sh
+        INSTALL_K3S_SKIP_DOWNLOAD=true \
         INSTALL_K3S_VERSION="$k3s_version" \
         INSTALL_K3S_EXEC="server $kube_proxy_flag --flannel-backend=none --disable-network-policy --disable=traefik --cluster-cidr=10.42.0.0/16 --write-kubeconfig-mode=644 --kube-apiserver-arg=audit-policy-file=/etc/rancher/k3s/nodemigrate-audit-policy.yaml --kube-apiserver-arg=audit-log-path=/var/lib/rancher/k3s/server/logs/nodemigrate-audit.log" \
             sh /tmp/install-k3s.sh

@@ -87,7 +87,10 @@ macro_rules! handle_tokens {
         };
         let mut request = match crate::authn::service_account::parse_token_request(&body_value) {
             Ok(request) => request,
-            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e))),
+            Err(e) => {
+                warn!(path = %$path_str, error = %e, "TokenRequest validation failed");
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e)));
+            }
         };
         let service_account = match rest::get(&mut client, None, "", "v1", "serviceaccounts", Some(&$info.namespace), &$info.name).await {
             Ok(rest::GetOutcome::Found(service_account)) => service_account,
@@ -140,7 +143,10 @@ macro_rules! handle_tokens {
         }
         let issued = match authenticator.issue_token(&$info.namespace, &$info.name, service_account_uid, &request) {
             Ok(issued) => issued,
-            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e.to_string()))),
+            Err(e) => {
+                warn!(path = %$path_str, error = %e, "TokenRequest issuance failed");
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e.to_string())));
+            }
         };
         let mut response_body = body_value;
         response_body["apiVersion"] = serde_json::json!("authentication.k8s.io/v1");

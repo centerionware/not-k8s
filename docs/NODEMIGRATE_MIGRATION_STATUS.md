@@ -33,6 +33,20 @@ Shell syntax and focused JSON filter checks pass; these new migration fixture
 assertions have not run against a cluster yet, and the known Cilium routing
 failure still blocks a migration rerun.
 
+The Cilium host-state reset candidate is now implemented at forward and reverse
+control-plane/worker cutovers. For the live workflow at SHA
+`c3d4fbcaee0473443bb6f636eb299fb3b2080de6`, the five-node kubeadm/Docker
+preflight passed, but neither single-node lane reached a Cilium migration
+checkpoint. K3s setup exited 22 before creating its source cluster; upstream
+completed forward migration and fixture checks through legacy-token RBAC, then
+`kubectl create token` received HTTP 400 with a non-JSON response. The run did
+not verify the new Cilium reset or either round trip. See
+[run 36533241937](https://github.com/centerionware/not-k8s/actions/runs/36533241937)
+and the matching CI/bug entries. No retry has been started. The K3s test setup
+now uses the pinned official GitHub release and checksum through `gh`, avoiding
+the silent installer download path; the TokenRequest parser accepts a JSON-null
+audience list as the default audience and logs validation/issuance failures.
+
 The importer now preserves standalone Pod ephemeral-container specifications
 by applying them after Pod creation through `pods/ephemeralcontainers`; the
 stage fixture creates a short-lived debug container, verifies its runtime

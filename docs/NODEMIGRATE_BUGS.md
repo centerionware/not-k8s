@@ -2155,3 +2155,23 @@ The branch changed APIService route resolution and group discovery to read APISe
   entries to `APIResourceDiscovery`, and exclude only backends whose discovery
   fetch actually fails. A pure regression now checks conversion; focused CI and a
   runtime retry are pending. Logs: `/tmp/nodemigrate-36301989587/`.
+
+## 2026-09-29 migration workflow failures
+
+- **Component:** K3s migration-test fixture setup. In
+  [run 36533241937](https://github.com/centerionware/not-k8s/actions/runs/36533241937),
+  the K3s lane exited 22 before K3s was installed or a migration started. The
+  fixture used a silent `curl -sfL` installer path, so diagnostics could not
+  identify which URL failed. The worktree now fetches the K3s binary and
+  SHA-256 file from the exact GitHub release with `gh`, verifies the binary,
+  fetches the matching installer source through the GitHub API, and installs
+  the preverified binary. The asset/checksum/installer retrieval passed an
+  isolated check; workflow validation is pending.
+- **Component:** `nodeapiserver` TokenRequest handling. In the same run, the
+  upstream-to-nodestore lane passed source storage and legacy token/RBAC checks,
+  then `kubectl create token migration-reader --duration=10m` received HTTP 400
+  and failed to decode the response as JSON. The exact request validation error
+  was not logged. The parser now treats `audiences: null` like an omitted
+  audience list (the Kubernetes default), adds a regression for that wire form,
+  and logs TokenRequest validation/issuance errors so any remaining cause is
+  visible. Focused nodeapiserver CI and the migration workflow are pending.

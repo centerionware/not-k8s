@@ -7,6 +7,32 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+## 2026-09-29 Cilium reset candidate validation
+
+At SHA `c3d4fbcaee0473443bb6f636eb299fb3b2080de6`,
+[run 36533241937](https://github.com/centerionware/not-k8s/actions/runs/36533241937)
+compiled `nodemigrate` and the branch `notk8s` runtime in both single-node
+lanes. The five-node kubeadm/Docker fixture preflight passed, but this was only
+cluster-container probing: its nodemigrate/runtime build steps were skipped.
+The K3s lane failed with exit 22 during source setup before K3s was installed;
+the failing setup used a silent `curl -f` installer path, so the exact failing
+URL was not captured. The upstream lane migrated forward to nodestore and
+passed the storage and legacy ServiceAccount-token checks, then failed when
+`kubectl create token migration-reader --duration=10m` received HTTP 400 with
+an empty/non-JSON body. The run did not exercise either return migration or
+the new Cilium state reset. The complete job logs and artifacts were captured
+once under `/tmp/nodemigrate-36533241937/`.
+
+The worktree now downloads K3s and its checksum from the pinned official GitHub
+release using `gh`, verifies the binary, and fetches that tag's official
+installer through the GitHub API. The exact release asset/checksum and installer
+fetch were validated separately. The nodeapiserver now treats
+`TokenRequest.spec.audiences: null` as the API's default audience and logs
+TokenRequest validation/issuance errors. These code changes are not yet covered
+by CI. The Cilium reset remains unverified, so do not start another migration
+until focused nodeapiserver/nodemigrate checks and migration-script validation
+pass for the updated commit.
+
 ## Authentication and authorization review fixture
 
 Commit `875efcd1cdf59a64b830a07e3e171426e6e1306f` added short-lived ServiceAccount
