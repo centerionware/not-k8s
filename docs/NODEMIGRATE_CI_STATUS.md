@@ -7,6 +7,17 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+## Authentication and authorization review fixture
+
+Commit `875efcd1cdf59a64b830a07e3e171426e6e1306f` added short-lived ServiceAccount
+TokenReview checks and explicit allowed/denied SubjectAccessReview checks at
+each migration checkpoint. `bash -n` passed locally; PR script validation
+passed in [run 36523684540](https://github.com/centerionware/not-k8s/actions/runs/36523684540),
+and nodemigrate crate tests passed in
+[run 36523684432](https://github.com/centerionware/not-k8s/actions/runs/36523684432).
+The migration fixture has not run against a cluster with these assertions; the
+known Cilium return-routing failure still blocks a migration rerun.
+
 ## Source shutdown strategy update
 
 The migration code now exports API objects before source shutdown, then stops

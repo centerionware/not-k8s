@@ -8,6 +8,15 @@ separate living documents below.
 
 ## Current state
 
+Latest change `875efcd1cdf59a64b830a07e3e171426e6e1306f` adds per-stage
+TokenReview identity and allowed/denied SubjectAccessReview checks to the
+migration fixture. PR script validation passed in
+[run 36523684540](https://github.com/centerionware/not-k8s/actions/runs/36523684540),
+and the focused nodemigrate crate tests passed in
+[run 36523684432](https://github.com/centerionware/not-k8s/actions/runs/36523684432).
+No cluster migration ran; the cross-cluster Cilium routing failure below is
+still unresolved.
+
 The latest batch [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212)
 at SHA `7bb853b462aaaad48ca3708e59a082c24e0b8525` passed the upstream
 Kubernetes round trip, including return, and the focused
