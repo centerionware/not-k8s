@@ -311,10 +311,11 @@ fn migrate_to_nodestore(
             )));
         }
     }
-    if source
-        .cluster
-        .as_ref()
-        .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
+    if !joins_existing
+        && source
+            .cluster
+            .as_ref()
+            .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
     {
         if let Err(error) = target_api.reset_cilium_agent_state(&migrating_node_name) {
             return Err(rollback(error.context("rebuilding destination Cilium host datapath state")));
@@ -385,6 +386,27 @@ fn migrate_to_nodestore(
         return Err(rollback(
             error.context("replacement control-plane node did not become Ready"),
         ));
+    }
+    // A joining node needs to exist in the destination API before Cilium's
+    // DaemonSet can place its agent here. Resetting Cilium host state before
+    // the replacement node agent was installed waits forever for an agent
+    // that has no Node to match; do the reset now and recheck readiness.
+    if joins_existing
+        && source
+            .cluster
+            .as_ref()
+            .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
+    {
+        if let Err(error) = target_api.reset_cilium_agent_state(&migrating_node_name) {
+            return Err(rollback(
+                error.context("rebuilding destination Cilium host datapath state"),
+            ));
+        }
+        if let Err(error) = wait_for_node(&target_api, &migrating_node_name) {
+            return Err(rollback(error.context(
+                "Cilium reset left replacement control-plane node unready",
+            )));
+        }
     }
     if let Err(error) = restore_node_scheduling_state(
         &target_api,

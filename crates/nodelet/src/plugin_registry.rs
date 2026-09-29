@@ -49,6 +49,8 @@ use v1::{InfoRequest, RegistrationStatus};
 const CSI_PLUGIN_TYPE: &str = "CSIPlugin";
 const DEVICE_PLUGIN_TYPE: &str = "DevicePlugin";
 const DRA_PLUGIN_TYPE: &str = "DRAPlugin";
+const DEFAULT_REGISTRY_DIR: &str = "/var/lib/nodelet/plugins_registry";
+const KUBELET_REGISTRY_DIR: &str = "/var/lib/kubelet/plugins_registry";
 
 /// Which backend a registered socket belongs to — tracked alongside its
 /// name so a socket's disappearance can be routed to the right
@@ -90,6 +92,30 @@ fn scan_registry_dir(dir: &Path) -> Vec<PathBuf> {
         .filter(|e| e.file_type().map(|t| t.is_socket()).unwrap_or(false))
         .map(|e| e.path())
         .collect()
+}
+
+fn registry_dirs(configured: &str) -> Vec<PathBuf> {
+    let configured = PathBuf::from(configured);
+    let mut dirs = vec![configured.clone()];
+    // CSI, device-plugin, and DRA registrars installed by the source kubelet may
+    // keep publishing into kubelet's standard directory after nodemigrate
+    // replaces kubelet with nodelet. Continue watching that directory when
+    // nodelet is using its default registry location; explicit overrides
+    // remain authoritative.
+    if configured == Path::new(DEFAULT_REGISTRY_DIR) {
+        let kubelet = PathBuf::from(KUBELET_REGISTRY_DIR);
+        if !dirs.contains(&kubelet) {
+            dirs.push(kubelet);
+        }
+    }
+    dirs
+}
+
+fn scan_registry_dirs(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut sockets: Vec<_> = dirs.iter().flat_map(|dir| scan_registry_dir(dir)).collect();
+    sockets.sort();
+    sockets.dedup();
+    sockets
 }
 
 /// Dial `socket_path`, exchange `GetInfo`/`NotifyRegistrationStatus`, and
@@ -191,12 +217,12 @@ pub async fn run(
     kube_client: kube::Client,
     node_name: String,
 ) {
-    let dir = PathBuf::from(&registry_path);
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        warn!(path = %dir.display(), error = ?e, "plugin registry: couldn't create the registry directory; dynamic plugin discovery disabled for this run");
+    let dirs = registry_dirs(&registry_path);
+    if let Err(e) = std::fs::create_dir_all(&dirs[0]) {
+        warn!(path = %dirs[0].display(), error = ?e, "plugin registry: couldn't create the registry directory; dynamic plugin discovery disabled for this run");
         return;
     }
-    info!(path = %dir.display(), "plugin registry: watching for CSI driver / device plugin registrations");
+    info!(paths = ?dirs, "plugin registry: watching for CSI driver / device plugin registrations");
 
     // socket path -> (which backend, plugin name), so a socket's
     // disappearance can be routed to the right deregister() without
@@ -204,7 +230,7 @@ pub async fn run(
     let mut known: HashMap<PathBuf, (PluginKind, String)> = HashMap::new();
 
     loop {
-        let present: HashSet<PathBuf> = scan_registry_dir(&dir).into_iter().collect();
+        let present: HashSet<PathBuf> = scan_registry_dirs(&dirs).into_iter().collect();
 
         let gone: Vec<PathBuf> = known.keys().filter(|p| !present.contains(*p)).cloned().collect();
         for path in gone {

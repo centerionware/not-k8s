@@ -2,6 +2,39 @@
 
 Last updated: 2026-09-29
 
+## Findings from migration run 36603273571
+
+At SHA `862e48a771b5c645f35594b70cfc5019941f1317`, the branch-built
+`notk8s` runtime and standalone `nodemigrate` compiled in all three lanes, but
+the K3s, upstream Kubernetes, and five-node Docker migrations failed. The
+complete logs were saved once under `/tmp/nodemigrate-36603273571/`.
+
+- **Component:** `nodemigrate` Cilium join ordering. The five-node lane waited
+  for a Cilium agent on cp-2 before installing the replacement node agent, so
+  the destination had no Node for the DaemonSet to match. Cilium state reset
+  now runs after the joined control-plane Node becomes Ready, followed by a
+  second readiness check. Single-node migration keeps its existing reset
+  timing. Targeted component CI and migration rerun are pending.
+- **Component:** `nodelet` CSI plugin discovery. K3s and upstream showed
+  repeated `no CSI driver configured` warnings for `hostpath.csi.k8s.io` and
+  the imported StatefulSet remained Pending. The hostpath registrar continued
+  using `/var/lib/kubelet/plugins_registry`, while nodelet watched only
+  `/var/lib/nodelet/plugins_registry`. When nodelet uses its default registry
+  path it now also watches the source kubelet registry directory; an explicit
+  registry-path override remains exclusive. A focused directory-discovery
+  regression was added. Targeted CI and migration rerun are pending.
+- **Component:** `nodelet` CRI sandbox discovery. K3s logs show kubelet-created
+  sandboxes reserving names for Pods that nodelet was recreating. The previous
+  lookup used only `nodelet.dev` labels and could not see those source
+  sandboxes. When no nodelet-labeled sandbox matches, lookup now falls back to
+  Kubernetes CRI namespace/name labels and uses sandbox metadata UID to drive
+  the existing stale cleanup. Targeted CI and migration rerun are pending.
+
+The additional scheduler `volume node affinity conflict` messages occurred
+while the replacement Node was not yet registered and cleared after node
+registration; they were not the final CSI failure. No migration retry has
+started after these combined corrections.
+
 ## Findings from migration run 36591891203
 
 - **Component:** `nodeapiserver` Pod binding wire format. At tested SHA

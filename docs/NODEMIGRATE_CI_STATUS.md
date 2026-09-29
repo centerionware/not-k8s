@@ -2,6 +2,27 @@
 
 Last updated: 2026-09-29
 
+## 2026-09-29 migration run 36603273571
+
+Completed with all three migration lanes failing at exact SHA
+`862e48a771b5c645f35594b70cfc5019941f1317`; inputs were
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+The combined `notk8s` runtime and standalone `nodemigrate` builds succeeded
+for the lanes. K3s and upstream Kubernetes both reached the imported
+StatefulSet check, then timed out with the hostpath CSI volume Pending because
+nodelet did not watch the source kubelet's plugin registry directory. K3s
+also logged CRI sandbox name reservations from kubelet-created sandboxes that
+nodelet could not discover through its own labels. Docker cp-2 failed waiting
+for its Cilium agent before its replacement node agent had registered the
+Node. The branch now covers all three causes together; targeted
+`nodeapiserver,nodelet,nodemigrate` quick-check and a migration-specific rerun
+remain pending. Full logs are saved once under
+`/tmp/nodemigrate-36603273571/`.
+
+Run [36603273571](https://github.com/centerionware/not-k8s/actions/runs/36603273571).
+Job IDs: Docker `109525771540`, upstream Kubernetes `109525771669`, and K3s
+`109525772022`. No regular build or full e2e gate ran.
+
 ## 2026-09-29 migration run 36591891203
 
 Completed with failures at exact SHA

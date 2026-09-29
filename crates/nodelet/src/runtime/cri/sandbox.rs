@@ -350,18 +350,39 @@ impl CriRuntime {
         expected_uid: &str,
     ) -> Result<Option<(String, i32, String)>> {
         let mut rt = self.rt.clone();
-        let filter = PodSandboxFilter {
+        let list_by_labels = |namespace_label: &str, name_label: &str| PodSandboxFilter {
             label_selector: HashMap::from([
-                (POD_NS_LABEL.to_string(), namespace.to_string()),
-                (POD_NAME_LABEL.to_string(), name.to_string()),
+                (namespace_label.to_string(), namespace.to_string()),
+                (name_label.to_string(), name.to_string()),
             ]),
             ..Default::default()
         };
-        let resp = rt
-            .list_pod_sandbox(ListPodSandboxRequest { filter: Some(filter) })
+        let owned = rt
+            .list_pod_sandbox(ListPodSandboxRequest {
+                filter: Some(list_by_labels(POD_NS_LABEL, POD_NAME_LABEL)),
+            })
             .await?
-            .into_inner();
-        Ok(select_pod_sandbox(resp.items, Some(expected_uid)))
+            .into_inner()
+            .items;
+        if !owned.is_empty() {
+            return Ok(select_pod_sandbox(owned, Some(expected_uid)));
+        }
+
+        // Sandboxes created by kubelet (the source runtime during migration)
+        // use the Kubernetes CRI labels, while nodelet-created sandboxes use
+        // nodelet.dev labels. Discover the former too so a stale source
+        // sandbox can be removed before RunPodSandbox reserves the same name.
+        let upstream = rt
+            .list_pod_sandbox(ListPodSandboxRequest {
+                filter: Some(list_by_labels(
+                    "io.kubernetes.pod.namespace",
+                    "io.kubernetes.pod.name",
+                )),
+            })
+            .await?
+            .into_inner()
+            .items;
+        Ok(select_pod_sandbox(upstream, Some(expected_uid)))
     }
 
     pub(crate) async fn run_sandbox(

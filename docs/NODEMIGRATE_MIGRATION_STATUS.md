@@ -2,16 +2,14 @@
 
 Last updated: 2026-09-29
 
-The latest full migration run, [36591891203](https://github.com/centerionware/not-k8s/actions/runs/36591891203),
-passed the K3s round trip. The upstream Kubernetes forward migration reached
-the target but its post-forward HostPath CSI pods could not schedule; the
-binding handler now accepts the protobuf format sent by Kubernetes clients.
-The 3-control-plane/2-worker Docker preflight passed and cp-1 migrated, but the
-cp-2 learner join stopped on an empty Raft voter configuration; nodestore now
-seeds the existing voters reported by the live leader. Targeted quick-check
-and migration-specific rerun remain pending. The live migration status is
-tracked in [CI status](NODEMIGRATE_CI_STATUS.md); component causes and fixes
-are in [the bug tracker](NODEMIGRATE_BUGS.md).
+The latest full migration run, [36603273571](https://github.com/centerionware/not-k8s/actions/runs/36603273571),
+built the branch `notk8s` and `nodemigrate` binaries, but all three migration
+lanes failed: Cilium reset preceded joined-node registration, nodelet missed
+the source kubelet CSI registrar directory, and stale kubelet-created CRI
+sandboxes were not discovered. All three corrections are in the working tree
+and await targeted component CI before another migration run. Exact outcomes
+and run identity are tracked in [CI status](NODEMIGRATE_CI_STATUS.md); causes
+and fixes are in [the bug tracker](NODEMIGRATE_BUGS.md).
 
 Focused quick-check [36597286663](https://github.com/centerionware/not-k8s/actions/runs/36597286663)
 passed the changed `nodeapiserver` and `nodestore` crates at SHA
@@ -157,11 +155,15 @@ compile or unit test does not mark a real migration path as verified.
 The source cutover exports API objects while the source API is live, then stops
 the source service/runtime before copying node-local PV data. Ordinary Pod
 sandboxes are retained; Cilium teardown is targeted, and kubeadm control-plane
-static Pods are removed when their API/etcd ports must be released. A
-conflict-detected in-place migration may also need to retire other old
-control-plane services or files; snapshot their state first and order removal
-to preserve source quorum and rollback until destination quorum/API/data are
-verified. Upstream runtime service state is captured so a failed
+static Pods are removed when their API/etcd ports must be released. A real
+cluster may require broader control-plane teardown, including retiring old
+services, manifests, or membership that conflicts with the destination. Use
+the minimum teardown needed to let the destination own its API, datastore,
+and CNI, but remove unsafe or incompatible control-plane remnants when
+necessary. Snapshot affected state first; on multi-control-plane sources
+preserve quorum and rollback material until the destination control plane,
+API, and migrated data pass verification, then retire remaining source
+members in a safe order. Upstream runtime service state is captured so a failed
 snapshot/import can stop the partial destination, restore saved PV/CNI
 payloads, and restart the original runtime and source services. Late failures
 during node join, readiness, and scheduling use the same rollback path. Target
