@@ -2445,6 +2445,70 @@ verify_legacy_service_account_token() {
     echo "PASS legacy ServiceAccount token identity and RBAC at stage=$stage"
 }
 
+verify_authentication_and_authorization_reviews() {
+    local stage="$1"
+    local token review response
+    token="$(kubectl create token migration-reader -n migration-apps --duration=10m)" || {
+        echo "could not mint a short-lived migration-reader token at stage $stage" >&2
+        return 1
+    }
+    [[ -n "$token" ]] || {
+        echo "TokenRequest returned an empty token at stage $stage" >&2
+        return 1
+    }
+    review="$(jq -cn --arg token "$token" \
+        '{apiVersion:"authentication.k8s.io/v1",kind:"TokenReview",spec:{token:$token}}')"
+    response="$(printf '%s\n' "$review" \
+        | kubectl create --raw=/apis/authentication.k8s.io/v1/tokenreviews -f -)" || {
+        echo "TokenReview API request failed at stage $stage" >&2
+        return 1
+    }
+    jq -e '
+      .status.authenticated == true and
+      .status.user.username == "system:serviceaccount:migration-apps:migration-reader" and
+      ((.status.user.groups // []) | index("system:serviceaccounts:migration-apps") != null)
+    ' <<<"$response" >/dev/null || {
+        echo "TokenReview did not authenticate the migration-reader identity at stage $stage" >&2
+        jq '{status: .status}' <<<"$response" >&2
+        return 1
+    }
+
+    local allowed_review denied_review
+    allowed_review="$(jq -cn '
+      {apiVersion:"authorization.k8s.io/v1",kind:"SubjectAccessReview",spec:{
+        user:"system:serviceaccount:migration-apps:migration-reader",
+        groups:["system:serviceaccounts","system:serviceaccounts:migration-apps","system:authenticated"],
+        resourceAttributes:{namespace:"migration-apps",verb:"get",group:"",resource:"configmaps",name:"migration-user-metadata"}
+      }}')"
+    denied_review="$(jq -cn '
+      {apiVersion:"authorization.k8s.io/v1",kind:"SubjectAccessReview",spec:{
+        user:"system:serviceaccount:migration-apps:migration-reader",
+        groups:["system:serviceaccounts","system:serviceaccounts:migration-apps","system:authenticated"],
+        resourceAttributes:{namespace:"migration-apps",verb:"get",group:"",resource:"secrets",name:"migration-user-secret"}
+      }}')"
+    response="$(printf '%s\n' "$allowed_review" \
+        | kubectl create --raw=/apis/authorization.k8s.io/v1/subjectaccessreviews -f -)" || {
+        echo "allowed SubjectAccessReview request failed at stage $stage" >&2
+        return 1
+    }
+    jq -e '.status.allowed == true and .status.denied != true' <<<"$response" >/dev/null || {
+        echo "SubjectAccessReview denied migration-reader's named ConfigMap access at stage $stage" >&2
+        jq '{status: .status}' <<<"$response" >&2
+        return 1
+    }
+    response="$(printf '%s\n' "$denied_review" \
+        | kubectl create --raw=/apis/authorization.k8s.io/v1/subjectaccessreviews -f -)" || {
+        echo "denied SubjectAccessReview request failed at stage $stage" >&2
+        return 1
+    }
+    jq -e '.status.allowed == false and .status.denied != true' <<<"$response" >/dev/null || {
+        echo "SubjectAccessReview did not deny migration-reader's Secret access at stage $stage" >&2
+        jq '{status: .status}' <<<"$response" >&2
+        return 1
+    }
+    echo "PASS TokenReview and allowed/denied SubjectAccessReview behavior at stage=$stage"
+}
+
 verify_stage() {
     local stage="$1"
     local stage_dir="$CHECKPOINT_DIR/$stage"
@@ -2951,6 +3015,7 @@ YAML
     }
     kubectl delete job -n migration-apps "$rbac_allow_job" "$rbac_node_job" "$rbac_deny_job" --wait=true
     verify_legacy_service_account_token "$stage"
+    verify_authentication_and_authorization_reviews "$stage"
     kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-static-pvc --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-csi-pvc --timeout=5m

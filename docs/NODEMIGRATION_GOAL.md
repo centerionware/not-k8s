@@ -1,6 +1,6 @@
 # nodemigrate full migration goal
 
-Last updated: 2026-09-28
+Last updated: 2026-09-29
 
 This document defines the complete intended scope and acceptance criteria for
 the standalone `nodemigrate` utility. It is the task-specific authority for
@@ -43,10 +43,12 @@ bump the regular release version. This is a target, not publication authority.
   export so later nodes can complete after the source API loses quorum; use a
   private local copy of that export per node for node-specific volume and CNI
   recovery data.
-- On upstream control-plane nodes, export API state, stop kubelet, remove only
-  the static-pod sandboxes that must release local API/etcd ports, then stop
-  the source CRI service before data snapshots and destination startup. Retain
-  manifests and runtime data for a recoverable return migration.
+- On upstream control-plane nodes, export API state, stop kubelet, remove the
+  static-pod sandboxes that must release local API/etcd ports, then stop the
+  source CRI service before data snapshots and destination startup. Retain
+  manifests and runtime data for a recoverable return migration unless a
+  destination conflict requires moving them into the protected recovery
+  export.
 - For control-plane and worker replacement, use the destination API to detect
   and wait for node registration. If a same-name destination Node exists,
   require the operator to explicitly select its replacement; never treat its
@@ -92,17 +94,32 @@ bump the regular release version. This is a target, not publication authority.
   Detect an active source path from host mount state and support an explicit
   configured root when no source stage is mounted; fail before cutover if the
   configured root contradicts a live stage.
-- Keep the source installation available but stopped/disabled by default.
-  Only uninstall it when the operator explicitly requests that action.
+- Prefer keeping the source installation stopped/disabled and recoverable after
+  cutover. A full in-place control-plane migration may need to retire or remove
+  old control-plane services, static-pod manifests, sockets, or other host
+  state that conflicts with the destination's API server, datastore, or
+  networking. Detect those conflicts and use the least destructive teardown
+  that yields a working destination; do not preserve old control-plane pieces
+  at the cost of an incomplete or conflicting target. Export API and
+  node-local state first, snapshot affected configuration and data, and retain
+  a documented restoration path. Keep source etcd/datastore data and PKI while
+  they remain part of the rollback path. In a multi-control-plane migration,
+  preserve source quorum while replacing members in a safe order, and retire
+  old member state only after the destination control plane has quorum and its
+  API/data have been verified. Explicit `uninstall-after-migrate=true` may
+  remove the remaining source installation after migration; ordinary required
+  conflict cleanup is not limited to that optional full uninstall.
 - Take the source Kubernetes API export while its API is available, then stop
   the source service stack before snapshotting node-local PV/hostPath payloads
   so applications cannot change files during the copy. Stop an upstream
   Kubernetes CRI service as a whole when it is separate from kubelet; retain
   its image/container data for rollback. Do not drain or bulk-remove ordinary
-  Pod sandboxes. Remove kubeadm control-plane static-pod sandboxes only when
-  needed to release local API/etcd ports, and perform targeted Cilium process
-  and sandbox cleanup plus stale-socket cleanup where needed to prevent CNI
-  conflicts. Identify standard containerd, CRI-O, and Docker-backed runtimes
+  Pod sandboxes. Remove kubeadm control-plane static-pod sandboxes when needed
+  to release local API/etcd ports, and perform targeted Cilium process and
+  sandbox cleanup plus stale-socket cleanup where needed to prevent CNI
+  conflicts. Apply broader control-plane cleanup only as required by a
+  detected destination conflict, following the scoped teardown and recovery
+  rules above. Identify standard containerd, CRI-O, and Docker-backed runtimes
   from the CRI endpoint; use `NODEMIGRATE_RUNTIME_SERVICE` for a custom runtime
   service. On a failed
   snapshot or import, stop the partial destination, restore the saved local
@@ -359,41 +376,26 @@ instructions in `AGENTS.md` for nodemigrate work:
   next already-known issue one at a time. When a failure mechanism is still
   unknown, use non-migration diagnostics to establish it; do not treat another
   migration retry as the diagnostic.
-- Historical diagnostic note: the migration workflow's
-  `k3s_cilium_restart_probe` mode installed the K3s+Cilium workload
-  fixture, restarts the Cilium Pod directly, then stops and removes every
-  source CRI sandbox in cutover order (Cilium last) before restarting K3s with
-  the same Node UID. It then performs a same-name Node replacement and
-  restarts K3s again without running `nodemigrate`. It records Cilium
-  service/BPF/endpoint state and repeats functional and API-state checks after
-  each transition. This diagnostic
-  mode separated a plain K3s/Cilium restart failure from a node-replacement
-  failure; it does not count as a migration round trip or satisfy either merge
-  scenario. Probe run `36509703232` passed source restart and same-name Node
-  replacement checks, including workload/storage/API state and an active Cilium
-  BPF backend for the API ClusterIP. The only failure was a parity check on
-  K3s's generated Node password Secret hash rotation; the checker now permits
-  only that exact generated-field mutation during this diagnostic. Plain Node
-  replacement did not reproduce the post-migration Cilium failure. Corrected
-  run `36511406969` passed at SHA `11a401e50ddcc1d0f83d5ecc0970a9b4545bbb89`;
-  the source, restart, and replacement API ClusterIP BPF maps were active and
-  their workload/state assertions passed. Do not retry nodemigrate until its
-  migration-specific cause is fixed. Run `36513067748` passed in-Pod TCP
-  probes to the Kubernetes API ClusterIP at source, after K3s restart, and
-  after Node replacement. The Cilium agent Pod UID remained unchanged; the
-  next non-migration diagnostic explicitly recreates that Pod and repeats
-  the packet-flow and workload checks.
-  First attempt `36514477496` failed before the restart because jq returned a
-  boolean instead of the Pod object. The selector is fixed and covered by a
-  focused local test. Corrected probe `36515656678` passed: the replacement
-  agent Pod reached Ready with a new UID and a temporary Pod connected to API
-  ClusterIP `10.43.0.1:443`; workload, storage, API inventory, normalized
-  state, and Node replacement checks passed. Agent Pod recreation alone does
-  not reproduce the cross-cluster outage. The all-sandbox teardown diagnostic
-  was superseded by the source service/runtime shutdown plan; run
-  `36519169676` was canceled before completion. Do not use that obsolete
-  sequence for new diagnostics. The post-migration Cilium issue remains open;
-  retry migration only after the fix batch and focused checks are complete.
+- Historical diagnostic note: `k3s_cilium_restart_probe` installs the
+  K3s+Cilium workload fixture, recreates the Cilium agent Pod, and then
+  recreates only the Cilium sandbox before restarting K3s with the same Node
+  UID. It checks Cilium service/BPF/endpoint state and repeats functional and
+  API-state checks after each transition, then tests same-name Node
+  replacement. It does not remove ordinary Pod sandboxes and does not run
+  `nodemigrate`; it cannot satisfy either migration merge scenario. Probe
+  `36509703232` passed source restart and same-name Node replacement checks,
+  including workload/storage/API state and an active Cilium BPF backend for
+  the API ClusterIP. Corrected run `36511406969` passed source, restart, and
+  replacement checks; run `36513067748` also passed in-Pod TCP probes to the
+  API ClusterIP at each checkpoint. Run `36515656678` recreated the Cilium
+  agent Pod with a new UID and passed workload, storage, API inventory, and
+  Node replacement checks. These diagnostics do not reproduce the
+  cross-cluster migration failure. The separate all-sandbox teardown probe
+  `36518048359` failed before restarting K3s, and its retry `36519169676` was
+  canceled after the cutover design changed. That sequence is obsolete and
+  must not be reused; current migration preserves ordinary Pod sandboxes.
+  The post-migration Cilium issue remains open, so do not rerun migration
+  until the failure has a concrete fix and the focused checks pass.
 - A release workflow run is required only when carrying out the separately
   authorized publication. The initial `v0.8.1` nodemigrate publication must
   use the matching regular `v0.8.1` version built from this branch's accepted

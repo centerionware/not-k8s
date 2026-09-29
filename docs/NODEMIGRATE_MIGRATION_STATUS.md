@@ -21,6 +21,22 @@ sandboxes remain on disk. The implementation passed nodemigrate-only
 at `6c55fba88c47a7e1f0a5e5ef565cdec9cdfed825`. The real migration paths remain
 unverified; the known post-return Cilium routing failure still blocks a rerun.
 
+The stage fixture now mints a short-lived ServiceAccount token and checks the
+TokenReview identity plus allowed and denied SubjectAccessReview decisions at
+each source, not-k8s, and returned-source checkpoint. Shell syntax and focused
+JSON filter checks pass; the updated migration fixture has not run against a
+cluster yet, and the known Cilium routing failure still blocks a migration
+rerun.
+
+The goal allows broader, conflict-driven retirement of old control-plane
+services or files when an in-place destination needs their ports or paths.
+Current code only removes identified kubeadm static-pod sandboxes and targeted
+Cilium state; it does not yet retire manifests, old datastore membership, or
+other control-plane files. Any broader cleanup must first be implemented with
+recovery snapshots and ordered to preserve source quorum until destination
+quorum and API/data checks pass. No general old-control-plane teardown has
+been verified.
+
 The non-migration K3s+Cilium diagnostic [36509703232](https://github.com/centerionware/not-k8s/actions/runs/36509703232)
 completed a same-name Node UID replacement. Workload, storage, all 119 API
 resources, and Cilium service datapath checks passed; the API ClusterIP's BPF
