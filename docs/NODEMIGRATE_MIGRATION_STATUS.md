@@ -10,19 +10,21 @@ at SHA `9d6fab17f856899b4885cfb20309dd2571ce6706` used branch-built
 path enabled. K3s and upstream Kubernetes completed both migration directions,
 normalized API parity, workload/RBAC checks, Cilium checks, and PV payload
 verification. Docker built the combined `notk8s` and five-node image, but its
-`Probe kubeadm nodes` step in job `109455502184` failed with exit code 1. The
-cause is not yet available: REST API rate limiting prevented the completed
-Docker log/artifact download through `gh`. Artifact name:
-`nodemigrate-docker-preflight-36582910964`. Do not retry until its diagnostics
-are retrieved and all confirmed issues are fixed.
+`Probe kubeadm nodes` step in job `109455502184` failed after the five-node
+preflight passed and cp-1 completed migration to nodestore. The orchestration
+then failed copying `/etc/nodebootstrap/admin.kubeconfig` to cp-2 because its
+destination parent did not exist. The `copy_file` helper now creates that
+parent before writing; validation and a full migration rerun are pending. The
+artifact was retrieved to `/tmp/nodemigrate-36582910964-artifact/`.
 
 The five-node round-trip script now checks immediately after nodestore reaches
 all five Nodes that the retained kubelet services are disabled, kubeadm
 API/etcd sandboxes are absent, and each source control plane still has its
 static-pod manifests and etcd member data for recovery/return. `bash -n`,
 `git diff --check`, and positive/negative jq checks passed locally. This
-assertion has not run against the Docker cluster; the preflight failure still
-prevents the migration scenario from starting. The stronger check now requires
+assertion has not run against the Docker cluster; the kubeconfig-copy failure
+prevented the migration scenario from reaching its five-node checkpoint. The
+stronger check now requires
 non-empty files in each etcd member data directory; migration-workflow
 validation passed in
 [run 36590018844](https://github.com/centerionware/not-k8s/actions/runs/36590018844)

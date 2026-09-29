@@ -109,6 +109,7 @@ copy_file() {
     local source_node="$1" source_path="$2" target_node="$3" target_path="$4"
     local temporary_file
     temporary_file="$(mktemp)"
+    node "$target_node" mkdir -p "$(dirname -- "$target_path")"
     if ! docker cp "$(container "$source_node"):$source_path" "$temporary_file" \
         >/dev/null || ! docker exec -i "$(container "$target_node")" \
         sh -c 'umask 077; cat > "$1"' sh "$target_path" <"$temporary_file"; then

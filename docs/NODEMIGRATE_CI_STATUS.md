@@ -2,28 +2,28 @@
 
 Last updated: 2026-09-29
 
-## Docker probe log-summary instrumentation
+## 2026-09-29 Docker failure diagnosis
 
-Commit `0dc2e56f3f4afd95012cda91224d47d01badfe17` adds an always-run Actions
-summary containing the tail of the Docker preflight log, so a future completed
-run can be diagnosed through GraphQL when artifact retrieval is rate-limited.
-The PR workflow validation passed in run
-[36588626636](https://github.com/centerionware/not-k8s/actions/runs/36588626636).
-A preflight-only dispatch was attempted with `docker_only=true`,
-`cilium_kpr=true`, and `five_node_migration=false`, but GitHub REST returned
-HTTP 403 rate limiting before creating a run. This provides no new Docker
-diagnostic and does not change the unknown cause recorded below. A further
-artifact download attempt at 15:17:50 UTC also returned HTTP 403; GraphQL
-still identifies the authenticated account as `centerionware` and reports
-111 of 5,000 GraphQL calls used, with the GraphQL reset scheduled for
-15:23:03 UTC. GraphQL remains available, but this does not provide the
-artifact bytes needed to diagnose the failed step. A second preflight-only
-dispatch at 15:23:14 UTC, after the GraphQL reset, also returned REST HTTP 403
-and created no run. The new retained-control-plane assertions passed the
-migration workflow's PR validation in
-[run 36589761631](https://github.com/centerionware/not-k8s/actions/runs/36589761631)
-at SHA `7b86427dfcd64ca81e9cb942a46392b8e479454f`; migration runtime behavior
-was not exercised by that PR validation.
+The artifact from run
+[36582910964](https://github.com/centerionware/not-k8s/actions/runs/36582910964)
+was retrieved to `/tmp/nodemigrate-36582910964-artifact/` after the REST
+rate-limit errors cleared. The job step named `Probe kubeadm nodes` runs both
+preflight and, when requested, the five-node migration. The preflight passed;
+cp-1 migrated successfully to nodestore, imported all 55 CRDs, passed target
+readiness, and rebuilt its Cilium host state. The actual failure followed
+while copying `/etc/nodebootstrap/admin.kubeconfig` from cp-1 to cp-2: the
+destination directory did not exist. The five-node script's `copy_file`
+helper now creates the destination parent before writing. This correction is
+awaiting the current branch validation and migration retry.
+
+Preflight-only run
+[36590354974](https://github.com/centerionware/not-k8s/actions/runs/36590354974)
+passed in 6m24s with `cilium_kpr=true` and
+`five_node_migration=false`. It confirms the five-node kubeadm/Cilium setup
+and Docker isolation work; it did not exercise migration. The always-run log
+summary added in commit `0dc2e56f` was included in the run. Earlier preflight
+dispatch attempts at 15:14:12 and 15:23:14 UTC were rate-limited; the
+authenticated `gh` path later recovered.
 
 ## 2026-09-29 migration run 36582910964
 
@@ -34,14 +34,12 @@ Both single-node jobs built branch `nodemigrate` and combined runtime; Docker
 built `nodemigrate`, combined `notk8s`, and the five-node image. The K3s and
 upstream Kubernetes lanes completed forward and return migration, parity,
 workload, Cilium, RBAC, and PV payload checks. Docker job
-`109455502184` failed in `Probe kubeadm nodes` with exit code 1; the cause is
-not yet identified because the GitHub REST API rate limit blocked the log and
-artifact retrieval attempts through `gh`. GraphQL check metadata records both
-single-node jobs as success and Docker as failure. The workflow artifact is
-`nodemigrate-docker-preflight-36582910964`.
-
-Do not retry migration until the artifact is retrieved and all confirmed
-Docker failure causes are fixed. The completed run is
+`109455502184` failed in `Probe kubeadm nodes` with exit code 1 after the
+five-node preflight passed and cp-1 completed migration. Copying cp-1's
+admin kubeconfig to cp-2 then failed because the helper did not create
+`/etc/nodebootstrap` on cp-2. This is fixed in the branch by creating the
+destination parent in `copy_file`; validation and a full migration rerun are
+pending. The completed run is
 [36582910964](https://github.com/centerionware/not-k8s/actions/runs/36582910964).
 
 ## Previous migration run 36578066781

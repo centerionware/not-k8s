@@ -4,16 +4,23 @@ Last updated: 2026-09-29
 
 ## Findings from migration run 36582910964
 
-- **Component:** Docker five-node migration lane. At SHA
-  `9d6fab17f856899b4885cfb20309dd2571ce6706`, both single-node Cilium KPR
-  round trips passed. Docker's `Probe kubeadm nodes` step failed with exit code
-  1; the cause is not yet known. GitHub REST API rate limiting currently
-  blocks retrieval of the completed job log and artifact through `gh`.
-  GraphQL check metadata confirms Docker failed, while both single-node jobs
-  succeeded. Do not retry until the Docker failure artifact is retrieved and
-  every confirmed cause is fixed.
+- **Component:** Docker five-node orchestration. At SHA
+  `9d6fab17f856899b4885cfb20309dd2571ce6706`, the Docker preflight passed and
+  cp-1 successfully migrated to nodestore, imported all 55 CRDs, passed
+  destination readiness, and rebuilt Cilium host state. The script then
+  failed copying cp-1's `/etc/nodebootstrap/admin.kubeconfig` to cp-2 because
+  `/etc/nodebootstrap` did not exist there. The shared `copy_file` helper now
+  creates the target parent before copying; shell syntax validation and a
+  full migration retry are pending. This is an orchestration/fixture bug, not
+  a confirmed nodemigrate runtime failure. Log evidence is in
+  `/tmp/nodemigrate-36582910964-artifact/nodemigrate-docker-preflight.log`.
   Run: [36582910964](https://github.com/centerionware/not-k8s/actions/runs/36582910964),
   Docker job `109455502184`; artifact `nodemigrate-docker-preflight-36582910964`.
+- **Component:** Docker preflight environment. Preflight-only run
+  [36590354974](https://github.com/centerionware/not-k8s/actions/runs/36590354974)
+  passed in 6m24s with Cilium KPR enabled and migration disabled, confirming
+  the isolated kubeadm 3-control-plane/2-worker setup and Docker checks pass.
+  It did not exercise the full migration or the new kubeconfig-copy fix.
 - **Component:** `nodemigrate` CRI cleanup correction. The 60-second CRI
   sandbox cleanup timeout and agent-last Cilium sandbox ordering passed the
   K3s and upstream migration round trips at the same SHA. This does not verify
