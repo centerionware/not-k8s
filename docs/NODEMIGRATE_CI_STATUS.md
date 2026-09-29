@@ -2,6 +2,24 @@
 
 Last updated: 2026-09-29
 
+## 2026-09-29 migration rerun 36621933601
+
+Run [36621933601](https://github.com/centerionware/not-k8s/actions/runs/36621933601)
+tested SHA `d88206ef7a8ddd4783e635b4f322e3b42f7c3ea6` with
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+The K3s and upstream Kubernetes bidirectional migration jobs both passed,
+including their API parity and workload/storage checks. The Docker-backed
+five-node kubeadm/Cilium probe failed during the post-migration hostpath CSI
+rollout. The CSI Pod was `Unknown` on worker-2, and containerd repeatedly
+reported that `/var/lib/nodelet` was on a private `/` mount, which cannot
+satisfy the CSI fixture's bidirectional mount propagation. CoreDNS was
+Running, confirming the retained kubelet resolver fix worked. The Docker node
+image now marks `/` recursively shared before starting systemd and verifies
+that state. A separate retry is pending. The focused `nodelet` quick-check
+passed at the same SHA in
+[run 36621353742](https://github.com/centerionware/not-k8s/actions/runs/36621353742).
+No regular build or full e2e gate ran.
+
 ## 2026-09-29 migration run 36614282579
 
 Run [36614282579](https://github.com/centerionware/not-k8s/actions/runs/36614282579)

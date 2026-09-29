@@ -2,6 +2,29 @@
 
 Last updated: 2026-09-29
 
+## Findings from migration rerun 36621933601
+
+The `nodelet` quick-check passed at SHA
+`d88206ef7a8ddd4783e635b4f322e3b42f7c3ea6` in
+[run 36621353742](https://github.com/centerionware/not-k8s/actions/runs/36621353742).
+The migration-specific run
+[36621933601](https://github.com/centerionware/not-k8s/actions/runs/36621933601)
+then passed bidirectional migration, workload, storage, and parity assertions
+for both K3s and upstream Kubernetes with Cilium KPR enabled. The five-node
+Docker-backed kubeadm/Cilium lane reached post-migration workloads, with
+CoreDNS Running, but timed out waiting for the hostpath CSI StatefulSet. Its
+Pod stayed `Unknown` on worker-2 because containerd rejected the CSI container's
+bidirectional `/var/lib/nodelet` mount: the simulated node's `/` mount was
+private. The Docker node entrypoint now makes `/` recursively shared and
+verifies the propagation mode before starting systemd. The five-node rerun is
+pending. The earlier single-node parity and resolver failures are corrected
+in the tested SHA; the shared-mount fixture correction still needs live evidence.
+
+- **Component:** five-node Docker node fixture. `systemd-entrypoint.sh` now
+  establishes and asserts recursive shared propagation on `/`, so CSI's
+  bidirectional HostPath mounts behave like the intended host setup. Shell
+  validation is pending.
+
 ## Findings from migration run 36614282579
 
 At SHA `6d91d1df7f3837dca583d359e3aba76030634500`, forward migration and
