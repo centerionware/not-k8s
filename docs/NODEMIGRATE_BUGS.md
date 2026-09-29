@@ -2,6 +2,38 @@
 
 Last updated: 2026-09-29
 
+## Findings from migration run 36546160178
+
+- **Component:** Migration integration fixture. At SHA
+  `0bc38d03fe43c53864a0d108716818513fc2b200`, both single-node lanes completed
+  CRD import, API readiness, StatefulSet/PV/data checks, RBAC/token checks, and
+  CRD `/status` checks at `stage=nodestore`. Both then failed because the
+  fixture used `kubectl logs -c` for an ephemeral container; the API rejected
+  that logs request even though the ephemeral container was Running. The probe
+  now writes its marker to a shared `emptyDir`, which the regular probe
+  container reads with `kubectl exec`. `bash -n` and `git diff --check` pass;
+  the corrected fixture has not run in CI yet.
+- **Component:** `nodemigrate` Cilium recovery / control-plane identity. The
+  five-node lane imported 55 CRDs and stopped during the replacement Cilium
+  readiness wait on `cp-1`. Diagnostics show `clean-cilium-state` exited 0 on
+  all five nodes, while Cilium and kubelet clients reported TLS
+  `unknown authority` against the API at `cp-1:6443` in diagnostics collected
+  after rollback. The leading cause is a source/destination API trust-identity
+  handoff problem, not a failed Cilium cleanup init or a sandbox-start failure.
+  The branch now copies the source serving CA/key into the protected export and
+  uses it to sign the replacement API certificate; for K3s it also preserves
+  the distinct source client CA in a combined client-auth bundle. Joining an
+  existing not-k8s cluster still uses that destination's PKI. Focused CI and
+  the five-node migration regression are pending; no migration retry has been
+  launched.
+
+The migration control-plane teardown policy is recorded in
+`NODEMIGRATION_GOAL.md`: save API/data/configuration and a restoration path
+first; remove conflicting source services or old member state when required;
+preserve source quorum and rollback material until destination quorum and
+API/data are verified. This allows a full migration to retire old control-plane
+parts without making destructive teardown the first step.
+
 ## Current blockers found in migration run 36540040356
 
 - **Component:** `nodeapiserver` CRD status-subresource GET. Both single-node

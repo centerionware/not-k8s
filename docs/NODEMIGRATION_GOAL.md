@@ -36,6 +36,13 @@ bump the regular release version. This is a target, not publication authority.
   of a node that previously belonged to that cluster. Use the established
   nodebootstrap join/environment configuration and preserve its membership,
   CA, and cluster networking requirements.
+- For an in-place migration that creates the destination control plane, retain
+  the source API serving CA so existing nodes and clients continue trusting
+  the same API endpoint. Preserve any separate source client-auth CA as an
+  additional destination client trust root (K3s has distinct server and
+  client CAs). Store the CA/key material in the protected recovery export
+  before stopping the source. A node joining an already-running destination
+  uses the destination cluster's PKI and must not replace it with source PKI.
 - Support ordered cluster migration: transfer cluster API state at the
   control-plane stage, then replace control-plane and worker nodes against the
   joined destination without re-importing the same cluster-wide objects from
@@ -96,19 +103,21 @@ bump the regular release version. This is a target, not publication authority.
   configured root contradicts a live stage.
 - Prefer keeping the source installation stopped/disabled and recoverable after
   cutover. A full in-place control-plane migration may need to retire or remove
-  old control-plane services, static-pod manifests, sockets, or other host
-  state that conflicts with the destination's API server, datastore, or
-  networking. Detect those conflicts and use the least destructive teardown
+  old control-plane services, static-pod manifests, sockets, membership, or
+  other host state that conflicts with the destination's API server, datastore,
+  or networking. Detect those conflicts and use the least destructive teardown
   that yields a working destination; do not preserve old control-plane pieces
   at the cost of an incomplete or conflicting target. Export API and
   node-local state first, snapshot affected configuration and data, and retain
   a documented restoration path. Keep source etcd/datastore data and PKI while
   they remain part of the rollback path. In a multi-control-plane migration,
-  preserve source quorum while replacing members in a safe order, and retire
-  old member state only after the destination control plane has quorum and its
-  API/data have been verified. Explicit `uninstall-after-migrate=true` may
-  remove the remaining source installation after migration; ordinary required
-  conflict cleanup is not limited to that optional full uninstall.
+  preserve source quorum while replacing members in a safe order. Retire old
+  services and remove old member state when needed to avoid competing control
+  planes, but keep rollback material until the destination control plane has
+  quorum and its API/data have been verified. Explicit
+  `uninstall-after-migrate=true` may remove the remaining source installation
+  after migration; ordinary required conflict cleanup is not limited to that
+  optional full uninstall.
 - Take the source Kubernetes API export while its API is available, then stop
   the source service stack before snapshotting node-local PV/hostPath payloads
   so applications cannot change files during the copy. Stop an upstream
@@ -169,6 +178,11 @@ CSI driver and exercise both static hostPath PV/PVC and dynamically provisioned
 CSI PV/PVC data. Install cert-manager, nginx, Traefik ingress, and additional
 representative cluster programs/add-ons. Record source versions and CNI
 configuration.
+
+At source, destination, and returned-source checkpoints, compare the active
+API CA fingerprint with the original source CA. The five-node scenario must
+also prove that the non-migrated nodes remain Ready and that Cilium agents can
+authenticate to the replacement API throughout the control-plane handoff.
 
 The migration fixture must cover a broad, explicit resource inventory rather
 than treating the current demo workloads as complete coverage. Every resource

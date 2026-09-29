@@ -178,7 +178,7 @@ fn migrate_to_nodestore(
     } else {
         None
     };
-    let bootstrap = bootstrap_command(source, disable_nodeproxy)?;
+    let mut bootstrap = bootstrap_command(source, disable_nodeproxy)?;
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
     let destination_node_exists = if joins_existing {
         target_api.ready().context(
@@ -261,6 +261,7 @@ fn migrate_to_nodestore(
         export = Some(api.export(source)?);
     }
     let mut export = export.context("source API export was not prepared")?;
+    prepare_migration_pki(&mut bootstrap, source, &export)?;
     println!(
         "Protected API object export saved at {}",
         export.dir.display()
@@ -449,7 +450,9 @@ fn migrate_to_nodestore(
             "post-uninstall restore failed: persistent-path error={host_path_error:#?}; CNI-path error={cni_path_error:#?}; recovery export retained at {}",
             export.dir.display()
         );
-        run_bootstrap(bootstrap_command(source, disable_nodeproxy)?)
+        let mut reconcile = bootstrap_command(source, disable_nodeproxy)?;
+        prepare_migration_pki(&mut reconcile, source, &export)?;
+        run_bootstrap(reconcile)
             .context("reconciling nodestore after source uninstall")?;
         wait_for_api(&target_api)
             .context("destination failed API readiness after K3s uninstall cleanup")?;
@@ -1700,6 +1703,106 @@ fn bootstrap_command(
     bootstrap_command_with_config(args, config, source_api_server_name)
 }
 
+fn prepare_migration_pki(
+    command: &mut Command,
+    source: &detect::Installation,
+    export: &transfer::Export,
+) -> Result<()> {
+    if std::env::var("NODEBOOTSTRAP_JOIN_ENDPOINT").is_ok_and(|endpoint| !endpoint.is_empty()) {
+        return Ok(());
+    }
+    let preserved_dir = export.dir.join("migration-pki");
+    std::fs::create_dir_all(&preserved_dir)
+        .with_context(|| format!("creating protected migration PKI directory {}", preserved_dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&preserved_dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("restricting migration PKI directory {}", preserved_dir.display()))?;
+    }
+
+    let source_pki = source_api_pki_paths(source)?;
+    let serving_ca_cert = preserve_pki_file(&source_pki.serving_ca_cert, &preserved_dir.join("ca.crt"))?;
+    let serving_ca_key = preserve_pki_file(&source_pki.serving_ca_key, &preserved_dir.join("ca.key"))?;
+    command
+        .env("NODEBOOTSTRAP_MIGRATION_CA_CERT_FILE", serving_ca_cert)
+        .env("NODEBOOTSTRAP_MIGRATION_CA_KEY_FILE", serving_ca_key);
+    if let Some(client_ca) = source_pki.client_ca {
+        let client_ca = preserve_pki_file(&client_ca, &preserved_dir.join("client-ca.crt"))?;
+        command.env("NODEBOOTSTRAP_MIGRATION_CLIENT_CA_FILE", client_ca);
+    }
+    Ok(())
+}
+
+struct SourceApiPkiPaths {
+    serving_ca_cert: PathBuf,
+    serving_ca_key: PathBuf,
+    client_ca: Option<PathBuf>,
+}
+
+fn source_api_pki_paths(source: &detect::Installation) -> Result<SourceApiPkiPaths> {
+    match source.distribution {
+        request::Distribution::Kubernetes => Ok(SourceApiPkiPaths {
+            serving_ca_cert: PathBuf::from("/etc/kubernetes/pki/ca.crt"),
+            serving_ca_key: PathBuf::from("/etc/kubernetes/pki/ca.key"),
+            client_ca: None,
+        }),
+        request::Distribution::K3s => {
+            let data_dir = source
+                .cluster
+                .as_ref()
+                .context("K3s source has no detected data directory")?
+                .data_dir
+                .clone();
+            let tls_dir = data_dir.join("server/tls");
+            Ok(SourceApiPkiPaths {
+                serving_ca_cert: tls_dir.join("server-ca.crt"),
+                serving_ca_key: tls_dir.join("server-ca.key"),
+                client_ca: Some(tls_dir.join("client-ca.crt")),
+            })
+        }
+        request::Distribution::Nodestore => {
+            anyhow::bail!("cannot derive source API PKI from a nodestore installation")
+        }
+    }
+}
+
+fn preserve_pki_file(source: &std::path::Path, destination: &std::path::Path) -> Result<PathBuf> {
+    if destination.exists() {
+        if !source.exists() {
+            return Ok(destination.to_path_buf());
+        }
+        let source_bytes = std::fs::read(source)
+            .with_context(|| format!("reading source PKI file {}", source.display()))?;
+        let destination_bytes = std::fs::read(destination)
+            .with_context(|| format!("reading retained PKI file {}", destination.display()))?;
+        ensure!(
+            source_bytes == destination_bytes,
+            "protected migration PKI already contains different data at {}; refusing to replace it",
+            destination.display()
+        );
+        return Ok(destination.to_path_buf());
+    }
+    let contents = std::fs::read(source)
+        .with_context(|| format!("reading source PKI file {}", source.display()))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(destination)
+        .with_context(|| format!("creating protected migration PKI file {}", destination.display()))?;
+    use std::io::Write;
+    file.write_all(&contents)
+        .with_context(|| format!("writing protected migration PKI file {}", destination.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing protected migration PKI file {}", destination.display()))?;
+    Ok(destination.to_path_buf())
+}
+
 fn replacement_worker_command(
     installation: &detect::Installation,
     node_name: &str,
@@ -2057,6 +2160,7 @@ mod tests {
     use super::{
         append_nodeproxy_mode, apply_cni_runtime_paths, confirm_migration, detect_csi_staging_root,
         migration_csi_staging_root, nodeproxy_should_be_disabled, replacement_worker_args,
+        source_api_pki_paths, preserve_pki_file,
         reverse_node_replacement_state, rollback_reverse_migration_with,
         validate_destination_node_replacement, validate_reverse_control_plane_options,
         validate_skip_api_import,
@@ -2068,10 +2172,67 @@ mod tests {
     };
     use std::collections::HashMap;
     use std::{
+        fs,
         io::Cursor,
         path::{Path, PathBuf},
         process::Command,
     };
+
+    #[test]
+    fn source_api_pki_paths_select_distribution_specific_roots() {
+        let kubernetes = Installation {
+            distribution: Distribution::Kubernetes,
+            role: NodeRole::ControlPlane,
+            runtime_endpoint: None,
+            service_manager: None,
+            service_name: "kubelet".to_string(),
+            service_file: None,
+            binary: None,
+            config_files: Vec::new(),
+            cluster: Some(cluster(None, None)),
+        };
+        let paths = source_api_pki_paths(&kubernetes).unwrap();
+        assert_eq!(paths.serving_ca_cert, PathBuf::from("/etc/kubernetes/pki/ca.crt"));
+        assert_eq!(paths.serving_ca_key, PathBuf::from("/etc/kubernetes/pki/ca.key"));
+        assert!(paths.client_ca.is_none());
+
+        let mut k3s_cluster = cluster(None, None);
+        k3s_cluster.data_dir = PathBuf::from("/srv/k3s-data");
+        let k3s = Installation {
+            distribution: Distribution::K3s,
+            role: NodeRole::ControlPlane,
+            runtime_endpoint: None,
+            service_manager: None,
+            service_name: "k3s".to_string(),
+            service_file: None,
+            binary: None,
+            config_files: Vec::new(),
+            cluster: Some(k3s_cluster),
+        };
+        let paths = source_api_pki_paths(&k3s).unwrap();
+        assert_eq!(paths.serving_ca_cert, PathBuf::from("/srv/k3s-data/server/tls/server-ca.crt"));
+        assert_eq!(paths.serving_ca_key, PathBuf::from("/srv/k3s-data/server/tls/server-ca.key"));
+        assert_eq!(paths.client_ca, Some(PathBuf::from("/srv/k3s-data/server/tls/client-ca.crt")));
+    }
+
+    #[test]
+    fn migration_ca_is_copied_into_private_export_and_existing_copy_is_checked() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source-ca.key");
+        let saved = directory.path().join("export/migration-pki/ca.key");
+        fs::create_dir_all(saved.parent().unwrap()).unwrap();
+        fs::write(&source, "private source key").unwrap();
+
+        preserve_pki_file(&source, &saved).unwrap();
+        assert_eq!(fs::read(&saved).unwrap(), b"private source key");
+        assert_eq!(preserve_pki_file(&source, &saved).unwrap(), saved);
+
+        fs::write(&source, "changed key").unwrap();
+        let error = preserve_pki_file(&source, &saved).unwrap_err();
+        assert!(error.to_string().contains("refusing to replace it"));
+        fs::remove_file(&source).unwrap();
+        assert_eq!(preserve_pki_file(&source, &saved).unwrap(), saved);
+    }
 
     #[test]
     fn reverse_migration_rollback_stops_target_before_restoring_data_and_source() {

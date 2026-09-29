@@ -82,7 +82,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
 
 fn ensure_extension_apiserver_authentication(cfg: &Config) -> Result<()> {
     let pki_dir = cfg.pki_dir();
-    let client_ca = std::fs::read_to_string(pki_dir.join("ca.crt"))
+    let client_ca = std::fs::read_to_string(pki_dir.join("client-ca.crt"))
         .context("reading the destination client CA for aggregated API authentication")?;
     let requestheader_ca = std::fs::read_to_string(pki_dir.join("front-proxy-ca.crt"))
         .context("reading the destination front-proxy CA for aggregated API authentication")?;
@@ -206,7 +206,7 @@ fn install_service(
         ),
         (
             "NODEAPISERVER_CLIENT_CA_FILE",
-            pki_dir.join("ca.crt").to_string_lossy().into_owned(),
+            pki_dir.join("client-ca.crt").to_string_lossy().into_owned(),
         ),
         (
             "NODEAPISERVER_SERVICE_ACCOUNT_SIGNING_KEY_FILE",

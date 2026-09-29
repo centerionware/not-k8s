@@ -2606,7 +2606,7 @@ verify_ephemeral_container_subresource() {
     local pod_name="migration-ephemeral-probe-${stage}"
     local container_name="migration-debug-${stage}"
     local marker="migration-ephemeral-${stage}"
-    local patch pod_json logs deadline running=false
+    local patch pod_json marker_output deadline running=false
     kubectl apply -f - <<YAML || return 1
 apiVersion: v1
 kind: Pod
@@ -2621,10 +2621,16 @@ spec:
   - name: probe
     image: busybox:1.36.1
     command: ["sh", "-c", "sleep 600"]
+    volumeMounts:
+    - name: marker
+      mountPath: /marker
     resources:
       requests:
         cpu: 1m
         memory: 1Mi
+  volumes:
+  - name: marker
+    emptyDir: {}
 YAML
     if ! kubectl wait -n migration-apps --for=condition=Ready "pod/$pod_name" --timeout=5m; then
         echo "ephemeral-container probe Pod did not become Ready at stage $stage" >&2
@@ -2635,7 +2641,8 @@ YAML
       {spec:{ephemeralContainers:[{
         name:$name,
         image:"busybox:1.36.1",
-        command:["sh","-c",("echo " + $marker + "; sleep 600")]
+        command:["sh","-c",("echo " + $marker + " > /marker/result; sleep 600")],
+        volumeMounts:[{name:"marker",mountPath:"/marker"}]
       }]}}
     ')"
     if ! kubectl patch pod "$pod_name" -n migration-apps \
@@ -2657,21 +2664,54 @@ YAML
         fi
         sleep 2
     done
-    logs=""
+    marker_output=""
     if [[ "$running" == true ]]; then
-        logs="$(kubectl logs "$pod_name" -n migration-apps -c "$container_name" 2>&1)" || true
+        marker_output="$(kubectl exec "$pod_name" -n migration-apps -c probe -- cat /marker/result 2>&1)" || true
     fi
     kubectl delete pod -n migration-apps "$pod_name" --wait=true >/dev/null || {
         echo "ephemeral-container probe Pod cleanup failed at stage $stage" >&2
         return 1
     }
-    [[ "$running" == true && "$logs" == *"$marker"* ]] || {
-        echo "ephemeral container did not run and produce its marker at stage $stage" >&2
+    [[ "$running" == true && "$marker_output" == *"$marker"* ]] || {
+        echo "ephemeral container did not run and write its marker at stage $stage" >&2
         printf '%s\n' "$pod_json" | jq '{spec: .spec.ephemeralContainers, status: .status.ephemeralContainerStatuses}' >&2 || true
-        printf '%s\n' "$logs" >&2
+        printf '%s\n' "$marker_output" >&2
         return 1
     }
-    echo "PASS pods/ephemeralcontainers execution and log readback at stage=$stage"
+    echo "PASS pods/ephemeralcontainers execution and marker readback at stage=$stage"
+}
+
+api_ca_fingerprint() {
+    local kubeconfig="${1:?missing kubeconfig}"
+    local encoded
+    encoded="$(KUBECONFIG="$kubeconfig" kubectl config view --raw --minify -o json \
+        | jq -er '.clusters[0].cluster["certificate-authority-data"] // empty')" || return 1
+    [[ -n "$encoded" ]] || return 1
+    printf '%s' "$encoded" | base64 -d | sha256sum | awk '{print $1}'
+}
+
+verify_api_ca_continuity() {
+    local stage="$1"
+    local kubeconfig="$2"
+    local baseline="$CHECKPOINT_DIR/source/apiserver-ca.sha256"
+    local actual
+    actual="$(api_ca_fingerprint "$kubeconfig")" || {
+        echo "could not read API CA from kubeconfig at stage=$stage" >&2
+        return 1
+    }
+    if [[ "$stage" == source ]]; then
+        printf '%s\n' "$actual" > "$baseline"
+        chmod 0600 "$baseline"
+        echo "Recorded source API CA fingerprint=$actual"
+        return 0
+    fi
+    local expected
+    expected="$(cat "$baseline")" || return 1
+    [[ "$actual" == "$expected" ]] || {
+        echo "API CA changed at stage=$stage (source=$expected destination=$actual)" >&2
+        return 1
+    }
+    echo "PASS source API CA continuity at stage=$stage"
 }
 
 verify_stage() {
@@ -2682,6 +2722,7 @@ verify_stage() {
     CURRENT_KUBECONFIG="$2"
     export KUBECONFIG="$CURRENT_KUBECONFIG"
     echo "Verifying stage=$stage distro=$SOURCE_DIST kubeconfig=$CURRENT_KUBECONFIG"
+    verify_api_ca_continuity "$stage" "$CURRENT_KUBECONFIG"
     if [[ "$stage" == nodestore ]]; then
         local kube_proxy_daemonset=false nodeproxy_active=false
         if kubectl get daemonset kube-proxy -n kube-system >/dev/null 2>&1; then

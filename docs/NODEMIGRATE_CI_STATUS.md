@@ -2,6 +2,32 @@
 
 Last updated: 2026-09-29
 
+## 2026-09-29 migration run 36546160178
+
+At exact SHA `0bc38d03fe43c53864a0d108716818513fc2b200`, the dedicated migration
+workflow built `nodemigrate` and the combined branch runtime in all lanes. The
+K3s and upstream single-node migrations imported CRDs and passed target API,
+storage/PV data, workload, RBAC/token, and CRD `/status` assertions at
+`stage=nodestore`; each then stopped at a fixture bug that called
+`kubectl logs` for an ephemeral container. The fixture now checks its marker
+through a shared `emptyDir` and the regular container. That change has passed
+`bash -n` and `git diff --check` locally; corrected migration CI remains
+pending.
+
+The Docker 3-control-plane/2-worker migration imported 55 CRDs and rolled back
+when the replacement Cilium Pod on `cp-1` did not become Ready. Diagnostics
+showed successful `clean-cilium-state` init exits on all five nodes, but
+unknown-authority TLS failures against `cp-1:6443` for remaining Cilium/kubelet
+clients after rollback. The leading hypothesis is loss of API CA continuity.
+The branch now saves the source serving CA/key in the protected export and
+uses that CA for the replacement API; K3s client-auth roots are preserved as a
+bundle. The migration fixture checks API CA identity at all three checkpoints.
+Focused CI is pending, and the migration workflow must not be retried until
+those checks validate the code path. The complete run and lane logs are
+[here](https://github.com/centerionware/not-k8s/actions/runs/36546160178); saved
+once under `/tmp/nodemigrate-36546160178-*.log`. No regular build or full e2e
+gate was run.
+
 This is the living CI record for the scope in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). The user-specific testing policy
 is recorded there and overrides conflicting general `AGENTS.md` gates for

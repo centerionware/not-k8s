@@ -6,11 +6,9 @@
 //! shape that file's `sign_csr`/`load_signing_ca` use, so a CA minted here
 //! loads back through that exact code unchanged.
 //!
-//! Deliberately does **not** borrow k3s's own generated CA the way
-//! `deploy/lib/upstream-kube-apiserver.sh` does today (see that script's
-//! header comment) -- minting a fresh CA here, independent of k3s, is what
-//! makes `docs/NODEBOOTSTRAP_PLAN.md` point 3 (same PKI code, swap the
-//! apiserver target underneath) possible at all.
+//! Normal bootstrap mints a fresh cluster CA. In-place migration can instead
+//! retain the source API serving CA and any separate client-auth CA so
+//! existing nodes and clients continue to trust the replacement API.
 //!
 //! Scope, deliberately narrow: this module issues the CA and the *static*
 //! control-plane identities (apiserver serving cert, ServiceAccount signing
@@ -72,6 +70,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         return Ok(());
     }
     let dir = cfg.pki_dir();
+    let migration_ca = migration_ca_from_env()?;
     let required = [
         "ca.crt",
         "ca.key",
@@ -103,6 +102,9 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         }
     }
     if present == required.len() {
+        if let Some(migration_ca) = &migration_ca {
+            ensure_migration_ca_matches(&dir, migration_ca)?;
+        }
         ensure_existing_pki_matches_domain(&dir, &cfg.cluster_domain(), &service_ips)?;
         ensure_existing_apiserver_extra_sans(
             &dir,
@@ -111,6 +113,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
             &extra_sans,
         )?;
         ensure_front_proxy_client(&dir)?;
+        ensure_client_ca_bundle(&dir, migration_ca.as_ref())?;
         tracing::info!(dir = %dir.display(), "reusing existing cluster PKI");
         return Ok(());
     }
@@ -124,7 +127,7 @@ pub fn run_with(cfg: &Config) -> Result<()> {
     spec.cluster_domain = cfg.cluster_domain();
     spec.service_ip = cfg.service_ip()?;
     spec.extra_sans = extra_sans;
-    let cluster = generate(&spec)?;
+    let cluster = generate_with_migration_ca(&spec, migration_ca.as_ref())?;
     cluster.write_to_dir(&dir)?;
     tracing::info!(dir = %dir.display(), "wrote cluster PKI");
     Ok(())
@@ -323,6 +326,9 @@ pub struct IssuedCert {
 /// to match what `kubeconfig.rs` and `targets/upstream.rs` will consume.
 pub struct ClusterPki {
     pub ca: IssuedCert,
+    /// API client-auth trust may contain more roots than the serving CA.
+    /// K3s, for example, uses separate server and client CAs.
+    pub client_ca_bundle: String,
     pub apiserver_serving: IssuedCert,
     /// Client identity the apiserver presents when proxying exec/logs/
     /// attach/port-forward requests to nodelet.
@@ -369,7 +375,89 @@ impl Default for ClusterPkiSpec {
 }
 
 pub fn generate(spec: &ClusterPkiSpec) -> Result<ClusterPki> {
-    let (ca_cert, ca_key) = generate_ca("not-k8s-ca").context("generating cluster CA")?;
+    generate_with_migration_ca(spec, None)
+}
+
+struct MigrationCa {
+    serving_cert_pem: String,
+    serving_key_pem: String,
+    client_ca_pem: Option<String>,
+}
+
+fn migration_ca_from_env() -> Result<Option<MigrationCa>> {
+    let cert_path = std::env::var_os("NODEBOOTSTRAP_MIGRATION_CA_CERT_FILE");
+    let key_path = std::env::var_os("NODEBOOTSTRAP_MIGRATION_CA_KEY_FILE");
+    let client_ca_path = std::env::var_os("NODEBOOTSTRAP_MIGRATION_CLIENT_CA_FILE");
+    anyhow::ensure!(
+        cert_path.is_some() == key_path.is_some(),
+        "NODEBOOTSTRAP_MIGRATION_CA_CERT_FILE and NODEBOOTSTRAP_MIGRATION_CA_KEY_FILE must be set together"
+    );
+    let Some((cert_path, key_path)) = cert_path.zip(key_path) else {
+        anyhow::ensure!(
+            client_ca_path.is_none(),
+            "NODEBOOTSTRAP_MIGRATION_CLIENT_CA_FILE requires a migration serving CA"
+        );
+        return Ok(None);
+    };
+    let cert_path = std::path::PathBuf::from(cert_path);
+    let key_path = std::path::PathBuf::from(key_path);
+    let serving_cert_pem = std::fs::read_to_string(&cert_path)
+        .with_context(|| format!("reading migration serving CA {}", cert_path.display()))?;
+    let serving_key_pem = std::fs::read_to_string(&key_path)
+        .with_context(|| format!("reading migration serving CA key {}", key_path.display()))?;
+    let client_ca_pem = client_ca_path
+        .map(std::path::PathBuf::from)
+        .map(|path| {
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("reading migration client CA bundle {}", path.display()))
+        })
+        .transpose()?;
+    Ok(Some(MigrationCa {
+        serving_cert_pem,
+        serving_key_pem,
+        client_ca_pem,
+    }))
+}
+
+fn generate_with_migration_ca(
+    spec: &ClusterPkiSpec,
+    migration_ca: Option<&MigrationCa>,
+) -> Result<ClusterPki> {
+    let (ca_cert, ca_key, ca_cert_pem) = if let Some(source) = migration_ca {
+        let params = CertificateParams::from_ca_cert_pem(&source.serving_cert_pem)
+            .context("parsing source serving CA certificate")?;
+        let key = migration_ca_key_pair(&source.serving_key_pem)
+            .context("parsing source serving CA key")?;
+        let source_der = pem::parse(&source.serving_cert_pem)
+            .context("decoding source serving CA certificate")?;
+        let (_, source_x509) = x509_parser::parse_x509_certificate(source_der.contents())
+            .context("validating source serving CA certificate")?;
+        let is_ca = source_x509
+            .basic_constraints()
+            .context("reading source serving CA basic constraints")?
+            .is_some_and(|extension| extension.value.ca);
+        anyhow::ensure!(is_ca, "source serving certificate is not a CA");
+        let can_sign_certificates = source_x509
+            .key_usage()
+            .context("reading source serving CA key usage")?
+            .is_some_and(|extension| extension.value.key_cert_sign());
+        anyhow::ensure!(
+            can_sign_certificates,
+            "source serving CA is not permitted to sign certificates"
+        );
+        anyhow::ensure!(
+            source_x509.public_key().raw == key.public_key_der().as_slice(),
+            "source serving CA certificate and key do not match"
+        );
+        let cert = params
+            .self_signed(&key)
+            .context("validating source serving CA certificate and key")?;
+        (cert, key, source.serving_cert_pem.clone())
+    } else {
+        let (cert, key) = generate_ca("not-k8s-ca").context("generating cluster CA")?;
+        let cert_pem = cert.pem();
+        (cert, key, cert_pem)
+    };
     let (aggregation_proxy_ca_cert, aggregation_proxy_ca_key) =
         generate_ca("not-k8s-front-proxy-ca").context("generating aggregation front-proxy CA")?;
 
@@ -418,10 +506,15 @@ pub fn generate(spec: &ClusterPkiSpec) -> Result<ClusterPki> {
     let cluster_admin = issue_client_cert(&ca_cert, &ca_key, "admin", &["system:masters"])
         .context("issuing cluster-admin client cert")?;
 
-    let ca = IssuedCert { cert_pem: ca_cert.pem(), key_pem: ca_key.serialize_pem() };
+    let client_ca_bundle = migration_ca
+        .and_then(|migration_ca| migration_ca.client_ca_pem.as_ref())
+        .map(|extra| format!("{}\n{}", ca_cert_pem.trim_end(), extra.trim()))
+        .unwrap_or_else(|| ca_cert_pem.clone());
+    let ca = IssuedCert { cert_pem: ca_cert_pem, key_pem: ca_key.serialize_pem() };
 
     Ok(ClusterPki {
         ca,
+        client_ca_bundle,
         apiserver_serving,
         kube_apiserver_client,
         aggregation_proxy_client,
@@ -434,6 +527,78 @@ pub fn generate(spec: &ClusterPkiSpec) -> Result<ClusterPki> {
         kube_scheduler,
         cluster_admin,
     })
+}
+
+fn migration_ca_key_pair(key_pem: &str) -> Result<KeyPair> {
+    let parsed = pem::parse(key_pem).context("decoding source CA key PEM")?;
+    if parsed.tag() != "RSA PRIVATE KEY" {
+        return KeyPair::from_pem(key_pem).context("parsing source CA key as PKCS#8 PEM");
+    }
+
+    // kubeadm commonly stores RSA CAs as PKCS#1 PEM. ring, which rcgen uses
+    // here, accepts RSA keys only in PKCS#8; wrap the existing key bytes
+    // without changing the key or its certificate identity.
+    const RSA_ALGORITHM_IDENTIFIER: &[u8] = &[
+        0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05,
+        0x00,
+    ];
+    let mut private_key_info = vec![0x02, 0x01, 0x00];
+    private_key_info.extend_from_slice(RSA_ALGORITHM_IDENTIFIER);
+    private_key_info.extend(der_tlv(0x04, parsed.contents()));
+    let pkcs8 = der_tlv(0x30, &private_key_info);
+    let pkcs8_pem = pem::encode(&pem::Pem::new("PRIVATE KEY", pkcs8));
+    KeyPair::from_pem(&pkcs8_pem).context("parsing wrapped source RSA CA key as PKCS#8")
+}
+
+fn der_tlv(tag: u8, value: &[u8]) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(value.len() + 6);
+    encoded.push(tag);
+    if value.len() < 128 {
+        encoded.push(value.len() as u8);
+    } else {
+        let length = value.len().to_be_bytes();
+        let first_nonzero = length.iter().position(|byte| *byte != 0).unwrap_or(length.len() - 1);
+        let encoded_length = &length[first_nonzero..];
+        encoded.push(0x80 | encoded_length.len() as u8);
+        encoded.extend_from_slice(encoded_length);
+    }
+    encoded.extend_from_slice(value);
+    encoded
+}
+
+fn ensure_migration_ca_matches(dir: &std::path::Path, migration_ca: &MigrationCa) -> Result<()> {
+    let current_cert = std::fs::read_to_string(dir.join("ca.crt"))
+        .with_context(|| format!("reading existing cluster CA from {}", dir.display()))?;
+    anyhow::ensure!(
+        current_cert == migration_ca.serving_cert_pem,
+        "existing nodebootstrap PKI at {} belongs to a different cluster; refusing to replace its identity during migration",
+        dir.display()
+    );
+    Ok(())
+}
+
+fn ensure_client_ca_bundle(dir: &std::path::Path, migration_ca: Option<&MigrationCa>) -> Result<()> {
+    let path = dir.join("client-ca.crt");
+    if migration_ca.is_none() && path.is_file() {
+        return Ok(());
+    }
+    let expected = migration_ca
+        .and_then(|migration_ca| migration_ca.client_ca_pem.as_ref())
+        .map(|extra| {
+            let serving_ca = std::fs::read_to_string(dir.join("ca.crt"))
+                .with_context(|| format!("reading existing serving CA from {}", dir.display()))?;
+            Ok::<_, anyhow::Error>(format!("{}\n{}", serving_ca.trim_end(), extra.trim()))
+        })
+        .transpose()?
+        .or_else(|| std::fs::read_to_string(dir.join("ca.crt")).ok());
+    let Some(expected) = expected else {
+        anyhow::bail!("no API client CA bundle is available in {}", dir.display());
+    };
+    if !std::fs::read_to_string(&path).is_ok_and(|current| current == expected) {
+        atomic_write(&path, &expected)
+            .with_context(|| format!("writing API client CA bundle {}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn generate_ca(common_name: &str) -> Result<(rcgen::Certificate, KeyPair)> {
@@ -586,6 +751,7 @@ impl ClusterPki {
         };
         write("ca.crt", &self.ca.cert_pem)?;
         write("ca.key", &self.ca.key_pem)?;
+        write("client-ca.crt", &self.client_ca_bundle)?;
         write("apiserver.crt", &self.apiserver_serving.cert_pem)?;
         write("apiserver.key", &self.apiserver_serving.key_pem)?;
         write("kube-apiserver.crt", &self.kube_apiserver_client.cert_pem)?;
@@ -632,6 +798,73 @@ mod tests {
         assert!(pki.ca.cert_pem.contains("BEGIN CERTIFICATE"));
         assert!(pki.aggregation_proxy_ca.cert_pem.contains("BEGIN CERTIFICATE"));
         assert!(pki.sa_signing.key_pem.contains("PRIVATE KEY"));
+    }
+
+    #[test]
+    fn migration_pki_preserves_serving_ca_and_accepts_an_additional_client_ca() {
+        let source = generate(&ClusterPkiSpec::default()).expect("generate source PKI");
+        let client = generate(&ClusterPkiSpec::default()).expect("generate additional client CA");
+        let migration_ca = MigrationCa {
+            serving_cert_pem: source.ca.cert_pem.clone(),
+            serving_key_pem: source.ca.key_pem.clone(),
+            client_ca_pem: Some(client.ca.cert_pem.clone()),
+        };
+        let migrated = generate_with_migration_ca(&ClusterPkiSpec::default(), Some(&migration_ca))
+            .expect("generate migration PKI");
+
+        assert_eq!(migrated.ca.cert_pem, source.ca.cert_pem);
+        assert_eq!(
+            migrated.client_ca_bundle,
+            format!("{}\n{}", source.ca.cert_pem.trim_end(), client.ca.cert_pem.trim())
+        );
+        let parsed = pem::parse(&migrated.apiserver_serving.cert_pem)
+            .expect("parse migrated API serving certificate");
+        let (_, serving) = x509_parser::parse_x509_certificate(parsed.contents())
+            .expect("parse migrated API serving certificate DER");
+        let ca = pem::parse(&source.ca.cert_pem).expect("parse source API CA");
+        let (_, source_ca) = x509_parser::parse_x509_certificate(ca.contents())
+            .expect("parse source API CA DER");
+        assert_eq!(serving.issuer(), source_ca.subject());
+
+        let mismatched_ca = MigrationCa {
+            serving_cert_pem: source.ca.cert_pem.clone(),
+            serving_key_pem: client.ca.key_pem,
+            client_ca_pem: None,
+        };
+        let error = generate_with_migration_ca(&ClusterPkiSpec::default(), Some(&mismatched_ca))
+            .err()
+            .expect("a mismatched source CA key must be rejected");
+        assert!(error.to_string().contains("certificate and key do not match"));
+    }
+
+    #[test]
+    fn existing_client_ca_bundle_survives_normal_bootstrap_reconciliation() {
+        let directory = std::env::temp_dir().join(format!(
+            "nodebootstrap-pki-client-ca-bundle-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let pki = generate(&ClusterPkiSpec::default()).expect("generate cluster PKI");
+        pki.write_to_dir(&directory).expect("write cluster PKI");
+        let preserved_bundle = format!("{}\nsource-client-ca", pki.ca.cert_pem.trim_end());
+        std::fs::write(directory.join("client-ca.crt"), &preserved_bundle)
+            .expect("write migrated client CA bundle");
+
+        ensure_client_ca_bundle(&directory, None).expect("reconcile existing PKI");
+
+        assert_eq!(
+            std::fs::read_to_string(directory.join("client-ca.crt")).unwrap(),
+            preserved_bundle
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn der_tlv_encodes_short_and_long_lengths() {
+        assert_eq!(der_tlv(0x04, &[1, 2]), [0x04, 0x02, 0x01, 0x02]);
+        let long = der_tlv(0x04, &[0; 128]);
+        assert_eq!(&long[..3], &[0x04, 0x81, 0x80]);
+        assert_eq!(long.len(), 131);
     }
 
     #[test]

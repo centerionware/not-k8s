@@ -2,6 +2,28 @@
 
 Last updated: 2026-09-29
 
+## Latest migration result: 36546160178
+
+At `0bc38d03fe43c53864a0d108716818513fc2b200`, both single-node lanes
+successfully imported CRDs, reached the destination API, and passed the
+`nodestore` fixture checks for workloads, persistent data, RBAC/tokens, and
+CRD `/status`. They then failed on the fixture's unsupported ephemeral
+container `kubectl logs` call. The probe has been corrected to use a shared
+`emptyDir` marker read through the regular container; syntax and whitespace
+checks pass, but CI has not rerun it.
+
+The 3-control-plane/2-worker lane accepted 55 CRDs and failed while waiting for
+the replacement Cilium agent on `cp-1`. Its cleanup init completed, but
+post-rollback diagnostics show unknown-authority TLS failures for Cilium and
+kubelet clients accessing `cp-1:6443`. API CA continuity is the leading
+hypothesis. The branch now retains the source serving CA/key in the protected
+export and uses that CA for the replacement API; K3s's separate client CA is
+added to destination client trust. The fixture now asserts API CA identity at
+source, destination, and return checkpoints. Scoped CI must validate this
+before another migration attempt. The source rollback/export retention path
+ran; the complete run is
+[36546160178](https://github.com/centerionware/not-k8s/actions/runs/36546160178).
+
 This is the living implementation status record for the full scope in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). Capability marks describe code
 that exists; verification marks describe evidence from a run. A passing

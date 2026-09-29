@@ -505,9 +505,9 @@ fn apiserver_args(spec: &TargetSpec, nodelet_ca: Option<&std::path::Path>) -> Ve
         format!("--advertise-address={}", spec.advertise_address),
         format!("--tls-cert-file={}", pki("apiserver.crt")),
         format!("--tls-private-key-file={}", pki("apiserver.key")),
-        // The CA that issued every client cert (admin/kube-controller-
-        // manager/kube-scheduler/kube-apiserver) IS the client CA here.
-        format!("--client-ca-file={}", pki("ca.crt")),
+        // Client authentication can trust additional legacy roots when an
+        // in-place migration preserves separate source serving/client CAs.
+        format!("--client-ca-file={}", pki("client-ca.crt")),
         format!("--kubelet-client-certificate={}", pki("kube-apiserver.crt")),
         format!("--kubelet-client-key={}", pki("kube-apiserver.key")),
         "--kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP".to_string(),
@@ -547,11 +547,11 @@ mod tests {
     }
 
     #[test]
-    fn apiserver_args_reference_a_single_client_ca_not_a_two_ca_bundle() {
+    fn apiserver_args_use_the_migration_aware_client_ca_bundle() {
         let args = apiserver_args(&test_spec(), None);
-        assert!(args.iter().any(|a| a == "--client-ca-file=/var/lib/nodebootstrap/pki/ca.crt"));
+        assert!(args.iter().any(|a| a == "--client-ca-file=/var/lib/nodebootstrap/pki/client-ca.crt"));
         assert!(args.iter().any(|a| a == "--authorization-mode=Node,RBAC"));
-        assert!(!args.iter().any(|a| a.contains("bundle")));
+        assert!(!args.iter().any(|a| a == "--client-ca-file=/var/lib/nodebootstrap/pki/ca.crt"));
     }
 
     #[test]
