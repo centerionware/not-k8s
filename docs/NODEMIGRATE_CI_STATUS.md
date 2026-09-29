@@ -17,7 +17,13 @@ artifact download attempt at 15:17:50 UTC also returned HTTP 403; GraphQL
 still identifies the authenticated account as `centerionware` and reports
 111 of 5,000 GraphQL calls used, with the GraphQL reset scheduled for
 15:23:03 UTC. GraphQL remains available, but this does not provide the
-artifact bytes needed to diagnose the failed step.
+artifact bytes needed to diagnose the failed step. A second preflight-only
+dispatch at 15:23:14 UTC, after the GraphQL reset, also returned REST HTTP 403
+and created no run. The new retained-control-plane assertions passed the
+migration workflow's PR validation in
+[run 36589761631](https://github.com/centerionware/not-k8s/actions/runs/36589761631)
+at SHA `7b86427dfcd64ca81e9cb942a46392b8e479454f`; migration runtime behavior
+was not exercised by that PR validation.
 
 ## 2026-09-29 migration run 36582910964
 
