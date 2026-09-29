@@ -17,6 +17,10 @@ nodemigrate shell validators passed locally; PR
 script validation passed in [run 36523684540](https://github.com/centerionware/not-k8s/actions/runs/36523684540),
 and nodemigrate crate tests passed in
 [run 36523684432](https://github.com/centerionware/not-k8s/actions/runs/36523684432).
+The CRD status-subresource extension is on tested commit
+`640977820a02dd7034f6128af791a9043a9ee351`; its migration workflow syntax and
+static-validation job passed in
+[run 36524267356](https://github.com/centerionware/not-k8s/actions/runs/36524267356).
 The migration fixture has not run against a cluster with these assertions; the
 known Cilium return-routing failure still blocks a migration rerun.
 
