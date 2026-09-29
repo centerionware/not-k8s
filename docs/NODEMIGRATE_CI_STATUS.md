@@ -53,8 +53,14 @@ existing listener codec test. No return, round-trip, or parity stage ran. Job lo
 nodemigrate checks [36535991773](https://github.com/centerionware/not-k8s/actions/runs/36535991773),
 and migration workflow validation
 [36535991698](https://github.com/centerionware/not-k8s/actions/runs/36535991698)
-passed on the tested commit. Do not dispatch another migration until the
-remaining common failure is diagnosed and all observed blockers are addressed.
+passed on the previous tested commit. The codec fix and corrected regression
+then passed scoped `nodeapiserver` quick-check
+[36539461032](https://github.com/centerionware/not-k8s/actions/runs/36539461032)
+at SHA `67cc4d3e`; the initial attempt
+[36539012970](https://github.com/centerionware/not-k8s/actions/runs/36539012970)
+failed only because the test expected protobuf to retain an empty repeated
+field. The integration migration can now be retried to exercise the fix and
+continue through return/parity; no regular build or full e2e gate is planned.
 
 ## Authentication and authorization review fixture
 

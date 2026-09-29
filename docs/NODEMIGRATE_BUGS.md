@@ -2186,7 +2186,11 @@ The branch changed APIService route resolution and group discovery to read APISe
   expiration. The first quick-check caught a test expectation that protobuf
   preserve an empty repeated `audiences` field; protobuf correctly omits it, so
   the fixture now exercises the default by leaving that field empty. A scoped
-  rerun is pending; logs: `/tmp/nodemigrate-36536494864/`.
+  regression and scoped quick-check [36539461032](https://github.com/centerionware/not-k8s/actions/runs/36539461032)
+  passed at SHA `67cc4d3e`; the preceding run
+  [36539012970](https://github.com/centerionware/not-k8s/actions/runs/36539012970)
+  exposed only the test's incorrect empty-array expectation. The fix is now
+  ready for another migration attempt. Logs: `/tmp/nodemigrate-36536494864/`.
 
 - **Component:** Migration integration diagnostics. Run `36536494864` confirms
   both lanes fail with the same protobuf/JSON mismatch detail. The audit record

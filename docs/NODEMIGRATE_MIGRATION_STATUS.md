@@ -87,7 +87,11 @@ the virtual TokenRequest with its declared wire format, and a focused protobuf
 round-trip regression covers the request schema and fields. No return
 migration, full-cluster teardown, or parity comparison ran.
 Logs are under `/tmp/nodemigrate-36536494864/`. Do not retry until the common
-TokenRequest failure and any other confirmed blockers are fixed together.
+TokenRequest failure and any other confirmed blockers are fixed together. The
+new negotiated-codec handler and protobuf regression passed scoped
+`nodeapiserver` quick-check [36539461032](https://github.com/centerionware/not-k8s/actions/runs/36539461032)
+at SHA `67cc4d3e`; the next migration attempt can now verify the wire fix and
+resume the full round-trip assertions.
 
 Forensic review of failed K3s run [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212)
 found that the returned source Cilium agent restarted inside its original Pod
