@@ -2,6 +2,27 @@
 
 Last updated: 2026-09-29
 
+## 2026-09-29 migration rerun 36627336634
+
+Run [36627336634](https://github.com/centerionware/not-k8s/actions/runs/36627336634)
+tested SHA `3826b3ce30ec0a9a17396b6ecf6821c07fa8d88b` with branch-built
+runtime, Cilium KPR, and the five-node path. K3s passed the round trip.
+Upstream Kubernetes completed migration in both directions and storage checks,
+then failed the returned Traefik rollout: the replacement Pod's `/ping` probes
+timed out and the old replica remained pending termination. Diagnostics showed
+the API Service backend active after Cilium cleanup, followed by retained Node
+replacement and a Cilium local Node delete event; this supports, but does not
+prove, that resetting Cilium before Node replacement caused stale datapath
+state. The reset is now ordered after replacement Node readiness. The Docker
+five-node lane timed out on `migration-standalone`; worker-1 logs show a CNI
+ADD process canceled after Nodelet's 30-second reconcile timeout, followed by
+a CRI container-name reservation for the same Pod UID. No OOM evidence was
+found. Nodelet now removes abandoned CRI containers carrying the exact current
+Pod UID before sandbox reuse/creation, keeping the selected sandbox intact.
+Focused checks and a migration rerun are pending. Logs are saved under
+`/tmp/nodemigrate-36627336634/` and in `/tmp/nodemigrate-36627336634-*.log`.
+No regular build or general e2e gate ran.
+
 ## 2026-09-29 migration rerun 36621933601
 
 Run [36621933601](https://github.com/centerionware/not-k8s/actions/runs/36621933601)

@@ -198,6 +198,45 @@ pub(crate) async fn lifecycle_http_get(host: &str, port: u16, path: &str) {
 
 
 impl CriRuntime {
+    /// Remove abandoned containers for one exact Pod UID before creating a
+    /// sandbox. CRI container names are runtime-wide, so a container whose
+    /// sandbox disappeared can still block CreateContainer for this Pod.
+    /// Restrict cleanup to the UID labels written by nodelet or kubelet.
+    pub(crate) async fn remove_orphaned_pod_uid_containers(&self, pod_uid: &str, keep_sandbox: Option<&str>) -> Result<()> {
+        let mut rt = self.rt.clone();
+        let mut containers = Vec::new();
+        for uid_label in [POD_UID_LABEL, "io.kubernetes.pod.uid"] {
+            let filter = ContainerFilter {
+                label_selector: HashMap::from([(uid_label.to_string(), pod_uid.to_string())]),
+                ..Default::default()
+            };
+            containers.extend(
+                rt.list_containers(ListContainersRequest { filter: Some(filter) })
+                    .await?
+                    .into_inner()
+                    .containers,
+            );
+        }
+        let mut seen = HashSet::new();
+        for container in containers {
+            if !seen.insert(container.id.clone()) || keep_sandbox == Some(container.pod_sandbox_id.as_str()) {
+                continue;
+            }
+            tracing::warn!(container_id = %container.id, pod_uid, sandbox_id = %container.pod_sandbox_id,
+                "removing abandoned CRI container for the current Pod UID");
+            let _ = rt
+                .stop_container(StopContainerRequest {
+                    container_id: container.id.clone(),
+                    timeout: 0,
+                })
+                .await;
+            rt.remove_container(RemoveContainerRequest { container_id: container.id })
+                .await
+                .context("removing an abandoned container for the current Pod UID")?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn list_pod_containers(&self, sandbox_id: &str) -> Result<Vec<v1::Container>> {
         let mut rt = self.rt.clone();
         let filter = ContainerFilter {

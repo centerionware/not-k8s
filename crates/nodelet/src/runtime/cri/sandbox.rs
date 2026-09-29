@@ -349,6 +349,19 @@ impl CriRuntime {
         name: &str,
         expected_uid: &str,
     ) -> Result<Option<(String, i32, String)>> {
+        let candidates = self.list_sandboxes_for_pod(namespace, name).await?;
+        Ok(select_pod_sandbox(candidates, Some(expected_uid)))
+    }
+
+    /// Return every CRI sandbox for this Pod key. During a runtime handoff,
+    /// source kubelet and nodelet records can coexist; selecting one sandbox
+    /// is enough for status, but replacement must clean duplicate same-UID
+    /// sandboxes because CRI container names are reserved across sandboxes.
+    pub(crate) async fn list_sandboxes_for_pod(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Vec<v1::PodSandbox>> {
         let mut rt = self.rt.clone();
         let list_by_labels = |namespace_label: &str, name_label: &str| PodSandboxFilter {
             label_selector: HashMap::from([
@@ -395,7 +408,9 @@ impl CriRuntime {
                 .filter(|sandbox| sandbox_matches_pod(sandbox, namespace, name))
                 .collect();
         }
-        Ok(select_pod_sandbox(candidates, Some(expected_uid)))
+        let mut seen = HashSet::new();
+        candidates.retain(|sandbox| seen.insert(sandbox.id.clone()));
+        Ok(candidates)
     }
 
     pub(crate) async fn run_sandbox(

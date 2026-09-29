@@ -2,6 +2,23 @@
 
 Last updated: 2026-09-29
 
+## Findings from migration run 36627336634
+
+- **Component: nodemigrate Cilium return ordering.** K3s passed. Upstream
+  Kubernetes completed forward and return migration and storage checks, but
+  returned Traefik could not pass `/ping` probes. Logs show a healthy API
+  Service backend after Cilium cleanup, then retained Node replacement and a
+  Cilium local Node deletion. The ordering is a plausible cause, not a proven
+  diagnosis. Cilium reset now runs after the replacement Node is Ready; a
+  migration rerun must verify the Traefik datapath.
+- **Component: Nodelet CRI cleanup.** Docker five-node timed out waiting for
+  `migration-standalone`. Worker-1 logs show its CNI ADD canceled after the
+  30-second Nodelet reconcile timeout, then CRI refused a container name as
+  reserved by a previous container for the same Pod UID. Nodelet now removes
+  orphaned containers by exact nodelet/Kubernetes Pod UID labels before reusing
+  or creating a sandbox, excluding the selected sandbox. Focused CI and Docker
+  migration verification remain pending. No OOM evidence was found.
+
 ## Findings from migration rerun 36621933601
 
 The `nodelet` quick-check passed at SHA

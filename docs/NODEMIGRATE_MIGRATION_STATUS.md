@@ -2,6 +2,17 @@
 
 Last updated: 2026-09-29
 
+## Latest run: 36627336634
+
+K3s passed the branch-runtime round trip. Upstream Kubernetes migrated forward
+and back and passed storage checks, then failed the returned Traefik rollout
+after Traefik probes timed out. Docker five-node timed out waiting for
+`migration-standalone`; logs show a canceled CNI ADD and a CRI name reservation
+for that Pod UID. The code now resets retained Cilium after Node replacement
+and removes abandoned CRI containers matching only the exact current Pod UID.
+Both fixes need focused CI and a migration rerun. See [CI status](NODEMIGRATE_CI_STATUS.md)
+and [bug tracker](NODEMIGRATE_BUGS.md).
+
 The latest full migration run,
 [36614282579](https://github.com/centerionware/not-k8s/actions/runs/36614282579),
 built the branch `notk8s` and `nodemigrate` binaries in all three lanes. K3s

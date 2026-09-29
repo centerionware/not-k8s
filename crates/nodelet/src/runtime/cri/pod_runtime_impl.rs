@@ -52,7 +52,13 @@ impl PodRuntime for CriRuntime {
             spec.and_then(|s| s.init_containers.as_deref()).unwrap_or(&[]),
         );
         let sandbox_id = match sandbox_reuse_decision(found.as_ref().map(|(_, s, _)| *s), ready_state, uid_matches) {
-            SandboxDecision::Reuse => found.unwrap().0,
+            SandboxDecision::Reuse => {
+                let sandbox_id = found.unwrap().0;
+                self.remove_orphaned_pod_uid_containers(&id.uid, Some(&sandbox_id))
+                    .await
+                    .context("cleaning abandoned containers before reusing a Pod sandbox")?;
+                sandbox_id
+            }
             SandboxDecision::RecreateStale => {
                 // The sandbox record exists but either its task/pause
                 // process isn't alive (e.g. this metadata survived a reboot
@@ -107,9 +113,15 @@ impl PodRuntime for CriRuntime {
                 self.clear_config_errors(&stale_id);
                 self.clear_last_terminated(&stale_id);
                 self.release_sandbox_devices(&stale_id).await;
+                self.remove_orphaned_pod_uid_containers(&id.uid, None)
+                    .await
+                    .context("cleaning abandoned containers before recreating a Pod sandbox")?;
                 self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone(), privileged).await.context("RunPodSandbox")?
             }
             SandboxDecision::CreateFresh => {
+                self.remove_orphaned_pod_uid_containers(&id.uid, None)
+                    .await
+                    .context("cleaning abandoned containers before creating a Pod sandbox")?;
                 self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone(), privileged).await.context("RunPodSandbox")?
             }
         };
