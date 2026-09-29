@@ -358,6 +358,9 @@ instructions in `AGENTS.md` for nodemigrate work:
   after Node replacement. The Cilium agent Pod UID remained unchanged; the
   next non-migration diagnostic explicitly recreates that Pod and repeats
   the packet-flow and workload checks.
+  First attempt `36514477496` failed before the restart because jq returned a
+  boolean instead of the Pod object. The selector is fixed and covered by a
+  focused local test; the corrected live diagnostic is pending.
 - A release workflow run is required only when carrying out the separately
   authorized publication. The initial `v0.8.1` nodemigrate publication must
   use the matching regular `v0.8.1` version built from this branch's accepted

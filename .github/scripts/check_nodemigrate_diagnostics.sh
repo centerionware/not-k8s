@@ -26,6 +26,18 @@ case "${KUBECTL_FIXTURE:-}" in
             *"apply -f -"*) cat > "${NODEMIGRATE_TEST_APPLY_CAPTURE:?}" ;;
         esac
         ;;
+    cilium-restart)
+        case "$*" in
+            *"get pods -n kube-system -l k8s-app=cilium -o json"*)
+                if [[ -f "${NODEMIGRATE_CILIUM_DELETE_MARKER:?}" ]]; then
+                    printf '%s\n' '{"items":[{"metadata":{"name":"cilium-new","uid":"new"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}'
+                else
+                    printf '%s\n' '{"items":[{"metadata":{"name":"cilium-old","uid":"old"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}'
+                fi
+                ;;
+            *"delete pod cilium-old"*) touch "${NODEMIGRATE_CILIUM_DELETE_MARKER:?}" ;;
+        esac
+        ;;
     *)
         echo "unknown fixture" >&2
         exit 2
@@ -206,6 +218,17 @@ grep -Fq 'PASS Pod-to-Service API TCP probe at stage=source clusterIP=10.43.0.1'
 grep -Fq 'nc -z -w 5 10.43.0.1 443' "$NODEMIGRATE_TEST_APPLY_CAPTURE" || {
     echo "Pod probe does not test TCP access to the Kubernetes API ClusterIP" >&2
     cat "$NODEMIGRATE_TEST_APPLY_CAPTURE" >&2
+    exit 1
+}
+
+export KUBECTL_FIXTURE=cilium-restart
+export NODEMIGRATE_CILIUM_DELETE_MARKER="$TEST_DIR/cilium-agent-deleted"
+output="$(restart_cilium_agent_pod /tmp/test-kubeconfig 2>&1)" || {
+    echo "Cilium agent Pod restart fixture failed: $output" >&2
+    exit 1
+}
+grep -Fq 'Replacement Cilium agent Pod cilium-new UID=new is Ready' <<< "$output" || {
+    echo "Cilium agent replacement was not reported: $output" >&2
     exit 1
 }
 

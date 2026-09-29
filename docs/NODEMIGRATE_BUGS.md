@@ -46,9 +46,13 @@ Last updated: 2026-09-29
   run [36513067748](https://github.com/centerionware/not-k8s/actions/runs/36513067748)
   passed an in-Pod TCP probe to the API ClusterIP before and after restart and
   Node replacement. The Cilium agent Pod UID did not change in those stages.
-  Since migration recreates that Pod, the next diagnostic explicitly restarts
-  it before repeating the Pod TCP, workload, and datapath checks. Result
-  pending.
+  Since migration recreates that Pod, run
+  [36514477496](https://github.com/centerionware/not-k8s/actions/runs/36514477496)
+  attempted the explicit restart but failed first: its jq selector returned a
+  boolean rather than the Pod object. The selector is fixed and a focused
+  check covers old-UID to new-UID Ready Pod replacement. Corrected live
+  diagnostic pending; the migration-specific Cilium issue remains unresolved
+  and migration must not be retried.
 - **Replacement diagnostic used a kubectl flag that is not supported.** The
   unchanged-UID restart and all fixture checks passed in run
   [36508298004](https://github.com/centerionware/not-k8s/actions/runs/36508298004),

@@ -554,7 +554,9 @@ restart_cilium_agent_pod() {
     local kubeconfig="${1:?missing probe kubeconfig}"
     local old_pod_json old_pod_name old_pod_uid replacement_json attempt
     old_pod_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
-        -l k8s-app=cilium -o json | jq -ce '.items | length == 1 and .[0]')" || {
+        -l k8s-app=cilium -o json | jq -ce '
+          if (.items | length) == 1 then .items[0] else empty end
+        ')" || {
         echo "expected exactly one K3s Cilium agent Pod before restart" >&2
         return 1
     }

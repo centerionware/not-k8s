@@ -61,7 +61,16 @@ were skipped. CRI and Kubernetes identity records show the Cilium agent Pod
 UID remained unchanged through restart and Node replacement. Since nodemigrate
 stops and recreates source Pod sandboxes, the next non-migration probe will
 restart the Cilium agent Pod explicitly, then repeat the API ClusterIP and
-workload checks. Its result is pending.
+workload checks.
+
+Run [36514477496](https://github.com/centerionware/not-k8s/actions/runs/36514477496)
+failed at SHA `1ef6e06993d0b9712bf2f3b82cce08b1dc2e3f4d` before restarting the
+agent Pod. The source fixture and first Pod-to-API-ClusterIP TCP probe passed;
+the harness jq selector returned a boolean instead of the sole Cilium Pod
+object and failed on metadata lookup. The selector now returns `.items[0]`
+only when exactly one Pod exists, with a focused test for old-UID to new-UID
+Ready Pod replacement. Local shell/diagnostic checks pass; corrected live
+agent-recreation check pending. All migration jobs were skipped.
 
 ## Latest completed migration batch
 

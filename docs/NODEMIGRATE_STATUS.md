@@ -34,6 +34,9 @@ Pod-to-API-ClusterIP TCP probes also passed at all three checkpoints in run
 The Cilium agent Pod UID remained unchanged throughout, so the next diagnostic
 will explicitly restart that Pod before repeating the checks. No migration
 retry is queued until the migration-specific Cilium issue is fixed.
+The first restart attempt [36514477496](https://github.com/centerionware/not-k8s/actions/runs/36514477496)
+failed in the harness's Pod selector before any agent restart. That selector
+is fixed and locally checked; the corrected live diagnostic is pending.
 See the [CI status](NODEMIGRATE_CI_STATUS.md) and
 [bug tracker](NODEMIGRATE_BUGS.md).
 

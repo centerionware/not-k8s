@@ -29,7 +29,11 @@ passed temporary Pod TCP probes to the API ClusterIP before restart, after
 restart, and after Node replacement, along with all fixture checks. The Cilium
 agent Pod UID remained unchanged through these transitions. The next diagnostic
 explicitly recreates the Cilium agent Pod before repeating these checks; its
-result is pending. The migration-specific failure remains unresolved.
+first attempt [36514477496](https://github.com/centerionware/not-k8s/actions/runs/36514477496)
+stopped before restart because a jq selector returned a boolean instead of the
+Pod object. That selector is fixed and its old-to-new UID transition is covered
+by a focused local check. Corrected live diagnostic pending. The
+migration-specific failure remains unresolved.
 
 Latest batch migration run
 [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)
