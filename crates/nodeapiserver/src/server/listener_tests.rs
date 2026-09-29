@@ -14,6 +14,15 @@ mod tests {
             ("authorization.k8s.io", "SelfSubjectAccessReview", "io.k8s.api.authorization.v1.SelfSubjectAccessReview",
              serde_json::json!({"spec":{"resourceAttributes":{"verb":"get","resource":"pods"}}})),
             (
+                "",
+                "Binding",
+                "io.k8s.api.core.v1.Binding",
+                serde_json::json!({
+                    "metadata": {"name": "scheduled", "namespace": "default"},
+                    "target": {"apiVersion": "v1", "kind": "Node", "name": "worker-1"}
+                }),
+            ),
+            (
                 "authentication.k8s.io",
                 "TokenRequest",
                 "io.k8s.api.authentication.v1.TokenRequest",

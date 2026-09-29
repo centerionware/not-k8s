@@ -126,7 +126,13 @@ bump the regular release version. This is a target, not publication authority.
   quorum and its API/data have been verified. Explicit
   `uninstall-after-migrate=true` may remove the remaining source installation
   after migration; ordinary required conflict cleanup is not limited to that
-  optional full uninstall.
+  optional full uninstall. On a real multi-control-plane host, use the
+  destination's verified topology to decide which old control-plane services,
+  manifests, sockets, or local member state must be retired. It is valid to
+  remove those conflicting parts after cutover; retain old data and PKI while
+  rollback or a return migration is still required. Do not make erasing
+  etcd/datastore data a prerequisite for cutover when disabling source
+  services and rebooting can provide a safe recovery path.
 - Take the source Kubernetes API export while its API is available, then stop
   the source service stack before snapshotting node-local PV/hostPath payloads
   so applications cannot change files during the copy. Stop an upstream

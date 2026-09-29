@@ -2,6 +2,39 @@
 
 Last updated: 2026-09-29
 
+## Findings from migration run 36591891203
+
+- **Component:** `nodeapiserver` Pod binding wire format. At tested SHA
+  `98b3429599c88d855b407f25639f038b96ede1cb`, the upstream Kubernetes lane
+  completed forward migration and then failed redeploying HostPath CSI. Target
+  Pods remained unscheduled and the API audit log recorded HTTP 400 responses
+  for scheduler `pods/binding` requests. The binding handler decoded every
+  body as JSON although Kubernetes clients may send protobuf `Binding`
+  envelopes. It now uses the shared virtual-resource decoder and has a focused
+  protobuf Binding regression. Targeted CI and a migration rerun are pending.
+- **Component:** `nodestore` Raft learner join. On the five-node Docker lane,
+  cp-1 migrated successfully and added cp-2 as a learner. A fresh cp-2
+  `RawNode` started with no voters, then stopped while applying the leader's
+  committed `AddLearner` entry: `applying conf change: removed all voters`.
+  The member now seeds its empty local ConfState with the live peer probe's
+  existing voters, while still requiring the committed log entry to add itself
+  as a learner. A focused state-selection regression and targeted CI are
+  pending. The TLS BadCertificate and later kubelet/API errors were follow-on
+  symptoms after nodestore stopped.
+- **Component:** five-node migration diagnostics. The orchestration captured
+  each cp/worker `nodemigrate` output in a command substitution and discarded
+  it on failure, leaving only a generic join error. It now prints the captured
+  utility output and exit status before failing.
+
+The user-approved migration-specific run is
+[36591891203](https://github.com/centerionware/not-k8s/actions/runs/36591891203)
+at the SHA above (`runtime_source=branch`, `cilium_kpr=true`,
+`five_node_migration=true`). K3s passed both migration directions and its
+parity/workload/Cilium/RBAC/PV checks. Upstream Kubernetes passed forward
+migration but failed the post-forward HostPath CSI scheduling check. Docker
+preflight passed, cp-1 passed forward migration, and cp-2 failed joining. No
+retry has been launched after these failures.
+
 ## Findings from migration run 36582910964
 
 - **Component:** Docker five-node orchestration. At SHA

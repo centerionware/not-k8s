@@ -353,7 +353,7 @@ for host in cp-2 cp-3; do
     cp_env+=("NODESTORE_ADVERTISE_PEER_URL=$peer_url")
     cp_env+=("NODESTORE_ADVERTISE_CLIENT_URL=https://$host:2379")
     cp_env+=("NODEMIGRATE_DESTINATION_KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig")
-    output="$(node_env "$host" "${cp_env[@]}" \
+    if output="$(node_env "$host" "${cp_env[@]}" \
         PATH="$NODE_ROOT/target/release:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
         NOTK8S_COMBINED_PREBUILT="$NODE_ROOT/target/release/notk8s" \
         NODEBOOTSTRAP_COMBINED_SELF="$NODE_ROOT/target/release/notk8s" \
@@ -362,9 +362,13 @@ for host in cp-2 cp-3; do
         NODEMIGRATE_DESTINATION_KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig \
         NODEMIGRATE_REPLACE_NODE=true \
         "$NODE_ROOT/target/release/nodemigrate" to=nodestore from=kubernetes \
-            skip-api-import=true "source-export=$SOURCE_EXPORT_REMOTE" 2>&1)" \
-        || fail "control-plane join migration failed on $host"
-    printf '%s\n' "$output"
+            skip-api-import=true "source-export=$SOURCE_EXPORT_REMOTE" 2>&1)"; then
+        printf '%s\n' "$output"
+    else
+        status=$?
+        printf '%s\n' "$output" >&2
+        fail "control-plane join migration failed on $host with status $status"
+    fi
 done
 
 worker_env=(
@@ -374,7 +378,7 @@ worker_env=(
     "NODEMIGRATE_REPLACE_NODE=true"
 )
 for host in worker-1 worker-2; do
-    output="$(node_env "$host" "${worker_env[@]}" \
+    if output="$(node_env "$host" "${worker_env[@]}" \
         PATH="$NODE_ROOT/target/release:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
         NOTK8S_COMBINED_PREBUILT="$NODE_ROOT/target/release/notk8s" \
         NODEBOOTSTRAP_COMBINED_SELF="$NODE_ROOT/target/release/notk8s" \
@@ -383,9 +387,13 @@ for host in worker-1 worker-2; do
         NODEMIGRATE_DESTINATION_KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig \
         NODEMIGRATE_REPLACE_NODE=true \
         "$NODE_ROOT/target/release/nodemigrate" to=nodestore from=kubernetes \
-            skip-api-import=true "source-export=$SOURCE_EXPORT_REMOTE" 2>&1)" \
-        || fail "worker join migration failed on $host"
-    printf '%s\n' "$output"
+            skip-api-import=true "source-export=$SOURCE_EXPORT_REMOTE" 2>&1)"; then
+        printf '%s\n' "$output"
+    else
+        status=$?
+        printf '%s\n' "$output" >&2
+        fail "worker join migration failed on $host with status $status"
+    fi
 done
 
 echo "Checking all five nodes and running the nodestore fixture checkpoint"

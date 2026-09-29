@@ -2,6 +2,25 @@
 
 Last updated: 2026-09-29
 
+## 2026-09-29 migration run 36591891203
+
+Completed with failures at exact SHA
+`98b3429599c88d855b407f25639f038b96ede1cb`; inputs were
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+The K3s lane passed both directions and all reported checks. Upstream
+Kubernetes completed forward migration but could not schedule the redeployed
+HostPath CSI pods; scheduler `pods/binding` requests received HTTP 400. The
+five-node Docker preflight passed and cp-1 migrated, but cp-2's nodestore
+stopped applying its first `AddLearner` configuration change because its fresh
+Raft voter set was empty. The multi-node join now seeds the existing voters
+reported by the live peer probe. The API server binding handler now decodes
+protobuf Binding requests. Both fixes require targeted quick-check before a
+full migration retry. K3s success does not verify these two failed paths.
+
+The run is [36591891203](https://github.com/centerionware/not-k8s/actions/runs/36591891203).
+Its complete artifacts were captured once under
+`/tmp/nodemigrate-36591891203/`.
+
 ## 2026-09-29 Docker failure diagnosis
 
 The artifact from run

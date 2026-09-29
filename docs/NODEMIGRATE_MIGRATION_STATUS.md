@@ -2,6 +2,17 @@
 
 Last updated: 2026-09-29
 
+The latest full migration run, [36591891203](https://github.com/centerionware/not-k8s/actions/runs/36591891203),
+passed the K3s round trip. The upstream Kubernetes forward migration reached
+the target but its post-forward HostPath CSI pods could not schedule; the
+binding handler now accepts the protobuf format sent by Kubernetes clients.
+The 3-control-plane/2-worker Docker preflight passed and cp-1 migrated, but the
+cp-2 learner join stopped on an empty Raft voter configuration; nodestore now
+seeds the existing voters reported by the live leader. Targeted quick-check
+and migration-specific rerun remain pending. The live migration status is
+tracked in [CI status](NODEMIGRATE_CI_STATUS.md); component causes and fixes
+are in [the bug tracker](NODEMIGRATE_BUGS.md).
+
 ## Latest migration result: 36582910964
 
 Run [36582910964](https://github.com/centerionware/not-k8s/actions/runs/36582910964)

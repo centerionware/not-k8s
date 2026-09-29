@@ -37,9 +37,20 @@ macro_rules! handle_subresources {
                 return Ok(body_read_error_response(&$path_str, &error));
             }
         };
-        let body: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
+        let content_type = $req
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = match decode_virtual_request(
+            &body_bytes,
+            content_type.as_deref(),
+            "",
+            "v1",
+            "Binding",
+        ) {
             Ok(body) => body,
-            Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &error.to_string()))),
+            Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &error))),
         };
         if let Err(error) = admission::node_restriction::validate(
             &mut client,

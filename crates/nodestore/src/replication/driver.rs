@@ -359,6 +359,21 @@ fn refuse_empty_restart_into_a_live_cluster(
     )))
 }
 
+/// Return the trusted starting configuration for a fresh learner joining a
+/// live cluster. The leader's probe reports only committed voters; the new
+/// member is deliberately absent until the AddLearner entry is applied.
+fn joining_cluster_conf_state(
+    member_id: u64,
+    probe: &crate::replication::transport::ClusterProbe,
+) -> Option<raft::eraftpb::ConfState> {
+    if !probe.already_running || probe.voters.is_empty() || probe.voters.contains(&member_id) {
+        return None;
+    }
+    let mut state = raft::eraftpb::ConfState::default();
+    state.voters = probe.voters.clone();
+    Some(state)
+}
+
 /// Start the driver. Returns a handle; the loop runs on its own task.
 ///
 /// `probe` is what the peers said before raft was built. It is consulted only
@@ -436,10 +451,20 @@ pub fn start(
         refuse_empty_restart_into_a_live_cluster(member_id, &probe)?;
     }
     if bootstrap && probe.already_running && !probe.voters.contains(&member_id) {
-        // Added to a running cluster with MemberAdd: the leader already knows
-        // about this member and will send it a snapshot. Seeding a membership
-        // here would be this member inventing a configuration the cluster
-        // never agreed to, so it starts with none and takes the leader's.
+        // Added to a running cluster with MemberAdd: the leader has already
+        // committed this member as a learner. Seed the *existing voter set*
+        // reported by that live leader so the follower can apply the committed
+        // AddLearner entry. Starting from an empty ConfState makes raft reject
+        // that first entry as "removed all voters" before it can receive the
+        // leader's snapshot. Never add this member locally: its learner
+        // membership still comes from the leader's committed entry.
+        if let Some(cs) = joining_cluster_conf_state(member_id, &probe) {
+            log.set_conf_state(&cs, 0)?;
+            raw = RawNode::new(&cfg, log.clone(), &raft_logger())
+                .map_err(|e| {
+                    Error::Unavailable(format!("restarting raft with probed voters: {e}"))
+                })?;
+        }
         info!("joining a cluster that is already running; waiting for the leader's snapshot");
     } else if bootstrap && !peers.is_empty() {
         let voters: Vec<u64> = peers.iter().filter(|m| !m.is_learner).map(|m| m.id).collect();
@@ -915,5 +940,17 @@ mod tests {
     fn a_newly_added_member_joins_a_live_cluster_without_complaint() {
         refuse_empty_restart_into_a_live_cluster(4, &probe(true, vec![1, 2, 3]))
             .expect("member 4 is new to this cluster; nothing has a position for it");
+    }
+
+    #[test]
+    fn a_new_learner_seeds_the_probed_voters_before_applying_member_add() {
+        let cs = joining_cluster_conf_state(4, &probe(true, vec![1, 2, 3])).unwrap();
+        assert_eq!(cs.voters, vec![1, 2, 3]);
+        assert!(
+            cs.learners.is_empty(),
+            "learner membership must arrive from the committed raft entry"
+        );
+        assert!(joining_cluster_conf_state(2, &probe(true, vec![1, 2, 3])).is_none());
+        assert!(joining_cluster_conf_state(4, &probe(false, vec![1, 2, 3])).is_none());
     }
 }
