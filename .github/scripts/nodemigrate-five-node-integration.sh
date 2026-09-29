@@ -186,8 +186,10 @@ assert_retained_kubeadm_is_quiescent() {
             || fail "$host lost the retained kube-apiserver manifest needed for return migration"
         node "$host" test -s /etc/kubernetes/manifests/etcd.yaml \
             || fail "$host lost the retained etcd manifest needed for return migration"
-        node "$host" test -d /var/lib/etcd/member \
-            || fail "$host lost its retained etcd member data needed for return migration"
+        if ! node "$host" bash -ec \
+            'find /var/lib/etcd/member -type f -size +0c -print -quit | grep -q .' 2>/dev/null; then
+            fail "$host lost non-empty retained etcd member data needed for return migration"
+        fi
         local sandboxes
         sandboxes="$(node "$host" crictl --runtime-endpoint=unix:///run/containerd/containerd.sock pods -o json)" \
             || fail "$host could not list CRI sandboxes after nodestore cutover"
