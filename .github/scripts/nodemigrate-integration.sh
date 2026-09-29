@@ -3646,8 +3646,19 @@ main() {
         previous_node_uid="$(KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get node "$node_name" \
             -o jsonpath='{.metadata.uid}')"
         echo "Deleting Node $node_name UID=$previous_node_uid before another K3s restart"
+        replacement_node_uid="$(KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get node "$node_name" \
+            -o jsonpath='{.metadata.uid}')"
+        if [[ "$replacement_node_uid" != "$previous_node_uid" ]]; then
+            echo "Node $node_name changed before the diagnostic replacement: expected UID=$previous_node_uid, found UID=$replacement_node_uid" >&2
+            return 1
+        fi
         KUBECONFIG="$SOURCE_KUBECONFIG" kubectl delete node "$node_name" \
-            --preconditions="uid=$previous_node_uid" --wait=true --timeout=60s
+            --wait=true --timeout=60s
+        if KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get node "$node_name" \
+            --request-timeout=5s >/dev/null 2>&1; then
+            echo "Node $node_name still exists after the diagnostic delete completed" >&2
+            return 1
+        fi
         systemctl restart k3s
         replacement_node_uid=""
         for attempt in $(seq 1 90); do

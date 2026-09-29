@@ -7,6 +7,14 @@ This is the living implementation status record for the full scope in
 that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
+The non-migration K3s+Cilium diagnostic [36508298004](https://github.com/centerionware/not-k8s/actions/runs/36508298004)
+passed its unchanged-Node restart phase and all workload/storage/API-state
+checks, but stopped before Node replacement because the harness used an
+unsupported kubectl `--preconditions` flag. The harness is corrected; Cilium
+service/BPF/endpoint state after a new Node UID is not yet captured. The
+post-return Cilium routing failure remains unresolved, so no migration rerun
+is allowed yet.
+
 Latest batch migration run
 [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)
 at SHA `1f6b5064936ca2001dea2527483848aebc7e14ad` passed all migration builds

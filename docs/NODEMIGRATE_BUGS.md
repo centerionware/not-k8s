@@ -30,6 +30,14 @@ Last updated: 2026-09-29
   migration failure. The probe is being extended with same-name Node deletion,
   K3s re-registration, and before/after Cilium service/BPF/endpoint maps. It
   never invokes nodemigrate and is diagnostic only.
+- **Replacement diagnostic used a kubectl flag that is not supported.** The
+  unchanged-UID restart and all fixture checks passed in run
+  [36508298004](https://github.com/centerionware/not-k8s/actions/runs/36508298004),
+  then the probe stopped at `kubectl delete --preconditions`. The diagnostic
+  now checks the current Node UID immediately before deletion, uses supported
+  kubectl delete flags, and verifies the Node is absent before restarting
+  K3s. Since Node replacement never ran in that attempt, the Cilium issue is
+  still unresolved; do not rerun migration until its actual cause is fixed.
 - **Five-node fixture used unsupported container-to-container `docker cp`.**
   Docker job `109195297329` in run `36502166212` passed topology, Cilium, and
   control-plane recovery checks, then failed while copying PKI/kubeconfig

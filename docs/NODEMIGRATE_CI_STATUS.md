@@ -7,6 +7,20 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+## Cilium restart/replacement diagnostic
+
+Run [36508298004](https://github.com/centerionware/not-k8s/actions/runs/36508298004)
+failed at SHA `264e6491a36e961e586fb58f0ad205835824a55c` in the diagnostic
+harness before it could replace the Node. The unchanged-UID K3s restart phase
+passed all workload, storage, 119-resource API inventory, normalized object,
+and durable-state checks. The next command failed because upstream kubectl
+does not implement `delete --preconditions`. The harness now verifies the
+Node UID immediately before deletion, deletes it with supported kubectl flags,
+and checks that it is absent before restarting K3s. The uploaded log is
+`/tmp/nodemigrate-36508298004/nodemigrate-k3s-cilium-restart-36508298004/nodemigrate-k3s-cilium-restart.log`.
+This run does not confirm or fix the Cilium routing issue, and no migration
+retry has been run.
+
 ## Latest completed migration batch
 
 Run [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212)
