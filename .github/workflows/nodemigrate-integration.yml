@@ -150,6 +150,22 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Summarize probe
+        if: always()
+        env:
+          NODEMIGRATE_PREFLIGHT_LOG: ${{ runner.temp }}/nodemigrate-docker-preflight.log
+        run: |
+          if [[ -r "$NODEMIGRATE_PREFLIGHT_LOG" ]]; then
+            {
+              echo '### Docker probe log tail'
+              echo '```text'
+              tail -n 160 "$NODEMIGRATE_PREFLIGHT_LOG"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Docker probe log was not created.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   k3s-cilium-probe:
     if: github.event_name == 'workflow_dispatch' && inputs.k3s_cilium_restart_probe == true
     runs-on: ubuntu-latest
