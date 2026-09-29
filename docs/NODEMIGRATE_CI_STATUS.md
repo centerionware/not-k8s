@@ -84,8 +84,16 @@ The consolidated `nodelet,nodemigrate` quick-check passed at SHA
 [run 36572319793](https://github.com/centerionware/not-k8s/actions/runs/36572319793).
 It covers the repeated CRI sandbox config, stable Cilium readiness, failed-init
 diagnostics, and kubelet-managed init retry logic. The additional nodelet-owned
-sandbox shutdown for return migration was added after this run and still needs
-its own scoped check.
+sandbox shutdown for return migration was added after this run and checked
+separately below.
+
+The updated `nodelet,nodemigrate` quick-check passed at SHA
+`b693b3c8b6f89f6fd805b761ce5bd5af7eab1c91` in
+[run 36572920944](https://github.com/centerionware/not-k8s/actions/runs/36572920944).
+This also validates selection of only `nodelet.dev/pod-uid` CRI sandboxes for
+return-cutover restart. No regular build or full e2e gate was run. The complete
+K3s, upstream Kubernetes, and five-node Cilium migration run is the next
+runtime check for this consolidated fix set.
 
 ## 2026-09-29 migration run 36546160178
 

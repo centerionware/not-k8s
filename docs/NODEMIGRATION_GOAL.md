@@ -80,6 +80,15 @@ bump the regular release version. This is a target, not publication authority.
   static-pod mirrors from their durable owners. Live
   NodeMetrics and PodMetrics samples are collected again by their metrics
   provider and are not persistent migration state.
+  Before handing API authority to a retained cluster, stop and remove only
+  the source runtime's nodelet-owned CRI Pod sandboxes after the protected API
+  export and after nodelet is stopped. This closes writers before local-volume
+  snapshots and prevents old projected ServiceAccount tokens or processes
+  from crossing into a cluster with potentially different token trust. Keep the
+  API objects, PV/PVC bindings, and backing payloads; let the returning
+  kubelet/controller recreate Pods from their durable owners, including
+  standalone Pods from the protected export. If cutover rolls back, restore
+  the source services and let its controllers recreate the stopped sandboxes.
 - Preserve persistent volume claims, bindings, topology, and payload access
   across migration for the provisioners configured in the source cluster. Copy
   node-local and hostPath payloads with their owning node and PV affinity;
