@@ -2849,8 +2849,13 @@ async fn restore_pod_ephemeral_containers(
     let patch = serde_json::json!({
         "spec": {"ephemeralContainers": ephemeral_containers}
     });
-    api.patch_ephemeral_containers(name, &PatchParams::default(), &Patch::Strategic(&patch))
-        .await
+    api.patch_subresource(
+        "ephemeralcontainers",
+        name,
+        &PatchParams::default(),
+        &Patch::Strategic(&patch),
+    )
+    .await
         .context("patching the Pod ephemeralcontainers subresource")
 }
 
