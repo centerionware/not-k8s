@@ -2,6 +2,31 @@
 
 Last updated: 2026-09-29
 
+## Current blockers found in migration run 36540040356
+
+- **Component:** `nodeapiserver` CRD status-subresource GET. Both single-node
+  migration lanes imported the versioned `MigrationRecord` CRD and its object,
+  then received HTTP 404 for `GET .../migration-record-0/status`. The listener
+  implemented GET only for certificate status subresources, although generic
+  CRD status writes were already supported. Added generic status GET through
+  REST resolution, gated on the requested CRD version declaring the status
+  subresource. Extended the API e2e regression and the migration checkpoint
+  to GET `/status`; scoped validation is pending.
+- **Component:** `nodelet` CRI cgroup layout. The five-node migration imported
+  535 API objects and accepted all 55 CRDs. Cilium's cleanup init exited 0 on
+  `cp-1`, but its replacement agent container could not start. containerd's
+  runtime config reported `SystemdCgroup=true`; nodelet sent cgroupfs paths
+  such as `/kubepods/burstable/pod<uid>`, and runc rejected them because it
+  expected systemd slice syntax. Nodelet now queries CRI `RuntimeConfig` and
+  builds QoS-scoped cgroupfs or systemd parents accordingly, with focused
+  path regressions. Scoped validation is pending. The TLS unknown-authority
+  errors in the same artifact were emitted during post-rollback diagnostics,
+  not as the migration's initiating failure.
+
+Migration run [36540040356](https://github.com/centerionware/not-k8s/actions/runs/36540040356)
+used branch runtime at `4cebc30721f96c034f48653345fd5b2f22e81ca7`. No migration
+retry is considered until both fixes pass their scoped CI checks.
+
 ## Custom-resource status fixture CRD placement
 
 - **Component:** Migration integration fixture. Diagnostic run

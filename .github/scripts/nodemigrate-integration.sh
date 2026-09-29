@@ -2579,6 +2579,16 @@ verify_custom_resource_status_subresource() {
         echo "could not write MigrationRecord /status at stage $stage" >&2
         return 1
     }
+    kubectl get --raw \
+        '/apis/migration.nodemigrate.io/v1/migrationrecords/migration-record-0/status' \
+        | jq -e --arg stage "$stage" '
+          .apiVersion == "migration.nodemigrate.io/v1" and
+          .spec.marker == "durable-custom-resource-data" and
+          .status.migrationStage == $stage
+        ' >/dev/null || {
+        echo "MigrationRecord /status GET failed or returned changed data at stage $stage" >&2
+        return 1
+    }
     kubectl get migrationrecord migration-record-0 -o json | jq -e \
         --arg stage "$stage" '
           .apiVersion == "migration.nodemigrate.io/v1" and

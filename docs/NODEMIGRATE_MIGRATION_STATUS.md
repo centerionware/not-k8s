@@ -33,6 +33,29 @@ Shell syntax and focused JSON filter checks pass; these new migration fixture
 assertions have not run against a cluster yet, and the known Cilium routing
 failure still blocks a migration rerun.
 
+Run [36540040356](https://github.com/centerionware/not-k8s/actions/runs/36540040356)
+at `4cebc30721f96c034f48653345fd5b2f22e81ca7` built the migration utility,
+combined branch runtime, and five-node fixture successfully. Both single-node
+lanes passed CRD import and API readiness, then failed the migration fixture's
+CRD `/status` GET (HTTP 404). The generic listener handled status writes but
+only status GET for CSRs; a served CRD status subresource therefore could not
+be read. Five-node migration captured 535 objects and accepted 55 CRDs, then
+failed while rebuilding Cilium on `cp-1`: `clean-cilium-state` exited 0, but
+nodelet's cgroupfs-style `cgroup_parent` conflicted with containerd's systemd
+cgroup driver, so runc rejected replacement pod sandboxes. The visible TLS
+unknown-authority messages occurred during post-rollback diagnostics and are
+not the initiating migration failure. Both fixes are now in the worktree;
+scoped quick-check and migration verification are pending. No new migration
+run has been started.
+
+Control-plane teardown remains conflict driven. Export API state and snapshot
+affected node-local data/configuration first. Retire old services, manifests,
+or member state when they block the destination's API, datastore, or CNI; do
+not preserve incompatible control-plane remnants just to keep teardown small.
+On multi-control-plane sources, keep quorum and rollback material until the
+destination has quorum and its API/data pass verification, then remove retired
+source members in a safe order.
+
 The Cilium host-state reset candidate is now implemented at forward and reverse
 control-plane/worker cutovers. For the live workflow at SHA
 `c3d4fbcaee0473443bb6f636eb299fb3b2080de6`, the five-node kubeadm/Docker

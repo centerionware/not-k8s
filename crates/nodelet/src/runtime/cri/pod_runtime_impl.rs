@@ -38,7 +38,7 @@ impl PodRuntime for CriRuntime {
         // (gVisor/Kata's userspace kernel cost) gets it accounted into the
         // sandbox's own resources.
         let qos = crate::eviction::qos_class(pod);
-        let cgroup_parent = crate::cgroup::cgroup_parent_for(qos, &id.uid);
+        let cgroup_parent = crate::cgroup::cgroup_parent_for(qos, &id.uid, self.cgroup_driver);
         let overhead = pod.spec.as_ref().and_then(|s| s.overhead.as_ref()).map(|list| resource_list_to_linux_resources(list));
         // hostPort (round 82; found in round 80's re-audit) — computed
         // once up front, same as cgroup_parent/overhead above, since

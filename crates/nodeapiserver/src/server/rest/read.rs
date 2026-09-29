@@ -30,6 +30,26 @@ pub async fn get(
     get_at_revision(storage, cache, group, version, resource, namespace, name, 0).await
 }
 
+/// Reads an object through its `status` subresource. Kubernetes returns the
+/// complete object, while a CRD version without `subresources.status` is
+/// reported as an unknown resource.
+pub async fn get_status(
+    storage: &mut StorageClient,
+    group: &str,
+    version: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+) -> Result<GetOutcome, Error> {
+    let Some(resolved) = resolve_resource(storage, group, version, resource).await? else {
+        return Ok(GetOutcome::UnknownResource);
+    };
+    if !resolved.has_status_subresource {
+        return Ok(GetOutcome::UnknownResource);
+    }
+    get(storage, None, group, version, resource, namespace, name).await
+}
+
 /// [`get`] with an optional etcd MVCC snapshot revision. A non-positive
 /// revision retains the normal current-state behavior.
 pub async fn get_at_revision(

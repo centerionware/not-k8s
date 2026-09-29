@@ -5910,6 +5910,16 @@ pub(super) async fn nodeapiserver_validates_crd_status_subresource(
             updated.pointer("/status/unknown").is_none(),
             "unknown CRD status field was not pruned: {updated}"
         );
+        let request = Request::builder().uri(&status_uri).body(Vec::new())?;
+        let status_read: Value = context
+            .client
+            .request(request)
+            .await
+            .context("reading the CRD status subresource")?;
+        anyhow::ensure!(
+            status_read.pointer("/status/phase").and_then(Value::as_str) == Some("Ready"),
+            "CRD status GET returned the wrong object: {status_read}"
+        );
         Ok::<(), anyhow::Error>(())
     }
     .await;
