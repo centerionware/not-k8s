@@ -13,6 +13,12 @@ and migration-specific rerun remain pending. The live migration status is
 tracked in [CI status](NODEMIGRATE_CI_STATUS.md); component causes and fixes
 are in [the bug tracker](NODEMIGRATE_BUGS.md).
 
+Focused quick-check [36597286663](https://github.com/centerionware/not-k8s/actions/runs/36597286663)
+passed the changed `nodeapiserver` and `nodestore` crates at SHA
+`1fb881ab441a24f214678ebfaab2317c75b972f1`. The compile issue found in the
+first quick-check was fixed in commit `1fb881ab`; the two failed migration
+paths are ready for a full migration-specific rerun.
+
 ## Latest migration result: 36582910964
 
 Run [36582910964](https://github.com/centerionware/not-k8s/actions/runs/36582910964)

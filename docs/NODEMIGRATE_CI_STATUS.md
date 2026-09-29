@@ -30,6 +30,13 @@ retried. The PR migration-script validation run
 [36596717675](https://github.com/centerionware/not-k8s/actions/runs/36596717675)
 passed at the same SHA; it does not compile Rust.
 
+Corrected targeted quick-check
+[36597286663](https://github.com/centerionware/not-k8s/actions/runs/36597286663)
+passed for `nodeapiserver,nodestore` at SHA
+`1fb881ab441a24f214678ebfaab2317c75b972f1`. Both migration failure fixes now
+pass their component tests. The migration-specific run can be retried against
+the branch-built runtime and nodemigrate utility.
+
 ## 2026-09-29 Docker failure diagnosis
 
 The artifact from run

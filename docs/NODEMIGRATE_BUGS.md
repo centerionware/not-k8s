@@ -42,6 +42,11 @@ the binding handler read `Content-Type` after consuming the request body. The
 handler now saves that header before body decoding. No migration retry has
 been launched.
 
+The corrected `nodeapiserver,nodestore` quick-check
+[36597286663](https://github.com/centerionware/not-k8s/actions/runs/36597286663)
+passed at SHA `1fb881ab441a24f214678ebfaab2317c75b972f1`. The migration-specific
+round-trip retry is now eligible; no regular build or full e2e gate ran.
+
 ## Findings from migration run 36582910964
 
 - **Component:** Docker five-node orchestration. At SHA
