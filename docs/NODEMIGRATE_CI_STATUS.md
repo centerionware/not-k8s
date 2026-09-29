@@ -2,6 +2,22 @@
 
 Last updated: 2026-09-29
 
+## 2026-09-29 migration rerun 36633722194
+
+Run [36633722194](https://github.com/centerionware/not-k8s/actions/runs/36633722194)
+tested SHA `c2e9a470919f84f11b05d6f21a09f00d4a380e86`. It is cancelled after
+the upstream Kubernetes lane stalled for roughly 57 minutes after destination
+ServiceAccount token refresh. K3s completed both directions but its returned
+API Service datapath failed later checks. The Docker five-node test reached
+`stage=nodestore` and then received HTTP 401 while fetching logs for its
+ReplicationController Pod. Evidence and unresolved causes are tracked in
+[NODEMIGRATE_BUGS.md](NODEMIGRATE_BUGS.md).
+
+The workflow now caps each migration execution step at 30 minutes, matching
+the observed 24–25 minute healthy single-node job duration including builds.
+The larger job limits remain for setup/build and failure artifact upload. No
+retry is queued until these failures are actionable.
+
 ## 2026-09-29 migration rerun 36627336634
 
 Run [36627336634](https://github.com/centerionware/not-k8s/actions/runs/36627336634)

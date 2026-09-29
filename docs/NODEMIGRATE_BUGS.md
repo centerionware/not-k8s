@@ -2,6 +2,47 @@
 
 Last updated: 2026-09-29
 
+## Findings from migration run 36633722194
+
+Run [36633722194](https://github.com/centerionware/not-k8s/actions/runs/36633722194)
+tested SHA `c2e9a470919f84f11b05d6f21a09f00d4a380e86` with branch-built
+components, Cilium KPR, and the five-node lane. The run was cancelled after the
+upstream Kubernetes lane made no visible progress for about 57 minutes after
+reissuing its migrated ServiceAccount token. The Docker artifact was retrieved
+to `/tmp/nodemigrate-36633722194-docker-artifact/`.
+
+- **Component: nodemigrate import completion.** `refresh_service_account_token_secrets`
+  logged that it refreshed the token, but the caller never logged that API
+  import completed. The captured log does not establish whether the importer
+  was still inside its async runtime, blocked during runtime teardown, or
+  stopped elsewhere. This is a confirmed no-progress hang, but its mechanism
+  remains unverified. Do not retry migration until importer boundary logging
+  and an explicit bounded completion path identify and address it.
+- **Component: Cilium Service datapath after K3s return.** The migration itself
+  completed in both directions, and the replacement Cilium agent became Ready.
+  After return, the K3s API Service at `10.43.0.1:443` did not serve requests;
+  metrics-server and other API clients logged timeouts/unauthenticated
+  requests. Agent Pod readiness did not prove the Service datapath. The
+  post-reset check needs to exercise API Service connectivity before migration
+  is called healthy. Exact underlying Cilium datapath cause remains unverified.
+- **Component: five-node test-stage credentials.** The Docker artifact shows
+  forward migration, cluster readiness, and workload readiness, then the
+  `stage=nodestore` ReplicationController check failed when `kubectl logs`
+  received HTTP 401 (`You must be logged in ... get pods`). The script was
+  using `/etc/nodebootstrap/admin.kubeconfig`; prior checks in the same stage
+  succeeded. Investigate credential source/rotation and API audit records
+  before changing the assertion or classifying this as workload failure.
+- The Docker lane's independent worker/CSI/containerd warnings are present in
+  the artifact, but the terminal assertion above is the first confirmed test
+  failure. Treat those warnings as hypotheses unless an earlier causal error
+  is identified.
+
+The migration execution steps are now capped at 30 minutes. Prior healthy
+single-node round-trip jobs took about 24–25 minutes including builds; the
+longer enclosing job limits remain available for setup, compilation, log
+capture, and artifact upload. No rerun has started while these failures remain
+unresolved.
+
 ## Findings from migration run 36627336634
 
 - **Component: nodemigrate Cilium return ordering.** K3s passed. Upstream
