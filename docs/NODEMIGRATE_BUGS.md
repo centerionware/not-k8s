@@ -35,9 +35,14 @@ Last updated: 2026-09-29
   The only parity difference was K3s rotating the generated
   `kube-system/<node>.node-password.k3s` Secret's `/data/hash`; the diagnostic
   comparator now permits only that exact generated credential mutation during
-  replacement. This disproves bare same-name Node replacement as the sole
-  cause, but leaves the post-migration Cilium routing failure unexplained. No
-  migration rerun until the migration-specific cause is fixed.
+  replacement. The corrected live probe
+  [36511406969](https://github.com/centerionware/not-k8s/actions/runs/36511406969)
+  passed all stages at SHA `11a401e50ddcc1d0f83d5ecc0970a9b4545bbb89`.
+  Cilium remained at 83/83 healthy controllers with an active API ClusterIP
+  BPF backend before restart, after restart, and after replacement. This
+  disproves bare restart/replacement as the cause, but not the cross-cluster
+  migration path. That failure remains unresolved; no migration retry until
+  its cause is fixed.
 - **Replacement diagnostic used a kubectl flag that is not supported.** The
   unchanged-UID restart and all fixture checks passed in run
   [36508298004](https://github.com/centerionware/not-k8s/actions/runs/36508298004),

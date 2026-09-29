@@ -33,6 +33,18 @@ This shows bare Node replacement does not reproduce the Cilium failure, but
 does not explain or fix the failure after cross-cluster migration. Do not
 retry nodemigrate until that migration-specific cause is fixed.
 
+The corrected probe [36511406969](https://github.com/centerionware/not-k8s/actions/runs/36511406969)
+passed at SHA `11a401e50ddcc1d0f83d5ecc0970a9b4545bbb89` in 12m54s. Source,
+unchanged-UID restart, and new-UID replacement stages all passed; every stage
+reported Cilium 83/83 controllers healthy and an active `10.43.0.1:443` BPF
+backend to the current API server. The exact node-password `/data/hash`
+rotation was reported and normalized source object and durable fixture checks
+passed. Probe job `109224133912` passed; migration `109224134895`, validation
+`109224134997`, and Docker preflight `109224135145` were skipped. Bare restart
+and Node replacement do not reproduce the failure; the post-migration Cilium
+routing failure remains without an established cause or fix. No nodemigrate
+migration rerun has started.
+
 ## Latest completed migration batch
 
 Run [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212)

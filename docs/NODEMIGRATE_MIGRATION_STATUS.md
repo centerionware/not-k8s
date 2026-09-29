@@ -17,6 +17,13 @@ this diagnostic alone. Bare Node replacement therefore does not reproduce
 the post-return Cilium routing failure. Its migration-specific cause remains
 unresolved, so no migration rerun is allowed yet.
 
+The corrected checker passed live in [36511406969](https://github.com/centerionware/not-k8s/actions/runs/36511406969)
+at SHA `11a401e50ddcc1d0f83d5ecc0970a9b4545bbb89`: source, K3s restart, and
+same-name Node replacement each passed fixture, storage, API-inventory, and
+normalized state checks, with an active Cilium API ClusterIP datapath. This
+still isolates only restart/replacement; the cross-cluster migration-specific
+cause needs a concrete fix before nodemigrate is rerun.
+
 Latest batch migration run
 [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)
 at SHA `1f6b5064936ca2001dea2527483848aebc7e14ad` passed all migration builds

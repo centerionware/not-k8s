@@ -349,8 +349,11 @@ instructions in `AGENTS.md` for nodemigrate work:
   BPF backend for the API ClusterIP. The only failure was a parity check on
   K3s's generated Node password Secret hash rotation; the checker now permits
   only that exact generated-field mutation during this diagnostic. Plain Node
-  replacement did not reproduce the post-migration Cilium failure. Do not
-  retry nodemigrate until its migration-specific cause is fixed.
+  replacement did not reproduce the post-migration Cilium failure. Corrected
+  run `36511406969` passed at SHA `11a401e50ddcc1d0f83d5ecc0970a9b4545bbb89`;
+  the source, restart, and replacement API ClusterIP BPF maps were active and
+  their workload/state assertions passed. Do not retry nodemigrate until its
+  migration-specific cause is fixed.
 - A release workflow run is required only when carrying out the separately
   authorized publication. The initial `v0.8.1` nodemigrate publication must
   use the matching regular `v0.8.1` version built from this branch's accepted

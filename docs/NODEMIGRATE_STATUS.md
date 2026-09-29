@@ -21,10 +21,15 @@ transfer still needs live fixture verification. The restart-only probe
 [36506647392](https://github.com/centerionware/not-k8s/actions/runs/36506647392)
 passed source-to-restarted-stage workload and API parity with unchanged Node
 identity, showing a plain K3s restart does not reproduce the Cilium failure.
-The next probe adds same-name Node deletion/re-registration and Cilium map
-capture. This is diagnostic only and will not run nodemigrate. The root cause
-is unresolved, so no migration retry is queued. No regular build gate or full
-e2e ran. See the [CI status](NODEMIGRATE_CI_STATUS.md) and
+The corrected probe [36511406969](https://github.com/centerionware/not-k8s/actions/runs/36511406969)
+also passed same-name Node deletion/re-registration. Cilium's API ClusterIP
+BPF backend stayed active, and API, workload, storage, and normalized state
+checks passed. The exact K3s-generated node-password hash rotation is allowed
+only in this diagnostic, with regression checks that reject other data
+changes. This result shows plain K3s restart/Node replacement does not
+reproduce the outage. It does not identify or fix the cross-cluster migration
+cause, so no migration retry is queued. No regular build gate or full e2e ran.
+See the [CI status](NODEMIGRATE_CI_STATUS.md) and
 [bug tracker](NODEMIGRATE_BUGS.md).
 
 Latest batch migration run
