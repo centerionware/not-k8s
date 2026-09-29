@@ -57,7 +57,10 @@ Last updated: 2026-09-29
   and workload, storage, API inventory, and Node replacement assertions
   passed. Agent Pod recreation alone does not reproduce the issue. The
   migration-specific Cilium cause remains unresolved and migration must not be
-  retried.
+  retried. The next diagnostic exercises the complete CRI sandbox stop/remove
+  sequence with Cilium last, then restarts K3s and repeats API ClusterIP and
+  fixture checks before Node replacement. Its local CRI-ordering stub passes;
+  live evidence is pending. It does not run nodemigrate.
 - **Replacement diagnostic used a kubectl flag that is not supported.** The
   unchanged-UID restart and all fixture checks passed in run
   [36508298004](https://github.com/centerionware/not-k8s/actions/runs/36508298004),

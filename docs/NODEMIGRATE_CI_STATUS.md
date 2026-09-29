@@ -81,6 +81,14 @@ Probe job `109237219508` passed; migration `109237220849`, validation
 recreation does not reproduce the cross-cluster routing outage. Its cause and
 fix remain unestablished; no migration retry is queued.
 
+The next non-migration diagnostic exercises the complete source cutover
+boundary: stop and remove every CRI pod sandbox with Cilium sandboxes last,
+restart K3s, verify that the Cilium container changed while Node UID stayed
+constant, then repeat workload, storage, API inventory, and Pod-to-API TCP
+checks before the same-name Node replacement phase. A focused local stub
+checks CRI ordering and removal. This probe does not run nodemigrate and
+cannot establish a migration fix by itself.
+
 ## Latest completed migration batch
 
 Run [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212)

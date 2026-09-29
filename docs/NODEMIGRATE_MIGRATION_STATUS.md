@@ -46,6 +46,13 @@ nodemigrate. Recreating the agent Pod alone does not reproduce the
 cross-cluster-only failure; cause and fix remain unverified, and migration
 must not be retried yet.
 
+Follow-up diagnosis is being expanded to mirror the source cutover's CRI
+handoff in one run: remove all source Pod sandboxes with Cilium last, restart
+K3s, verify a new Cilium container and unchanged Node identity, then repeat the
+fixture and API ClusterIP packet-flow checks before same-name Node replacement.
+The focused stub check passes; runtime evidence for this broader condition is
+pending. This remains a non-migration probe.
+
 Latest batch migration run
 [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)
 at SHA `1f6b5064936ca2001dea2527483848aebc7e14ad` passed all migration builds

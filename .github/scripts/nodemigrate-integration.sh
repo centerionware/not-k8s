@@ -585,6 +585,79 @@ restart_cilium_agent_pod() {
     return 1
 }
 
+source_sandbox_plan() {
+    jq -er '
+      if (.items | type) != "array" then
+        error("CRI pod sandbox response has no items array")
+      else
+        [.items[]?
+         | select((.id? | type) == "string" and (.id | length) > 0)
+         | [
+             .id,
+             (.state == "SANDBOX_READY"),
+             ((.metadata.name // "" | startswith("cilium"))
+              or (.labels["k8s-app"] // "" | IN("cilium", "cilium-envoy")))
+           ]]
+        | if length == 0 then error("CRI returned no pod sandboxes")
+          else .[] | @tsv end
+      end
+    ' | LC_ALL=C sort -t $'\t' -k3,3
+}
+
+stop_source_sandboxes_for_probe() {
+    local endpoint="${NODEMIGRATE_CRI_ENDPOINT:-unix:///run/k3s/containerd/containerd.sock}"
+    local pod_json plan id ready is_cilium stop_error ps_json running_ids verify_json
+    local -a sandbox_ids=() stop_failures=()
+    pod_json="$(crictl --runtime-endpoint "$endpoint" pods -o json)" || {
+        echo "could not list K3s CRI pod sandboxes for the cutover diagnostic" >&2
+        return 1
+    }
+    plan="$(source_sandbox_plan <<< "$pod_json")" || return 1
+    while IFS=$'\t' read -r id ready is_cilium; do
+        [[ -n "$id" ]] || continue
+        sandbox_ids+=("$id")
+        if [[ "$ready" == true ]]; then
+            if ! stop_error="$(crictl --runtime-endpoint "$endpoint" stopp "$id" 2>&1)"; then
+                stop_failures+=("$id: $stop_error")
+            fi
+        fi
+    done <<< "$plan"
+    echo "Stopped ready source CRI sandboxes; Cilium sandboxes were ordered last. total=${#sandbox_ids[@]}"
+
+    ps_json="$(crictl --runtime-endpoint "$endpoint" ps -a -o json)" || {
+        echo "could not check source CRI containers after sandbox stop" >&2
+        return 1
+    }
+    running_ids="$(jq -r '[.containers[]? | select(.state == "CONTAINER_RUNNING") | .podSandboxId // empty] | unique | .[]' <<< "$ps_json")"
+    for id in "${sandbox_ids[@]}"; do
+        if grep -Fxq "$id" <<< "$running_ids"; then
+            printf 'source sandbox %s still has a running container after stop\n' "$id" >&2
+            return 1
+        fi
+    done
+    for stop_error in "${stop_failures[@]}"; do
+        echo "WARN source sandbox stop failed but CRI confirms no container is running: $stop_error" >&2
+    done
+
+    for id in "${sandbox_ids[@]}"; do
+        if ! crictl --runtime-endpoint "$endpoint" rmp "$id"; then
+            printf 'could not remove stopped source CRI sandbox %s\n' "$id" >&2
+            return 1
+        fi
+    done
+    verify_json="$(crictl --runtime-endpoint "$endpoint" pods -o json)" || {
+        echo "could not verify source CRI pod sandbox removal" >&2
+        return 1
+    }
+    for id in "${sandbox_ids[@]}"; do
+        if jq -e --arg id "$id" 'any(.items[]?; .id == $id)' <<< "$verify_json" >/dev/null; then
+            printf 'source CRI sandbox %s remained after remove\n' "$id" >&2
+            return 1
+        fi
+    done
+    echo "PASS removed all ${#sandbox_ids[@]} source CRI pod sandboxes before K3s restart"
+}
+
 capture_cni_host_diagnostics() {
     local config file
     for config in /etc/containerd/config.toml \
@@ -3762,7 +3835,22 @@ main() {
         echo "Cilium datapath after Cilium agent Pod recreation"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
 
-        echo "Restarting the K3s service without running nodemigrate"
+        local cilium_container_before cilium_container_after cilium_pod_json
+        local node_uid_before_handoff node_uid_after_handoff
+        node_uid_before_handoff="$(KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get nodes \
+            -o json | jq -er 'if (.items | length) == 1 then .items[0].metadata.uid else empty end')"
+        cilium_container_before="$(KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get pods \
+            -n kube-system -l k8s-app=cilium -o json | jq -er '
+              if (.items | length) == 1 then
+                .items[0].status.containerStatuses[]?
+                | select(.name == "cilium-agent") | .containerID
+              else empty end
+            ')" || {
+            echo "could not identify the source Cilium agent container before sandbox handoff" >&2
+            return 1
+        }
+        echo "Recreating all source CRI pod sandboxes before restarting K3s; nodemigrate remains disabled"
+        stop_source_sandboxes_for_probe
         systemctl restart k3s
         local attempt
         for attempt in $(seq 1 90); do
@@ -3779,10 +3867,36 @@ main() {
         }
         KUBECONFIG="$SOURCE_KUBECONFIG" kubectl wait \
             --for=condition=Ready node --all --timeout=5m
-        verify_stage restarted "$SOURCE_KUBECONFIG"
-        assert_migratable_api_objects_retained source restarted
-        probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" restarted
-        echo "Cilium datapath after K3s restart with unchanged Node identity"
+        node_uid_after_handoff="$(KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get nodes \
+            -o json | jq -er 'if (.items | length) == 1 then .items[0].metadata.uid else empty end')"
+        [[ "$node_uid_after_handoff" == "$node_uid_before_handoff" ]] || {
+            echo "Node identity changed during sandbox handoff: before=$node_uid_before_handoff after=$node_uid_after_handoff" >&2
+            return 1
+        }
+        echo "PASS Node UID remained $node_uid_after_handoff across the sandbox handoff"
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl rollout status \
+            daemonset/cilium -n kube-system --timeout=5m
+        cilium_pod_json="$(KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get pods \
+            -n kube-system -l k8s-app=cilium -o json)"
+        cilium_container_after="$(jq -er '
+          if (.items | length) == 1 and any(.items[0].status.containerStatuses[]?;
+              .name == "cilium-agent" and .ready == true) then
+            .items[0].status.containerStatuses[]
+            | select(.name == "cilium-agent") | .containerID
+          else empty end
+        ' <<< "$cilium_pod_json")" || {
+            echo "Cilium agent did not become Ready after source sandbox recreation" >&2
+            return 1
+        }
+        [[ "$cilium_container_after" != "$cilium_container_before" ]] || {
+            echo "Cilium agent container identity did not change after CRI sandbox recreation" >&2
+            return 1
+        }
+        echo "PASS Cilium agent container changed from $cilium_container_before to $cilium_container_after after full sandbox recreation"
+        verify_stage sandbox-handoff-restarted "$SOURCE_KUBECONFIG"
+        assert_migratable_api_objects_retained source sandbox-handoff-restarted
+        probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" sandbox-handoff-restarted
+        echo "Cilium datapath after all source CRI sandboxes were recreated"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
 
         local node_name previous_node_uid replacement_node_json replacement_node_uid
@@ -3839,7 +3953,7 @@ main() {
         verify_stage replaced "$SOURCE_KUBECONFIG"
         assert_migratable_api_objects_retained source replaced "$node_name"
         probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" replaced
-        echo "PASS: K3s+Cilium Service and workload behavior survived restart and same-name Node replacement without nodemigrate"
+        echo "PASS: K3s+Cilium Service and workload behavior survived full source sandbox recreation and same-name Node replacement without nodemigrate"
         return 0
     fi
 

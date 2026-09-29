@@ -70,6 +70,46 @@ PY
 STUB
 chmod +x "$TEST_DIR/cmp"
 
+cat > "$TEST_DIR/crictl" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+    *"pods -o json"*)
+        if [[ -f "${NODEMIGRATE_CRI_REMOVED_MARKER:?}" ]]; then
+            printf '%s\n' '{"items":[]}'
+        else
+            printf '%s\n' '{"items":[{"id":"cilium","state":"SANDBOX_READY","metadata":{"name":"cilium-agent"}},{"id":"ordinary","state":"SANDBOX_READY","metadata":{"name":"application"}},{"id":"cilium-not-ready","state":"SANDBOX_NOTREADY","labels":{"k8s-app":"cilium-envoy"}}]}'
+        fi
+        ;;
+    *"ps -a -o json"*)
+        printf '%s\n' '{"containers":[]}'
+        ;;
+    *"stopp ordinary"*)
+        echo stopp-ordinary >> "${NODEMIGRATE_CRI_CALLS:?}"
+        ;;
+    *"stopp cilium"*)
+        echo stopp-cilium >> "${NODEMIGRATE_CRI_CALLS:?}"
+        ;;
+    *"stopp cilium-not-ready"*)
+        echo stopp-not-ready >> "${NODEMIGRATE_CRI_CALLS:?}"
+        ;;
+    *"rmp ordinary"*)
+        echo rmp-ordinary >> "${NODEMIGRATE_CRI_CALLS:?}"
+        ;;
+    *"rmp cilium-not-ready"*)
+        echo rmp-cilium-not-ready >> "${NODEMIGRATE_CRI_CALLS:?}"
+        touch "${NODEMIGRATE_CRI_REMOVED_MARKER:?}"
+        ;;
+    *"rmp cilium"*)
+        echo rmp-cilium >> "${NODEMIGRATE_CRI_CALLS:?}"
+        ;;
+    *)
+        echo "unexpected crictl invocation: $*" >&2
+        exit 2
+        ;;
+esac
+STUB
+chmod +x "$TEST_DIR/crictl"
+
 export NODEMIGRATE_INTEGRATION_LIBRARY=true
 export GITHUB_WORKSPACE="$ROOT"
 export PATH="$TEST_DIR:/usr/bin:/bin"
@@ -229,6 +269,53 @@ output="$(restart_cilium_agent_pod /tmp/test-kubeconfig 2>&1)" || {
 }
 grep -Fq 'Replacement Cilium agent Pod cilium-new UID=new is Ready' <<< "$output" || {
     echo "Cilium agent replacement was not reported: $output" >&2
+    exit 1
+}
+
+plan="$(source_sandbox_plan <<'JSON'
+{"items":[
+  {"id":"cilium-agent","state":"SANDBOX_READY","metadata":{"name":"cilium-agent"}},
+  {"id":"workload","state":"SANDBOX_READY","metadata":{"name":"app"}},
+  {"id":"cilium-not-ready","state":"SANDBOX_NOTREADY","labels":{"k8s-app":"cilium-envoy"}},
+  {"state":"SANDBOX_READY","metadata":{"name":"ignored"}}
+]}
+JSON
+)" || {
+    echo "source CRI sandbox planner rejected its valid fixture" >&2
+    exit 1
+}
+expected_plan=$'workload\ttrue\tfalse\ncilium-agent\ttrue\ttrue\ncilium-not-ready\tfalse\ttrue'
+[[ "$plan" == "$expected_plan" ]] || {
+    printf 'source CRI sandbox planner returned an unexpected order:\n%s\n' "$plan" >&2
+    exit 1
+}
+if source_sandbox_plan <<'JSON' >"$TEST_DIR/empty-sandbox-plan.out" 2>&1
+{"items":[]}
+JSON
+then
+    echo "source CRI sandbox planner accepted an empty sandbox inventory" >&2
+    exit 1
+fi
+grep -Fq 'CRI returned no pod sandboxes' "$TEST_DIR/empty-sandbox-plan.out" || {
+    echo "empty source CRI sandbox inventory did not fail with a clear message" >&2
+    cat "$TEST_DIR/empty-sandbox-plan.out" >&2
+    exit 1
+}
+
+export NODEMIGRATE_CRI_CALLS="$TEST_DIR/crictl-calls.log"
+export NODEMIGRATE_CRI_REMOVED_MARKER="$TEST_DIR/crictl-sandboxes-removed"
+output="$(stop_source_sandboxes_for_probe 2>&1)" || {
+    echo "full source sandbox handoff fixture failed: $output" >&2
+    exit 1
+}
+grep -Fq 'PASS removed all 3 source CRI pod sandboxes' <<< "$output" || {
+    echo "full source sandbox removal was not reported: $output" >&2
+    exit 1
+}
+expected_calls=$'stopp-ordinary\nstopp-cilium\nrmp-ordinary\nrmp-cilium\nrmp-cilium-not-ready'
+actual_calls="$(cat "$NODEMIGRATE_CRI_CALLS")"
+[[ "$actual_calls" == "$expected_calls" ]] || {
+    printf 'source sandbox handoff used an unexpected CRI order:\n%s\n' "$actual_calls" >&2
     exit 1
 }
 

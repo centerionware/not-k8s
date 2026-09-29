@@ -45,6 +45,10 @@ normalized state, and Node replacement checks passed. Migration, validation,
 and Docker-preflight jobs were skipped. Agent Pod recreation alone does not
 reproduce the cross-cluster outage. Its cause and fix remain unestablished, so
 no migration retry is queued.
+The follow-up probe is being expanded to stop and remove every K3s CRI pod
+sandbox in cutover order, restart K3s, and check a new Cilium container,
+unchanged Node UID, workload/storage/API parity, and Pod-to-API TCP before the
+same-name Node replacement. This remains a non-migration diagnostic.
 See the [CI status](NODEMIGRATE_CI_STATUS.md) and
 [bug tracker](NODEMIGRATE_BUGS.md).
 
