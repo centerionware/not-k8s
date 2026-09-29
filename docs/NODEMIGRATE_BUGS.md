@@ -40,8 +40,16 @@ Last updated: 2026-09-29
   the exact failure has not yet been re-exercised.
 - The run is complete and failed in all three lanes. The K3s PKI and forward
   rollback fixes passed focused CI. The upstream return/rollback and nodelet
-  cgroup corrections remain unvalidated. Finish the fixes and verify them
-  before another migration attempt.
+  cgroup corrections remain unvalidated pending the current migration run.
+
+## Validation in progress
+
+Migration run [36556999686](https://github.com/centerionware/not-k8s/actions/runs/36556999686)
+is running at exact SHA `457a7f6305ea6ebc2317a2e100d3c3b0a23b7fd2` with
+branch-built runtime, Cilium KPR, and the five-node migration enabled. It
+covers K3s, upstream Kubernetes, and the three-control-plane/two-worker path.
+No lane result is known yet. Capture the complete logs after the run finishes
+and update this record with every new finding before retrying.
 
 ## Findings from migration run 36546160178
 

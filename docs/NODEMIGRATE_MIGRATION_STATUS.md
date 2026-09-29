@@ -2,7 +2,16 @@
 
 Last updated: 2026-09-29
 
-## Current run: 36552342215
+## Current run: 36556999686
+
+Dedicated migration run
+[36556999686](https://github.com/centerionware/not-k8s/actions/runs/36556999686)
+is in progress at `457a7f6305ea6ebc2317a2e100d3c3b0a23b7fd2` with branch
+runtime, Cilium KPR, and five-node migration enabled. It includes the K3s and
+upstream Kubernetes round trips and the three-control-plane/two-worker
+Kubernetes path. No result is verified until the complete workflow finishes.
+
+## Previous completed run: 36552342215
 
 At SHA `a91fc102b553248dd697d17f97896f6b0f84680f`, all three lanes in
 [run 36552342215](https://github.com/centerionware/not-k8s/actions/runs/36552342215)

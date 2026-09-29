@@ -27,6 +27,16 @@ and nodelet cgroup corrections are not yet validated. Run
 completed with failures in all three lanes. No retry until every finding is
 fixed and focused component checks pass.
 
+## 2026-09-29 migration run 36556999686
+
+In progress at exact SHA `457a7f6305ea6ebc2317a2e100d3c3b0a23b7fd2`, with
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+Jobs: Docker preflight `109368448986`, K3s `109368449405`, and upstream
+Kubernetes `109368449671`. Run link:
+[36556999686](https://github.com/centerionware/not-k8s/actions/runs/36556999686).
+Wait for the entire workflow before downloading logs or treating a lane as
+complete; record each lane's result and any newly encountered failure here.
+
 ## 2026-09-29 migration run 36546160178
 
 At exact SHA `0bc38d03fe43c53864a0d108716818513fc2b200`, the dedicated migration
