@@ -12,7 +12,12 @@ The PR workflow validation passed in run
 A preflight-only dispatch was attempted with `docker_only=true`,
 `cilium_kpr=true`, and `five_node_migration=false`, but GitHub REST returned
 HTTP 403 rate limiting before creating a run. This provides no new Docker
-diagnostic and does not change the unknown cause recorded below.
+diagnostic and does not change the unknown cause recorded below. A further
+artifact download attempt at 15:17:50 UTC also returned HTTP 403; GraphQL
+still identifies the authenticated account as `centerionware` and reports
+111 of 5,000 GraphQL calls used, with the GraphQL reset scheduled for
+15:23:03 UTC. GraphQL remains available, but this does not provide the
+artifact bytes needed to diagnose the failed step.
 
 ## 2026-09-29 migration run 36582910964
 
