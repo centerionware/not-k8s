@@ -272,8 +272,12 @@ lifecycle classification.
   subresources such as `/scale`, `/status`, `pods/exec`, `pods/attach`,
   `pods/portforward`, `pods/ephemeralcontainers`, `pods/binding`, and
   `pods/eviction`: verify they remain usable or document why they are
-  regenerated, transient, or outside the migration contract. Finally include
-  every other listable resource reported by source API discovery. This applies
+  regenerated, transient, or outside the migration contract. Preserve
+  ephemeral-container specifications on standalone Pods by restoring them via
+  the `ephemeralcontainers` subresource after Pod creation; the debug process
+  is recreated on the destination because process memory cannot migrate.
+  Also include every other listable resource reported by source API discovery.
+  This applies
   across core, apps, batch, networking, storage, autoscaling, policy,
   admission, node, scheduling, certificates, authentication, authorization,
   flow control, resource allocation, and installed custom API groups.

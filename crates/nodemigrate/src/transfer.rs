@@ -2615,6 +2615,8 @@ async fn apply_object(
     if let Some(object) = apply_value.as_object_mut() {
         object.remove("_nodemigrateSourceWasRunning");
     }
+    let ephemeral_containers = take_pod_ephemeral_containers(&mut apply_value)
+        .context("preparing Pod ephemeral containers for migration")?;
     if resource.api_version != type_meta {
         let name = apply_value
             .pointer("/metadata/name")
@@ -2792,7 +2794,14 @@ async fn apply_object(
             api.create(&PostParams::default(), &object).await
         };
         match result {
-            Ok(applied) => return Ok(applied),
+            Ok(applied) => {
+                if let Some(ephemeral_containers) = &ephemeral_containers {
+                    return restore_pod_ephemeral_containers(&api, name, ephemeral_containers)
+                        .await
+                        .with_context(|| format!("restoring ephemeral containers on Pod {name}"));
+                }
+                return Ok(applied);
+            }
             Err(kube::Error::Api(response))
                 if response.code == 409 && attempt + 1 < WRITE_ATTEMPTS =>
             {
@@ -2807,6 +2816,42 @@ async fn apply_object(
         }
     }
     bail!("destination kept changing {type_meta}/{kind} {name} during migration")
+}
+
+/// Ephemeral containers are valid only through the Pod's dedicated
+/// subresource. Keep their specs in the protected export, omit them from
+/// ordinary Pod creates/replacements, then reapply them after the Pod itself
+/// exists.
+fn take_pod_ephemeral_containers(object: &mut Value) -> Result<Option<Value>> {
+    if object.get("kind").and_then(Value::as_str) != Some("Pod") {
+        return Ok(None);
+    }
+    let Some(spec) = object.pointer_mut("/spec").and_then(Value::as_object_mut) else {
+        return Ok(None);
+    };
+    let Some(ephemeral_containers) = spec.remove("ephemeralContainers") else {
+        return Ok(None);
+    };
+    let ephemeral_containers = ephemeral_containers
+        .as_array()
+        .context("Pod spec.ephemeralContainers must be an array")?;
+    if ephemeral_containers.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Value::Array(ephemeral_containers.clone())))
+}
+
+async fn restore_pod_ephemeral_containers(
+    api: &Api<DynamicObject>,
+    name: &str,
+    ephemeral_containers: &Value,
+) -> Result<DynamicObject> {
+    let patch = serde_json::json!({
+        "spec": {"ephemeralContainers": ephemeral_containers}
+    });
+    api.patch_ephemeral_containers(name, &PatchParams::default(), &Patch::Strategic(&patch))
+        .await
+        .context("patching the Pod ephemeralcontainers subresource")
 }
 
 fn crd_schema_matches(existing: &DynamicObject, desired: &DynamicObject) -> bool {
@@ -3439,10 +3484,10 @@ mod tests {
         persistent_host_paths, pod_status_is_terminal_or_exited, prepare_initial_import_object,
         preserve_discovered_type_meta, remapped_node_owner_references, restore_cni_path_backups,
         retryable_import_error, same_group_kind, sanitize, service_account_token_secret_patch,
-        service_account_token_secret_value, skip_kind_reason, skip_object,
-        snapshot_k3s_cni_paths, summarize_import_failures,
-        write_export_manifest, ApiResource, DynamicObject, Export, ExportedObject, KubeApi,
-        NodeSchedulingState, SkipReason,
+        service_account_token_secret_value, skip_kind_reason, skip_object, snapshot_k3s_cni_paths,
+        summarize_import_failures, take_pod_ephemeral_containers, write_export_manifest,
+        ApiResource, DynamicObject, Export, ExportedObject, KubeApi, NodeSchedulingState,
+        SkipReason,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
@@ -3575,6 +3620,63 @@ mod tests {
         let normalized = prepare_initial_import_object(&source, &HashMap::new());
         assert_eq!(normalized.pointer("/spec/drivers"), Some(&serde_json::json!([])));
         assert!(source.get("spec").is_none());
+    }
+
+    #[test]
+    fn pod_ephemeral_containers_are_removed_from_regular_write_and_kept_for_subresource() {
+        let mut object = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": "debugged"},
+            "spec": {
+                "containers": [{"name": "app", "image": "busybox"}],
+                "ephemeralContainers": [{
+                    "name": "debugger",
+                    "image": "busybox",
+                    "command": ["sh", "-c", "sleep 600"]
+                }]
+            }
+        });
+        let ephemeral_containers = take_pod_ephemeral_containers(&mut object).unwrap();
+
+        assert_eq!(
+            ephemeral_containers,
+            Some(serde_json::json!([{
+                "name": "debugger",
+                "image": "busybox",
+                "command": ["sh", "-c", "sleep 600"]
+            }]))
+        );
+        assert_eq!(object.pointer("/spec/ephemeralContainers"), None);
+        assert_eq!(
+            object.pointer("/spec/containers/0/name"),
+            Some(&serde_json::json!("app"))
+        );
+    }
+
+    #[test]
+    fn ephemeral_container_extraction_does_not_change_non_pod_objects() {
+        let mut object = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "spec": {"template": {"spec": {"ephemeralContainers": []}}}
+        });
+        let original = object.clone();
+
+        assert_eq!(take_pod_ephemeral_containers(&mut object).unwrap(), None);
+        assert_eq!(object, original);
+    }
+
+    #[test]
+    fn pod_with_empty_ephemeral_container_list_needs_no_subresource_write() {
+        let mut object = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "spec": {"ephemeralContainers": []}
+        });
+
+        assert_eq!(take_pod_ephemeral_containers(&mut object).unwrap(), None);
+        assert_eq!(object.pointer("/spec/ephemeralContainers"), None);
     }
 
     #[test]

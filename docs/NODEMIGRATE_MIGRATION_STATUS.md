@@ -29,6 +29,12 @@ Shell syntax and focused JSON filter checks pass; these new migration fixture
 assertions have not run against a cluster yet, and the known Cilium routing
 failure still blocks a migration rerun.
 
+The importer now preserves standalone Pod ephemeral-container specifications
+by applying them after Pod creation through `pods/ephemeralcontainers`; the
+stage fixture creates a short-lived debug container, verifies its runtime
+status and logs, and removes its probe Pod before parity capture. Unit and CI
+validation are pending, and no cluster migration has exercised the import.
+
 The goal allows broader, conflict-driven retirement of old control-plane
 services or files when an in-place destination needs their ports or paths.
 Current code only removes identified kubeadm static-pod sandboxes and targeted

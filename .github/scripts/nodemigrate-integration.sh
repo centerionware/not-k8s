@@ -2542,6 +2542,79 @@ verify_custom_resource_status_subresource() {
     echo "PASS CRD /status update/readback at stage=$stage"
 }
 
+verify_ephemeral_container_subresource() {
+    local stage="$1"
+    local pod_name="migration-ephemeral-probe-${stage}"
+    local container_name="migration-debug-${stage}"
+    local marker="migration-ephemeral-${stage}"
+    local patch pod_json logs deadline running=false
+    kubectl apply -f - <<YAML || return 1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $pod_name
+  namespace: migration-apps
+  labels:
+    app: migration-ephemeral-probe
+spec:
+  restartPolicy: Never
+  containers:
+  - name: probe
+    image: busybox:1.36.1
+    command: ["sh", "-c", "sleep 600"]
+    resources:
+      requests:
+        cpu: 1m
+        memory: 1Mi
+YAML
+    if ! kubectl wait -n migration-apps --for=condition=Ready "pod/$pod_name" --timeout=5m; then
+        echo "ephemeral-container probe Pod did not become Ready at stage $stage" >&2
+        kubectl delete pod -n migration-apps "$pod_name" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+        return 1
+    fi
+    patch="$(jq -cn --arg name "$container_name" --arg marker "$marker" '
+      {spec:{ephemeralContainers:[{
+        name:$name,
+        image:"busybox:1.36.1",
+        command:["sh","-c",("echo " + $marker + "; sleep 600")]
+      }]}}
+    ')"
+    if ! kubectl patch pod "$pod_name" -n migration-apps \
+        --subresource=ephemeralcontainers --type=merge -p "$patch" >/dev/null; then
+        echo "pods/ephemeralcontainers update failed at stage $stage" >&2
+        kubectl delete pod -n migration-apps "$pod_name" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+        return 1
+    fi
+    deadline=$((SECONDS + 120))
+    while (( SECONDS < deadline )); do
+        pod_json="$(kubectl get pod "$pod_name" -n migration-apps -o json)" || break
+        if jq -e --arg container "$container_name" '
+          any(.spec.ephemeralContainers[]?; .name == $container) and
+          any(.status.ephemeralContainerStatuses[]?;
+            .name == $container and (.state.running | type == "object"))
+        ' <<<"$pod_json" >/dev/null; then
+            running=true
+            break
+        fi
+        sleep 2
+    done
+    logs=""
+    if [[ "$running" == true ]]; then
+        logs="$(kubectl logs "$pod_name" -n migration-apps -c "$container_name" 2>&1)" || true
+    fi
+    kubectl delete pod -n migration-apps "$pod_name" --wait=true >/dev/null || {
+        echo "ephemeral-container probe Pod cleanup failed at stage $stage" >&2
+        return 1
+    }
+    [[ "$running" == true && "$logs" == *"$marker"* ]] || {
+        echo "ephemeral container did not run and produce its marker at stage $stage" >&2
+        printf '%s\n' "$pod_json" | jq '{spec: .spec.ephemeralContainers, status: .status.ephemeralContainerStatuses}' >&2 || true
+        printf '%s\n' "$logs" >&2
+        return 1
+    }
+    echo "PASS pods/ephemeralcontainers execution and log readback at stage=$stage"
+}
+
 verify_stage() {
     local stage="$1"
     local stage_dir="$CHECKPOINT_DIR/$stage"
@@ -3050,6 +3123,7 @@ YAML
     verify_legacy_service_account_token "$stage"
     verify_authentication_and_authorization_reviews "$stage"
     verify_custom_resource_status_subresource "$stage"
+    verify_ephemeral_container_subresource "$stage"
     kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-static-pvc --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-csi-pvc --timeout=5m

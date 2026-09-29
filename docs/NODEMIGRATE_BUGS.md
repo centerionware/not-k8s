@@ -2,6 +2,20 @@
 
 Last updated: 2026-09-29
 
+## Standalone Pod ephemeral-container import
+
+- **Component:** `nodemigrate` API transfer and integration fixture.
+  Import previously passed `spec.ephemeralContainers` through ordinary Pod
+  create/update calls. Kubernetes accepts those entries only on the Pod's
+  `ephemeralcontainers` subresource, so a standalone source Pod with a debug
+  container could abort the entire object import. The importer now strips the
+  field from normal writes, then restores the source list with a strategic
+  merge patch after the Pod exists. Strategic merge keys by container name,
+  making a retried import append the same debug entries without duplication.
+  The migration fixture now exercises adding and running an ephemeral
+  container at every stage. Unit and PR checks are pending; no live round trip
+  has verified this path.
+
 ## Current source-cutover correction (focused quick-check passed)
 
 - **Forward cutover bulk-removed ordinary CRI sandboxes before migration.**
