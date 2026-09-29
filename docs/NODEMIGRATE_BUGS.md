@@ -12,11 +12,13 @@ Last updated: 2026-09-29
   now receives the same QoS parent. A focused regression covers the repeated
   config; scoped CI and migration verification are pending.
 - **Component:** `nodemigrate` Cilium recovery. On K3s return, the replacement
-  agent's `clean-cilium-state` init exited 1. The completed artifact has no
-  logs for that replacement init, so its cause is not confirmed. Before
-  rollback, nodemigrate now records termination reason/message and attempts to
-  capture the last 80 init log lines; this is diagnostic work, not a runtime
-  fix for the exit.
+  agent's `clean-cilium-state` init exited 1. K3s logged that init in
+  `CrashLoopBackOff` and reported a container-removal race; nodemigrate
+  returned on the first failed attempt before kubelet's retry could run. The
+  utility now lets kubelet retry within its existing bounded readiness wait,
+  captures each failed attempt's termination details and last 80 log lines,
+  and reports the last failure if recovery does not complete. The underlying
+  reason for the initial exit remains unverified.
 - **Component:** `nodemigrate` Cilium readiness / API restore ordering. The
   upstream return reset reported success, but a later cluster snapshot found
   the replacement Cilium agent and Envoy unready, the Node without Cilium

@@ -967,6 +967,7 @@ impl KubeApi {
                 let mut cleanup_init_exit_code = None;
                 let mut cleanup_flag_restored = !cleanup_flag_changed;
                 let mut ready_since = None;
+                let mut last_failed_init_restart_count = None;
                 let mut cleanup_init_failure_details = None;
                 loop {
                     let current_pods = pods
@@ -1001,17 +1002,19 @@ impl KubeApi {
                                 .as_ref()
                                 .and_then(|state| state.terminated.as_ref())
                             {
-                                cleanup_init_exit_code = Some(terminated.exit_code);
-                                if terminated.exit_code != 0
-                                    && cleanup_init_failure_details.is_none()
+                                if terminated.exit_code == 0 {
+                                    cleanup_init_exit_code = Some(0);
+                                } else if last_failed_init_restart_count
+                                    != Some(init_state.restart_count)
                                 {
+                                    last_failed_init_restart_count =
+                                        Some(init_state.restart_count);
                                     let params = LogParams {
                                         container: Some("clean-cilium-state".to_owned()),
-                                        previous: init_state.restart_count > 0,
                                         tail_lines: Some(80),
                                         ..Default::default()
                                     };
-                                    let init_logs = tokio::time::timeout(
+                                    let init_logs = match tokio::time::timeout(
                                         std::time::Duration::from_secs(10),
                                         pods.logs(
                                             current.metadata.name.as_deref().unwrap_or(&name),
@@ -1019,13 +1022,16 @@ impl KubeApi {
                                         ),
                                     )
                                     .await
-                                    .map_err(|_| anyhow::anyhow!("reading init logs timed out"))
-                                    .and_then(|result| result)
-                                    .unwrap_or_else(|error| {
-                                        format!("unable to read init logs: {error:#}")
-                                    });
+                                    {
+                                        Ok(Ok(logs)) => logs,
+                                        Ok(Err(error)) => {
+                                            format!("unable to read init logs: {error:#}")
+                                        }
+                                        Err(_) => "reading init logs timed out".to_owned(),
+                                    };
                                     cleanup_init_failure_details = Some(format!(
-                                        "reason={}, message={:?}, logs={:?}",
+                                        "attempt={}, reason={}, message={:?}, logs={:?}",
+                                        init_state.restart_count + 1,
                                         terminated.reason.as_deref().unwrap_or("<unknown>"),
                                         terminated.message,
                                         init_logs.trim()
@@ -1042,13 +1048,7 @@ impl KubeApi {
                                 cleanup_flag_changed = false;
                             }
                         }
-                        if let Some(exit_code) = cleanup_init_exit_code {
-                            ensure!(
-                                exit_code == 0,
-                                "Cilium clean-cilium-state init failed for replacement Pod {} with exit code {exit_code}; {}",
-                                current.metadata.name.as_deref().unwrap_or("<unnamed>"),
-                                cleanup_init_failure_details.as_deref().unwrap_or("no init diagnostics available")
-                            );
+                        if cleanup_init_exit_code == Some(0) {
                             let ready = current.status.as_ref().is_some_and(|status| {
                                 status.conditions.as_ref().is_some_and(|conditions| {
                                     conditions.iter().any(|condition| {
@@ -1078,7 +1078,8 @@ impl KubeApi {
                 }
                 if tokio::time::Instant::now() >= deadline {
                     bail!(
-                        "Cilium clean-cilium-state did not complete and the replacement agent did not become Ready on node {node_name}"
+                        "Cilium clean-cilium-state did not complete and the replacement agent did not remain Ready on node {node_name}; last failed init: {}",
+                        cleanup_init_failure_details.as_deref().unwrap_or("no failed init attempt was reported")
                     );
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;

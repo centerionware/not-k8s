@@ -42,10 +42,13 @@ and failed during forward migration on cp-1. Full lane logs were saved once in
 `docker-preflight.log`).
 
 - K3s return restored the API, then its replacement Cilium agent's
-  `clean-cilium-state` init exited 1. The lane had no init-container log for
-  that replacement Pod; the old stage Pod's successful init does not explain
-  this exit. The utility now captures the failed init's bounded log tail and
-  termination details before rollback. Root cause remains unverified.
+  `clean-cilium-state` init exited 1. K3s logged the init in `CrashLoopBackOff`
+  and reported a container-removal race; nodemigrate rolled back immediately
+  on the first failed attempt instead of letting kubelet retry within its
+  existing five-minute readiness window. Nodemigrate now waits through
+  kubelet-managed retries, records bounded logs and termination details for
+  each failed attempt, and rolls back with the last failure if Cilium never
+  recovers. The exact reason for the initial exit remains unverified.
 - Upstream return's Cilium reset printed success, but a later snapshot showed
   the replacement agent and Envoy unready, no Cilium network on the Node, and
   no ready cert-manager webhook endpoints. CoreDNS logs reported invalid or
@@ -61,9 +64,16 @@ and failed during forward migration on cp-1. Full lane logs were saved once in
   parent in both requests. The five-node cgroup fix has not yet been exercised.
 
 The failed-run findings and their verification state are tracked in
-[NODEMIGRATE_BUGS.md](NODEMIGRATE_BUGS.md). Do not dispatch another migration
-until the Cilium init failure is explained and the scoped component check for
-the consolidated fixes passes.
+[NODEMIGRATE_BUGS.md](NODEMIGRATE_BUGS.md). The consolidated fixes need a
+scoped component check before another migration dispatch.
+
+Quick-check [36571547524](https://github.com/centerionware/not-k8s/actions/runs/36571547524)
+at SHA `53486bcac0c45693bccfcef63668619de0cc76a1` failed to compile
+`nodemigrate`: the bounded init-log timeout combined `anyhow::Error` and
+`kube::Error` in one `Result::and_then`. Both nodelet test commands passed.
+The log handling now matches timeout, API failure, and success separately.
+This correction and the subsequent kubelet-retry change still need the scoped
+quick-check.
 
 ## 2026-09-29 migration run 36546160178
 
