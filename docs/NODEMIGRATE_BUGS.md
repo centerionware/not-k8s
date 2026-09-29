@@ -29,6 +29,10 @@ Last updated: 2026-09-29
   The new assertion incorrectly reordered Envoy and operator IDs even though
   the implementation preserves CRI order among non-agent sandboxes. The test
   now expects Envoy, operator, then agent; migration has not been retried.
+  Corrected nodemigrate-only quick-check
+  [36582679193](https://github.com/centerionware/not-k8s/actions/runs/36582679193)
+  passed all 115 tests at SHA
+  `603d8f1d31ee47d5625c677e1459691bb1e3ec26`.
 
 ## Findings from migration run 36573504554
 

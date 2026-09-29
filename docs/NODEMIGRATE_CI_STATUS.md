@@ -34,6 +34,12 @@ operator before Envoy although the implementation preserves their CRI listing
 order and only moves the agent last. The expectation is corrected; rerun the
 focused quick-check before migration.
 
+Corrected nodemigrate-only quick-check
+[36582679193](https://github.com/centerionware/not-k8s/actions/runs/36582679193)
+passed all 115 tests at SHA `603d8f1d31ee47d5625c677e1459691bb1e3ec26`.
+The CRI timeout and Cilium cleanup ordering are ready for migration-specific
+runtime verification.
+
 ## 2026-09-29 migration run 36573504554
 
 Completed with failure at exact tested SHA
