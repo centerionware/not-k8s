@@ -2,6 +2,25 @@
 
 Last updated: 2026-09-29
 
+## Findings from migration run 36552342215
+
+- **Component:** `nodebootstrap` migration PKI. On SHA
+  `a91fc102b553248dd697d17f97896f6b0f84680f`, the K3s lane reached source
+  shutdown and failed because K3s's default serving CA key is SEC1/P-256 PEM,
+  which the new migration signer passed directly to rcgen's PKCS#8 parser.
+  The migration signer now applies the same SEC1-to-PKCS#8 conversion already
+  used by `nodecontroller`'s CSR signer.
+- **Component:** `nodemigrate` rollback. After that bootstrap failure, rollback
+  tried to list partial destination Cilium pods using the source K3s CRI socket,
+  which was correctly stopped as part of cutover. Rollback now inspects the
+  destination's `/run/containerd/containerd.sock` only when its containerd
+  service and socket are present, then stops partial destination services and
+  restores the source. The observed source restore was blocked by this cleanup
+  error; the change has not yet been validated in CI.
+- The run's upstream Kubernetes lane and five-node kubeadm/Cilium lane are
+  still running. Do not retry migration until those lanes complete and every
+  newly observed failure has been fixed together.
+
 ## Findings from migration run 36546160178
 
 - **Component:** Migration integration fixture. At SHA

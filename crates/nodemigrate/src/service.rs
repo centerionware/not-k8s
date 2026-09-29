@@ -115,6 +115,18 @@ fn runtime_service_name(endpoint: Option<&str>) -> Option<String> {
 }
 
 fn capture_source_cilium_identity(installation: &Installation) -> Result<SourceCiliumIdentity> {
+    let endpoint = std::env::var("NODEMIGRATE_CRI_ENDPOINT")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| installation.runtime_endpoint.clone())
+        .unwrap_or_else(|| "unix:///run/containerd/containerd.sock".to_string());
+    capture_cilium_identity_at(installation, &endpoint)
+}
+
+fn capture_cilium_identity_at(
+    installation: &Installation,
+    endpoint: &str,
+) -> Result<SourceCiliumIdentity> {
     let is_cilium = installation
         .cluster
         .as_ref()
@@ -123,14 +135,9 @@ fn capture_source_cilium_identity(installation: &Installation) -> Result<SourceC
     if !is_cilium {
         return Ok(SourceCiliumIdentity::default());
     }
-    let endpoint = std::env::var("NODEMIGRATE_CRI_ENDPOINT")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .or_else(|| installation.runtime_endpoint.clone())
-        .unwrap_or_else(|| "unix:///run/containerd/containerd.sock".to_string());
     let pods = checked_output(
         "crictl",
-        &["--runtime-endpoint", &endpoint, "pods", "-o", "json"],
+        &["--runtime-endpoint", endpoint, "pods", "-o", "json"],
         "listing Cilium source pod identities",
     )?;
     let pods: serde_json::Value =
@@ -138,7 +145,7 @@ fn capture_source_cilium_identity(installation: &Installation) -> Result<SourceC
     let (sandbox_ids, pod_uids) = cilium_source_sandbox_ids(&pods);
     let containers = checked_output(
         "crictl",
-        &["--runtime-endpoint", &endpoint, "ps", "-a", "-o", "json"],
+        &["--runtime-endpoint", endpoint, "ps", "-a", "-o", "json"],
         "listing Cilium source container identities",
     )?;
     let containers: serde_json::Value = serde_json::from_slice(&containers)
@@ -983,8 +990,13 @@ pub fn stop_nodestore_for_rollback(installation: &Installation) -> Result<()> {
     let manager = installation
         .service_manager
         .context("service manager is unknown; cannot stop the partial nodestore stack")?;
-    let cilium_identity = capture_source_cilium_identity(installation)
-        .context("capturing partial nodestore Cilium identities for rollback")?;
+    let target_cri = std::path::Path::new("/run/containerd/containerd.sock");
+    let cilium_identity = if service_active(manager, "containerd") && target_cri.exists() {
+        capture_cilium_identity_at(installation, "unix:///run/containerd/containerd.sock")
+            .context("capturing partial nodestore Cilium identities for rollback")?
+    } else {
+        SourceCiliumIdentity::default()
+    };
     stop_nodestore_stack(manager, false)?;
     stop_nodestore_runtime_for_rollback(installation, manager, &cilium_identity)?;
     Ok(())

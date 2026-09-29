@@ -2,6 +2,16 @@
 
 Last updated: 2026-09-29
 
+## Current run: 36552342215
+
+At SHA `a91fc102b553248dd697d17f97896f6b0f84680f`, K3s reached source
+shutdown but failed to parse its SEC1/P-256 serving CA key. Its rollback then
+queried the stopped source CRI socket while cleaning up the partial destination.
+Local fixes now convert SEC1 CA keys using the existing CSR-signer path and
+inspect the destination containerd socket for rollback cleanup. The upstream
+and five-node lanes remain in progress. Do not retry until this run concludes
+and all newly encountered failures are fixed.
+
 ## Latest migration result: 36546160178
 
 At `0bc38d03fe43c53864a0d108716818513fc2b200`, both single-node lanes

@@ -2,6 +2,20 @@
 
 Last updated: 2026-09-29
 
+## 2026-09-29 migration run 36552342215
+
+At SHA `a91fc102b553248dd697d17f97896f6b0f84680f`, the K3s lane failed after
+source shutdown because K3s stores its default serving CA key as SEC1/P-256
+PEM, which the migration PKI path had not converted. The lane then exposed a
+rollback cleanup error: it queried the stopped K3s CRI socket for partial
+destination Cilium identities. The branch now uses the CSR signer's established
+SEC1-to-PKCS#8 conversion and queries the destination containerd socket during
+rollback only when available. These fixes are local and pending focused CI.
+The upstream Kubernetes and five-node kubeadm/Cilium jobs in run
+[36552342215](https://github.com/centerionware/not-k8s/actions/runs/36552342215)
+are still running; do not launch another migration run until they finish and
+all new failures are addressed.
+
 ## 2026-09-29 migration run 36546160178
 
 At exact SHA `0bc38d03fe43c53864a0d108716818513fc2b200`, the dedicated migration

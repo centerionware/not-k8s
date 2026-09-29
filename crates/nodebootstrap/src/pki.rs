@@ -531,6 +531,17 @@ fn generate_with_migration_ca(
 
 fn migration_ca_key_pair(key_pem: &str) -> Result<KeyPair> {
     let parsed = pem::parse(key_pem).context("decoding source CA key PEM")?;
+    if parsed.tag() == "EC PRIVATE KEY" {
+        // K3s stores its default P-256 CA key in SEC1 form. Match the
+        // conversion used by nodecontroller's CSR signer before passing it
+        // to rcgen's ring-backed PKCS#8 parser.
+        let secret = p256::SecretKey::from_sec1_pem(key_pem)
+            .context("parsing source CA key as SEC1/P-256 PEM")?;
+        let pkcs8_pem = p256::pkcs8::EncodePrivateKey::to_pkcs8_pem(&secret, Default::default())
+            .context("re-encoding SEC1 source CA key as PKCS#8")?;
+        return KeyPair::from_pem(pkcs8_pem.as_str())
+            .context("parsing re-encoded source CA key as PKCS#8");
+    }
     if parsed.tag() != "RSA PRIVATE KEY" {
         return KeyPair::from_pem(key_pem).context("parsing source CA key as PKCS#8 PEM");
     }
