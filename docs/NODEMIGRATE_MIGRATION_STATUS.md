@@ -63,6 +63,12 @@ controlled test records the returned-stage service/BPF backend and Pod route.
 The failure collector now includes that Pod/init status and the Cilium cleanup
 ConfigMap flags alongside service/BPF/endpoint maps; `bash -n` and whitespace
 checks pass locally, but the added capture has not run live.
+At `a82dd2608ce7072f3e20a65eb2a18cf9803ada7d`, migration-script validation
+passed in [run 36531863957](https://github.com/centerionware/not-k8s/actions/runs/36531863957),
+including shell syntax and focused fixture checks; the nodemigrate crate tests
+passed in [run 36531863977](https://github.com/centerionware/not-k8s/actions/runs/36531863977).
+Migration and K3s probe jobs were skipped, so these runs do not verify the new
+failure capture against a live migration or resolve the routing failure.
 
 The non-migration K3s+Cilium diagnostic [36509703232](https://github.com/centerionware/not-k8s/actions/runs/36509703232)
 completed a same-name Node UID replacement. Workload, storage, all 119 API
