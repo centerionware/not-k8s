@@ -40,6 +40,17 @@ exit 2
 STUB
 chmod +x "$TEST_DIR/systemctl"
 
+cat > "$TEST_DIR/cmp" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == -s ]]; then shift; fi
+python3 - "$1" "$2" <<'PY'
+import pathlib
+import sys
+sys.exit(0 if pathlib.Path(sys.argv[1]).read_bytes() == pathlib.Path(sys.argv[2]).read_bytes() else 1)
+PY
+STUB
+chmod +x "$TEST_DIR/cmp"
+
 export NODEMIGRATE_INTEGRATION_LIBRARY=true
 export GITHUB_WORKSPACE="$ROOT"
 export PATH="$TEST_DIR:/usr/bin:/bin"
@@ -122,4 +133,57 @@ if grep -qi 'parse error' <<< "$output"; then
     exit 1
 fi
 
-echo "PASS migration watcher JSON diagnostics"
+CHECKPOINT_DIR="$TEST_DIR/checkpoints"
+for stage in source replaced; do
+    mkdir -p "$CHECKPOINT_DIR/$stage"
+    printf 'secrets\n' > "$CHECKPOINT_DIR/$stage/api-resources.txt"
+    : > "$CHECKPOINT_DIR/$stage/required-crds.json"
+    : > "$CHECKPOINT_DIR/$stage/application.json"
+    : > "$CHECKPOINT_DIR/$stage/certificate.json"
+    : > "$CHECKPOINT_DIR/$stage/issuer.json"
+    : > "$CHECKPOINT_DIR/$stage/storageclass.json"
+    : > "$CHECKPOINT_DIR/$stage/certificate-secret.sha256"
+    : > "$CHECKPOINT_DIR/$stage/user-configmap-data.sha256"
+    : > "$CHECKPOINT_DIR/$stage/user-binary-configmap-data.sha256"
+    : > "$CHECKPOINT_DIR/$stage/user-immutable-configmap.sha256"
+    : > "$CHECKPOINT_DIR/$stage/user-secret-data.sha256"
+    : > "$CHECKPOINT_DIR/$stage/helm-releases.jsonl"
+done
+jq -cn --arg hash before '{identity:{apiGroup:"",kind:"Secret",name:"node1.node-password.k3s",namespace:"kube-system"},sha256:$hash,fields:{"/data/hash":$hash}}' > "$CHECKPOINT_DIR/source/migratable-objects.jsonl"
+jq -cn '{identity:{apiGroup:"",kind:"ConfigMap",name:"user-config",namespace:"default"},sha256:"same",fields:{"/data/value":"same"}}' >> "$CHECKPOINT_DIR/source/migratable-objects.jsonl"
+jq -cn --arg hash after '{identity:{apiGroup:"",kind:"Secret",name:"node1.node-password.k3s",namespace:"kube-system"},sha256:$hash,fields:{"/data/hash":$hash}}' > "$CHECKPOINT_DIR/replaced/migratable-objects.jsonl"
+jq -cn '{identity:{apiGroup:"",kind:"ConfigMap",name:"user-config",namespace:"default"},sha256:"same",fields:{"/data/value":"same"}}' >> "$CHECKPOINT_DIR/replaced/migratable-objects.jsonl"
+output="$(assert_migratable_api_objects_retained source replaced node1 2>&1)" || {
+    echo "K3s Node replacement credential rotation was rejected: $output" >&2
+    exit 1
+}
+grep -Fq 'Expected K3s node-password hash rotation' <<< "$output" || {
+    echo "expected generated credential rotation was not reported: $output" >&2
+    exit 1
+}
+
+jq -cn '{identity:{apiGroup:"",kind:"Secret",name:"node1.node-password.k3s",namespace:"kube-system"},sha256:"after",fields:{"/data/hash":"after","/unexpected":"changed"}}' > "$CHECKPOINT_DIR/replaced/migratable-objects.jsonl"
+jq -cn '{identity:{apiGroup:"",kind:"ConfigMap",name:"user-config",namespace:"default"},sha256:"same",fields:{"/data/value":"same"}}' >> "$CHECKPOINT_DIR/replaced/migratable-objects.jsonl"
+if assert_migratable_api_objects_retained source replaced node1 >"$TEST_DIR/unexpected-secret-change.out" 2>&1; then
+    echo "replacement parity accepted an unexpected node-password Secret field change: $(cat "$TEST_DIR/unexpected-secret-change.out")" >&2
+    exit 1
+fi
+grep -Fq 'Unexpected changed paths in K3s node-password Secret' "$TEST_DIR/unexpected-secret-change.out" || {
+    echo "unexpected generated credential mutation did not fail clearly" >&2
+    cat "$TEST_DIR/unexpected-secret-change.out" >&2
+    exit 1
+}
+
+jq -cn '{identity:{apiGroup:"",kind:"Secret",name:"node1.node-password.k3s",namespace:"kube-system"},sha256:"after",fields:{"/data/hash":"after"}}' > "$CHECKPOINT_DIR/replaced/migratable-objects.jsonl"
+jq -cn '{identity:{apiGroup:"",kind:"ConfigMap",name:"user-config",namespace:"default"},sha256:"changed",fields:{"/data/value":"changed"}}' >> "$CHECKPOINT_DIR/replaced/migratable-objects.jsonl"
+if assert_migratable_api_objects_retained source replaced node1 >"$TEST_DIR/user-object-change.out" 2>&1; then
+    echo "replacement parity accepted changed user fixture data" >&2
+    exit 1
+fi
+grep -Fq 'Normalized source API object data changed' "$TEST_DIR/user-object-change.out" || {
+    echo "changed user fixture data did not fail parity clearly" >&2
+    cat "$TEST_DIR/user-object-change.out" >&2
+    exit 1
+}
+
+echo "PASS migration watcher and replacement parity diagnostics"

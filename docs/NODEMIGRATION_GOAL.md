@@ -344,13 +344,13 @@ instructions in `AGENTS.md` for nodemigrate work:
   functional and API-state checks after each transition. Use this diagnostic
   mode to separate a plain K3s/Cilium restart failure from a node-replacement
   failure; it does not count as a migration round trip or satisfy either merge
-  scenario. Probe run `36508298004` passed the unchanged-Node restart and all
-  fixture checks but stopped before replacement because kubectl rejected the
-  harness's unsupported `delete --preconditions` flag. The harness now checks
-  the expected Node UID immediately before delete and confirms the Node is
-  absent before restarting K3s. That diagnostic must complete and the actual
-  Cilium routing defect must be fixed before another nodemigrate migration
-  attempt.
+  scenario. Probe run `36509703232` passed source restart and same-name Node
+  replacement checks, including workload/storage/API state and an active Cilium
+  BPF backend for the API ClusterIP. The only failure was a parity check on
+  K3s's generated Node password Secret hash rotation; the checker now permits
+  only that exact generated-field mutation during this diagnostic. Plain Node
+  replacement did not reproduce the post-migration Cilium failure. Do not
+  retry nodemigrate until its migration-specific cause is fixed.
 - A release workflow run is required only when carrying out the separately
   authorized publication. The initial `v0.8.1` nodemigrate publication must
   use the matching regular `v0.8.1` version built from this branch's accepted

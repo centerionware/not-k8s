@@ -27,9 +27,17 @@ Last updated: 2026-09-29
   passed a K3s service restart with the original Node UID and repeated all
   workload/API-state checks successfully. This shows an ordinary K3s restart
   alone does not reproduce the outage; it does not establish the cause of the
-  migration failure. The probe is being extended with same-name Node deletion,
-  K3s re-registration, and before/after Cilium service/BPF/endpoint maps. It
-  never invokes nodemigrate and is diagnostic only.
+  migration failure. The diagnostic run
+  [36509703232](https://github.com/centerionware/not-k8s/actions/runs/36509703232)
+  completed same-name Node deletion/re-registration with all fixture health,
+  storage, and 119 API-resource checks passing. Cilium reported 83/83 healthy
+  controllers and an active BPF backend for `10.43.0.1:443` after replacement.
+  The only parity difference was K3s rotating the generated
+  `kube-system/<node>.node-password.k3s` Secret's `/data/hash`; the diagnostic
+  comparator now permits only that exact generated credential mutation during
+  replacement. This disproves bare same-name Node replacement as the sole
+  cause, but leaves the post-migration Cilium routing failure unexplained. No
+  migration rerun until the migration-specific cause is fixed.
 - **Replacement diagnostic used a kubectl flag that is not supported.** The
   unchanged-UID restart and all fixture checks passed in run
   [36508298004](https://github.com/centerionware/not-k8s/actions/runs/36508298004),
@@ -38,6 +46,17 @@ Last updated: 2026-09-29
   kubectl delete flags, and verifies the Node is absent before restarting
   K3s. Since Node replacement never ran in that attempt, the Cilium issue is
   still unresolved; do not rerun migration until its actual cause is fixed.
+- **Replacement parity comparison treated a K3s-generated Node credential as
+  durable user state.** After same-name Node deletion/re-registration, run
+  [36509703232](https://github.com/centerionware/not-k8s/actions/runs/36509703232)
+  passed fixture, storage, API-resource, and Cilium service-map checks; strict
+  normalized parity found only the regenerated node-password Secret hash.
+  The comparator now allows only `/data/hash` for the exact K3s-managed Secret
+  and only in the replacement diagnostic. This test-harness correction does
+  not waive parity for user objects or migration stages. Error propagation is
+  explicit, with focused passing cases for expected hash rotation, unexpected
+  changes to that Secret, and changed user fixture data. Live diagnostic
+  recheck pending.
 - **Five-node fixture used unsupported container-to-container `docker cp`.**
   Docker job `109195297329` in run `36502166212` passed topology, Cilium, and
   control-plane recovery checks, then failed while copying PKI/kubeconfig

@@ -10,16 +10,28 @@ this objective.
 ## Cilium restart/replacement diagnostic
 
 Run [36508298004](https://github.com/centerionware/not-k8s/actions/runs/36508298004)
-failed at SHA `264e6491a36e961e586fb58f0ad205835824a55c` in the diagnostic
-harness before it could replace the Node. The unchanged-UID K3s restart phase
-passed all workload, storage, 119-resource API inventory, normalized object,
-and durable-state checks. The next command failed because upstream kubectl
-does not implement `delete --preconditions`. The harness now verifies the
-Node UID immediately before deletion, deletes it with supported kubectl flags,
-and checks that it is absent before restarting K3s. The uploaded log is
-`/tmp/nodemigrate-36508298004/nodemigrate-k3s-cilium-restart-36508298004/nodemigrate-k3s-cilium-restart.log`.
-This run does not confirm or fix the Cilium routing issue, and no migration
-retry has been run.
+failed at SHA `264e6491a36e961e586fb58f0ad205835824a55c` before Node replacement:
+the unchanged-UID K3s restart phase passed all workload, storage, 119-resource
+API inventory, normalized object, and durable-state checks, then upstream
+kubectl rejected the harness's unsupported `delete --preconditions` flag.
+That command is fixed on the branch.
+
+Run [36509703232](https://github.com/centerionware/not-k8s/actions/runs/36509703232)
+at SHA `8828b8818bd723a52405a231026cc4be53e99de1` completed same-name Node
+deletion/re-registration. The replacement-stage workloads, storage, 119 API
+resources, and Cilium service datapath checks passed; `10.43.0.1:443` had an
+active BPF backend to the node API. The parity comparison stopped on the
+expected K3s-generated `kube-system/<node>.node-password.k3s` Secret hash
+rotation; this is unrelated to fixture data. The diagnostic comparator is
+now narrowed to permit only that Secret's `/data/hash` mutation during this
+Node-replacement-only stage. The checker also explicitly propagates parity
+failures; focused fixtures verify that any additional Secret-field or
+unrelated user-object change still fails. Local shell/diagnostic checks pass.
+The saved log is
+`/tmp/nodemigrate-36509703232/nodemigrate-k3s-cilium-restart-36509703232/nodemigrate-k3s-cilium-restart.log`.
+This shows bare Node replacement does not reproduce the Cilium failure, but
+does not explain or fix the failure after cross-cluster migration. Do not
+retry nodemigrate until that migration-specific cause is fixed.
 
 ## Latest completed migration batch
 

@@ -3362,7 +3362,7 @@ assert_migratable_api_objects_unchanged() {
     local after="$2"
     local source_stage="$3"
     local target_stage="$4"
-    if ! python3 - "$before" "$after" <<'PY'
+    if ! python3 - "$before" "$after" "${5:-}" <<'PY'
 import json
 import sys
 import difflib
@@ -3379,13 +3379,41 @@ def records(path):
 
 before = records(sys.argv[1])
 after = records(sys.argv[2])
+replaced_node_name = sys.argv[3] or None
+
+def is_replaced_node_password(identity):
+    if replaced_node_name is None:
+        return False
+    value = json.loads(identity)
+    return value == {
+        "apiGroup": "",
+        "kind": "Secret",
+        "name": f"{replaced_node_name}.node-password.k3s",
+        "namespace": "kube-system",
+    }
+
 missing = sorted(before.keys() - after.keys())
 changed = sorted(
     identity for identity in before.keys() & after.keys()
     if before[identity]["sha256"] != after[identity]["sha256"]
+    and not is_replaced_node_password(identity)
+)
+expected_runtime_changes = sorted(
+    identity for identity in before.keys() & after.keys()
+    if before[identity]["sha256"] != after[identity]["sha256"]
+    and is_replaced_node_password(identity)
 )
 target_only = sorted(after.keys() - before.keys())
 print(f"Target-only objects: {len(target_only)}")
+for identity in expected_runtime_changes:
+    changed_fields = sorted(
+        path for path in before[identity].get("fields", {}).keys() | after[identity].get("fields", {}).keys()
+        if before[identity].get("fields", {}).get(path) != after[identity].get("fields", {}).get(path)
+    )
+    if changed_fields != ["/data/hash"]:
+        print(f"Unexpected changed paths in K3s node-password Secret {identity}: {changed_fields}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Expected K3s node-password hash rotation after Node UID replacement: {identity}")
 unclassified = []
 if target_only:
     print("Target-only API object identities:")
@@ -3586,7 +3614,15 @@ assert_migratable_api_objects_retained() {
         cat "$missing_ids" >&2
         return 1
     fi
-    assert_migratable_api_objects_unchanged "$before" "$after" "$1" "$2"
+    if [[ "$2" == replaced && -n "${3:-}" ]]; then
+        if ! assert_migratable_api_objects_unchanged "$before" "$after" "$1" "$2" "$3"; then
+            return 1
+        fi
+    else
+        if ! assert_migratable_api_objects_unchanged "$before" "$after" "$1" "$2"; then
+            return 1
+        fi
+    fi
 
     # These fixture resources also have direct semantic snapshots and
     # behavioral probes. The general inventory compares normalized source
@@ -3692,7 +3728,7 @@ main() {
         echo "Cilium datapath after same-name Node replacement"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
         verify_stage replaced "$SOURCE_KUBECONFIG"
-        assert_migratable_api_objects_retained source replaced
+        assert_migratable_api_objects_retained source replaced "$node_name"
         echo "PASS: K3s+Cilium Service and workload behavior survived restart and same-name Node replacement without nodemigrate"
         return 0
     fi
