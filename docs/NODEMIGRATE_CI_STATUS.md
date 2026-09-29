@@ -56,7 +56,11 @@ and failed during forward migration on cp-1. Full lane logs were saved once in
   Restoring Certificate, CertificateRequest, and ClusterIssuer then failed
   their admission webhook calls. The prior Cilium readiness check was
   transient; the code now requires ten continuous Ready seconds before API
-  restoration proceeds. The loss of readiness still needs live validation.
+  restoration proceeds. On nodestore-source cutover, nodemigrate now also
+  stops/removes only CRI sandboxes labeled as nodelet-managed after stopping
+  nodelet, so the returning kubelet recreates Pods with credentials from its
+  own API. This retains API objects and PV payloads and leaves rollback able
+  to reconcile them. Both changes need live validation.
 - Docker's cp-1 failure is confirmed in runc: systemd cgroups received
   `/k8s.io/<container-id>`. The previous fix populated `cgroup_parent` only on
   RunPodSandbox. containerd also reads the repeated sandbox config on
@@ -74,6 +78,14 @@ at SHA `53486bcac0c45693bccfcef63668619de0cc76a1` failed to compile
 The log handling now matches timeout, API failure, and success separately.
 This correction and the subsequent kubelet-retry change still need the scoped
 quick-check.
+
+The consolidated `nodelet,nodemigrate` quick-check passed at SHA
+`d7f676c1b77366982d8e7e89eaf592d674c61876` in
+[run 36572319793](https://github.com/centerionware/not-k8s/actions/runs/36572319793).
+It covers the repeated CRI sandbox config, stable Cilium readiness, failed-init
+diagnostics, and kubelet-managed init retry logic. The additional nodelet-owned
+sandbox shutdown for return migration was added after this run and still needs
+its own scoped check.
 
 ## 2026-09-29 migration run 36546160178
 

@@ -145,6 +145,66 @@ fn capture_source_cilium_identity(installation: &Installation) -> Result<SourceC
     capture_cilium_identity_at(installation, &endpoint)
 }
 
+fn capture_nodelet_sandbox_ids(installation: &Installation) -> Result<Vec<String>> {
+    let endpoint = std::env::var("NODEMIGRATE_CRI_ENDPOINT")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| installation.runtime_endpoint.clone())
+        .unwrap_or_else(|| "unix:///run/containerd/containerd.sock".to_string());
+    let pods = checked_output(
+        "crictl",
+        &["--runtime-endpoint", &endpoint, "pods", "-o", "json"],
+        "listing nodelet-managed source pod sandboxes",
+    )?;
+    let pods: serde_json::Value = serde_json::from_slice(&pods)
+        .context("parsing nodelet-managed source pod sandboxes")?;
+    Ok(nodelet_source_sandbox_ids(&pods))
+}
+
+fn nodelet_source_sandbox_ids(pods: &serde_json::Value) -> Vec<String> {
+    pods.get("items")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|pod| {
+            pod.get("labels")
+                .and_then(|labels| labels.get("nodelet.dev/pod-uid"))
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|uid| !uid.is_empty())
+        })
+        .filter_map(|pod| {
+            pod.get("id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn stop_nodelet_source_sandboxes(
+    installation: &Installation,
+    sandbox_ids: &[String],
+) -> Result<()> {
+    let endpoint = std::env::var("NODEMIGRATE_CRI_ENDPOINT")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| installation.runtime_endpoint.clone())
+        .unwrap_or_else(|| "unix:///run/containerd/containerd.sock".to_string());
+    for id in sandbox_ids {
+        checked("crictl", &["--runtime-endpoint", &endpoint, "stopp", id])
+            .with_context(|| format!("stopping nodelet-managed pod sandbox {id}"))?;
+        checked("crictl", &["--runtime-endpoint", &endpoint, "rmp", id])
+            .with_context(|| format!("removing nodelet-managed pod sandbox {id}"))?;
+    }
+    if !sandbox_ids.is_empty() {
+        eprintln!(
+            "nodemigrate: stopped and removed {} nodelet-managed pod sandbox(es); Kubernetes API objects and PV payloads remain available for destination reconciliation",
+            sandbox_ids.len()
+        );
+    }
+    Ok(())
+}
+
 fn capture_cilium_identity_at(
     installation: &Installation,
     endpoint: &str,
@@ -268,6 +328,11 @@ pub fn disable(installation: &Installation) -> Result<PreviousServiceState> {
     let name = &installation.service_name;
     if installation.distribution == crate::request::Distribution::Nodestore {
         let runtime = runtime_service_state(manager, installation)?;
+        let nodelet_sandbox_ids = if runtime.is_some() {
+            capture_nodelet_sandbox_ids(installation)?
+        } else {
+            Vec::new()
+        };
         let cilium_identity = if runtime.is_some() {
             capture_source_cilium_identity(installation)?
         } else {
@@ -275,14 +340,14 @@ pub fn disable(installation: &Installation) -> Result<PreviousServiceState> {
         };
         let mut previous = stop_nodestore_stack(manager, true)?;
         previous.runtime = runtime;
-        if let Err(error) = stop_cilium_source_sandboxes(installation, &cilium_identity) {
+        if let Err(error) = stop_nodelet_source_sandboxes(installation, &nodelet_sandbox_ids) {
             if let Err(restore_error) = restore(installation, previous) {
                 bail!(
-                    "stopping nodestore Cilium sandboxes failed ({error:#}) and restoring nodestore failed ({restore_error:#})"
+                    "stopping nodestore workload sandboxes failed ({error:#}) and restoring nodestore failed ({restore_error:#})"
                 );
             }
             return Err(error)
-                .context("stopping nodestore Cilium sandboxes; nodestore was restored");
+                .context("stopping nodestore workload sandboxes; nodestore was restored");
         }
         if let Some(runtime) = &previous.runtime {
             let runtime_name = runtime.name.clone();
@@ -1444,7 +1509,7 @@ fn command(program: &str, args: &[&str]) -> Result<Output> {
 mod tests {
     use super::{
         SourceCiliumIdentity, cilium_host_container_ids, cilium_source_sandbox_ids,
-        runtime_service_name, static_pod_sandbox_ids,
+        nodelet_source_sandbox_ids, runtime_service_name, static_pod_sandbox_ids,
     };
 
     const SOURCE_CONTAINER_ID: &str =
@@ -1520,6 +1585,33 @@ mod tests {
                 ],
                 vec!["agent-uid".to_string(), "operator-uid".to_string()]
             )
+        );
+    }
+
+    #[test]
+    fn selects_only_nodelet_managed_sandboxes_for_cutover_restart() {
+        let pods = serde_json::json!({
+            "items": [
+                {
+                    "id": "nodelet-app",
+                    "labels": {"nodelet.dev/pod-uid": "pod-uid", "nodelet.dev/pod-name": "app"}
+                },
+                {
+                    "id": "nodelet-cilium",
+                    "labels": {"nodelet.dev/pod-uid": "cilium-uid", "nodelet.dev/pod-name": "cilium-agent"}
+                },
+                {
+                    "id": "kubelet-app",
+                    "labels": {"io.kubernetes.pod.uid": "upstream-pod-uid"}
+                },
+                {"id": "unrelated-runtime-sandbox", "labels": {"app": "database"}},
+                {"labels": {"nodelet.dev/pod-uid": "missing-id"}}
+            ]
+        });
+
+        assert_eq!(
+            nodelet_source_sandbox_ids(&pods),
+            ["nodelet-app", "nodelet-cilium"]
         );
     }
 

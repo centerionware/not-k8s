@@ -28,7 +28,12 @@ Last updated: 2026-09-29
   then failed admission calls. This supports a shared Cilium/service-network
   readiness failure; the exact token and datapath mechanism remains unproven.
   Cilium must now remain Ready for ten continuous seconds before API objects
-  are restored. A stable Cilium datapath and the return path remain unverified.
+  are restored. On nodestore-source cutover, nodemigrate also stops/removes
+  only CRI sandboxes carrying the `nodelet.dev/pod-uid` ownership label after
+  stopping nodelet, allowing the destination kubelet to recreate Pods and
+  request credentials from its own API. It preserves all API objects and PV
+  payloads so rollback can reconcile workloads. These changes and a stable
+  return datapath remain unverified.
 
 ## Findings from migration run 36552342215
 
