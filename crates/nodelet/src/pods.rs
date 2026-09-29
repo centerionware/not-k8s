@@ -827,7 +827,7 @@ impl PodController {
         }
         // A kube-rs Client clone shares its underlying tower service. On an
         // HTTP/1.1 apiserver that can queue normal requests behind a
-        // long-lived watch until the watch's five-minute server timeout. A
+        // long-lived watch until the server's watch timeout. A
         // projected ServiceAccount token request hit exactly that path in
         // live CI: RunPodSandbox completed immediately, but the TokenRequest
         // was not received by the apiserver for 4m50s, blocking this whole
@@ -843,7 +843,7 @@ impl PodController {
             .await
             .context("building the Secret watch client")?;
         let api: Api<Pod> = Api::all(pod_watch_client);
-        let wc = watcher::Config::default()
+        let wc = crate::watch_config::config()
             .fields(&format!("spec.nodeName={}", self.node_name));
         // .backoff() on every one of these — see WatchBackoffPolicy's own
         // doc comment for what happens without it.
@@ -869,10 +869,10 @@ impl PodController {
         // own reference-tracking never needed the body at all.
         let cm_api: Api<PartialObjectMeta<ConfigMap>> = Api::all(cm_watch_client);
         let mut cm_stream =
-            watcher(cm_api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed();
+            watcher(cm_api, crate::watch_config::config()).backoff(WatchBackoffPolicy::default()).boxed();
         let sec_api: Api<PartialObjectMeta<Secret>> = Api::all(sec_watch_client);
         let mut sec_stream =
-            watcher(sec_api, watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed();
+            watcher(sec_api, crate::watch_config::config()).backoff(WatchBackoffPolicy::default()).boxed();
         // Move the receivers into locals so reconcile methods can borrow `&self`.
         let mut events = self.events.take();
         let mut priority_events = self.priority_events.take();

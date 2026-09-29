@@ -61,8 +61,8 @@ const MANAGED_BY_LABEL: &str = "endpointslice.kubernetes.io/managed-by";
 const MANAGED_BY_VALUE: &str = "nodecontroller";
 
 /// Safety-net cadence for [`resync_pods_and_services`]. Well under the
-/// informers' 290s watch timeout (the longest a stalled connection can
-/// go without any event — see the module doc), and long enough that the
+/// informers' roughly five-minute watch timeout (see the watch module's
+/// staggered 240–295s client deadline), and long enough that the
 /// per-tick work — one pod LIST plus one service LIST plus a
 /// deduplicated re-enqueue, unchanged applies being apiserver-side
 /// no-ops — stays negligible against a live cluster's own event
@@ -386,7 +386,8 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
 /// event leaves its Service's EndpointSlice wrong with no further event
 /// to correct it — the shared informers' upstream watches can each
 /// deliver nothing for their whole timeout window (observed live: a pod
-/// watch went 290s with zero events while sibling connections flowed,
+/// watch went nearly five minutes with zero events while sibling connections
+/// flowed,
 /// only recovering when its reconnect was told its RV was too old and it
 /// relisted). Refreshing both local caches from fresh LISTs and
 /// re-enqueueing every known Service bounds that staleness to one
