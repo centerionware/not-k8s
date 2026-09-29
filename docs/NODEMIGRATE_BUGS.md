@@ -64,6 +64,19 @@ Last updated: 2026-09-29
 
 ## Latest branch-run findings
 
+- **Cilium restart diagnostic did not force agent-container recreation.** In
+  [run 36526954453](https://github.com/centerionware/not-k8s/actions/runs/36526954453),
+  the source fixture, Cilium Pod recreation, retained API-state checks, and
+  `10.43.0.1:443` Pod-to-Service probe all passed. The follow-up restart probe
+  stopped and removed the Cilium CRI pod sandboxes, restarted K3s, and confirmed
+  the Node UID was unchanged, but the Cilium agent container ID had not changed.
+  This showed the probe was not forcing the same full Cilium teardown that the
+  migration path requires; it did not reproduce or clear the post-return
+  Cilium datapath failure. The probe now stops/removes only running Cilium
+  containers before removing their sandboxes, then requires a new ready agent
+  container identity. Shell/static validation is pending, and no migration was
+  run. The saved log is `/tmp/nodemigrate-36526954453/`.
+
 - **K3s return leaves ClusterIP/pod routing broken after Cilium reports ready.**
   In K3s job `109195297576` of run
   [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212),

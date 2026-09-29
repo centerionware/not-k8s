@@ -587,8 +587,9 @@ restart_cilium_agent_pod() {
 
 stop_source_cilium_sandboxes_for_probe() {
     local endpoint="${NODEMIGRATE_CRI_ENDPOINT:-unix:///run/k3s/containerd/containerd.sock}"
-    local pod_json sandbox_ids id
+    local pod_json sandbox_ids container_json container_ids id
     local -a cilium_sandboxes=()
+    local -a cilium_containers=()
     pod_json="$(crictl --runtime-endpoint "$endpoint" pods -o json)" || {
         echo "could not list K3s CRI pod sandboxes for the cutover diagnostic" >&2
         return 1
@@ -607,11 +608,34 @@ stop_source_cilium_sandboxes_for_probe() {
     ' <<< "$pod_json")" || return 1
     mapfile -t cilium_sandboxes <<< "$sandbox_ids"
 
+    container_json="$(crictl --runtime-endpoint "$endpoint" ps -o json)" || {
+        echo "could not list running K3s Cilium containers for the cutover diagnostic" >&2
+        return 1
+    }
+    container_ids="$(jq -er '
+      if (.containers | type) != "array" then error("CRI response has no containers array") else
+        [.containers[]?
+         | select((.labels["io.kubernetes.pod.namespace"] // "") == "kube-system")
+         | select((.metadata.name // "" | startswith("cilium"))
+                  or (.labels["k8s-app"] // "" | IN("cilium", "cilium-envoy")))
+         | select((.id? | type) == "string" and (.id | length) > 0)
+         | .id]
+        | if length == 0 then error("no running source Cilium containers were found")
+          else .[] end
+      end
+    ' <<< "$container_json")" || return 1
+    mapfile -t cilium_containers <<< "$container_ids"
+
+    for id in "${cilium_containers[@]}"; do
+        crictl --runtime-endpoint "$endpoint" stop "$id" || return 1
+        crictl --runtime-endpoint "$endpoint" rm "$id" || return 1
+    done
+
     for id in "${cilium_sandboxes[@]}"; do
         crictl --runtime-endpoint "$endpoint" stopp "$id" || return 1
         crictl --runtime-endpoint "$endpoint" rmp "$id" || return 1
     done
-    echo "PASS stopped and removed ${#cilium_sandboxes[@]} source Cilium sandbox(es); ordinary sandboxes were retained"
+    echo "PASS stopped and removed ${#cilium_containers[@]} source Cilium container(s) and ${#cilium_sandboxes[@]} sandbox(es); ordinary workloads were retained"
 }
 
 capture_cni_host_diagnostics() {

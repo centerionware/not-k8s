@@ -65,6 +65,20 @@ at SHA `6c55fba88c47a7e1f0a5e5ef565cdec9cdfed825` (job
 
 ## Cilium restart/replacement diagnostic
 
+The next restart-only probe at branch head
+`2270b470c97d7c19126de07f05fee25b14c8ef0f` was run as
+[36526954453](https://github.com/centerionware/not-k8s/actions/runs/36526954453).
+It built `notk8s`, installed the repaired K3s fixture, and passed the initial
+Cilium Pod recreation, API-object retention checks, and Pod-to-Service API
+probe. Its subsequent check stopped/removed Cilium CRI pod sandboxes and
+restarted K3s, but the Cilium agent container ID did not change, so the probe
+failed before its Node-replacement phase. Migration jobs were skipped. The
+diagnostic now stops/removes only running Cilium containers in addition to
+their sandboxes before restart, and requires a new ready agent container ID.
+Targeted shell/static checks and a corrected diagnostic run are pending; this
+result provides no evidence about cross-cluster routing. Saved log:
+`/tmp/nodemigrate-36526954453/`.
+
 Run [36508298004](https://github.com/centerionware/not-k8s/actions/runs/36508298004)
 failed at SHA `264e6491a36e961e586fb58f0ad205835824a55c` before Node replacement:
 the unchanged-UID K3s restart phase passed all workload, storage, 119-resource

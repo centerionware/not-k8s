@@ -93,8 +93,14 @@ chmod +x "$TEST_DIR/cmp"
 cat > "$TEST_DIR/crictl" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
+    *"ps -o json"*)
+        printf '%s\n' '{"containers":[{"id":"cilium-agent","metadata":{"name":"cilium-agent"},"labels":{"io.kubernetes.pod.namespace":"kube-system","k8s-app":"cilium"}},{"id":"cilium-envoy","metadata":{"name":"cilium-envoy"},"labels":{"io.kubernetes.pod.namespace":"kube-system","k8s-app":"cilium-envoy"}},{"id":"ordinary","metadata":{"name":"application"},"labels":{"io.kubernetes.pod.namespace":"apps"}}]}'
+        ;;
     *"pods -o json"*)
         printf '%s\n' '{"items":[{"id":"cilium","state":"SANDBOX_READY","metadata":{"name":"cilium-agent","namespace":"kube-system"}},{"id":"ordinary","state":"SANDBOX_READY","metadata":{"name":"application","namespace":"apps"}},{"id":"cilium-not-ready","state":"SANDBOX_NOTREADY","labels":{"k8s-app":"cilium-envoy"},"metadata":{"namespace":"kube-system"}}]}'
+        ;;
+    *" stop "*|*" rm "*)
+        echo "$3 $4" >> "${NODEMIGRATE_CRI_CALLS:?}"
         ;;
     *"stopp cilium"*|*"rmp cilium"*)
         echo "$3 $4" >> "${NODEMIGRATE_CRI_CALLS:?}"
@@ -274,11 +280,11 @@ output="$(stop_source_cilium_sandboxes_for_probe 2>&1)" || {
     echo "targeted Cilium sandbox cleanup fixture failed: $output" >&2
     exit 1
 }
-grep -Fq 'PASS stopped and removed 2 source Cilium sandbox(es); ordinary sandboxes were retained' <<< "$output" || {
+grep -Fq 'PASS stopped and removed 2 source Cilium container(s) and 2 sandbox(es); ordinary workloads were retained' <<< "$output" || {
     echo "targeted Cilium sandbox cleanup was not reported: $output" >&2
     exit 1
 }
-expected_calls=$'stopp cilium\nrmp cilium\nstopp cilium-not-ready\nrmp cilium-not-ready'
+expected_calls=$'stop cilium-agent\nrm cilium-agent\nstop cilium-envoy\nrm cilium-envoy\nstopp cilium\nrmp cilium\nstopp cilium-not-ready\nrmp cilium-not-ready'
 actual_calls="$(cat "$NODEMIGRATE_CRI_CALLS")"
 [[ "$actual_calls" == "$expected_calls" ]] || {
     printf 'Cilium-only cleanup used an unexpected CRI sequence:\n%s\n' "$actual_calls" >&2
