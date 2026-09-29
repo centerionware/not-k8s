@@ -2,14 +2,13 @@
 
 Last updated: 2026-09-29
 
-The latest full migration run, [36603273571](https://github.com/centerionware/not-k8s/actions/runs/36603273571),
-built the branch `notk8s` and `nodemigrate` binaries, but all three migration
-lanes failed: Cilium reset preceded joined-node registration, nodelet missed
-the source kubelet CSI registrar directory, and stale kubelet-created CRI
-sandboxes were not discovered. All three corrections are in the working tree
-and await targeted component CI before another migration run. Exact outcomes
-and run identity are tracked in [CI status](NODEMIGRATE_CI_STATUS.md); causes
-and fixes are in [the bug tracker](NODEMIGRATE_BUGS.md).
+The latest full migration run,
+[36608846633](https://github.com/centerionware/not-k8s/actions/runs/36608846633),
+built the branch `notk8s` and `nodemigrate` binaries in all three lanes, but
+K3s, upstream Kubernetes, and Docker migration failed. The new blockers and
+current fixes are tracked in [CI status](NODEMIGRATE_CI_STATUS.md) and
+[the bug tracker](NODEMIGRATE_BUGS.md). The preceding targeted quick-check
+passed `nodelet,nodemigrate`; the current corrections still need scoped CI.
 
 Focused quick-check [36597286663](https://github.com/centerionware/not-k8s/actions/runs/36597286663)
 passed the changed `nodeapiserver` and `nodestore` crates at SHA

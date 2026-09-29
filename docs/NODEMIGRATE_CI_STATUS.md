@@ -2,6 +2,23 @@
 
 Last updated: 2026-09-29
 
+## 2026-09-29 migration run 36608846633
+
+Run [36608846633](https://github.com/centerionware/not-k8s/actions/runs/36608846633)
+tested SHA `5f64d13dc932c88c722325eaa79abc16628f7222` with
+`runtime_source=branch`, `cilium_kpr=true`, and
+`five_node_migration=true`. All three lanes built their branch binaries. K3s
+and upstream Kubernetes failed during migration workload recovery; Docker cp-3
+reached Cilium readiness but learner promotion failed one log entry before
+catch-up. Logs were saved once under `/tmp/nodemigrate-36608846633/`.
+
+The failure mechanisms and fixes are recorded in
+[NODEMIGRATE_BUGS.md](NODEMIGRATE_BUGS.md). Corrections now in the worktree
+cover scheduler Binding protobuf decoding, the fixture's Nodelet CSI target
+mount, bounded Raft catch-up retry, and legacy sandbox metadata lookup.
+They still need the scoped quick-check and one migration-specific rerun. Do not
+run the regular build or full e2e gates for this task.
+
 ## 2026-09-29 migration run 36603273571
 
 Completed with all three migration lanes failing at exact SHA

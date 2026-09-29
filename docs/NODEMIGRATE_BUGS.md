@@ -2,6 +2,45 @@
 
 Last updated: 2026-09-29
 
+## Findings from migration run 36608846633
+
+At SHA `5f64d13dc932c88c722325eaa79abc16628f7222`, all branch binary builds
+passed, but K3s, upstream Kubernetes, and five-node Docker round trips failed.
+Saved logs are under `/tmp/nodemigrate-36608846633/`.
+
+- **Component:** `nodeapiserver` scheduler Binding decoding. Audit records show
+  repeated HTTP 400 responses for scheduler `pods/binding` requests. Inspection
+  found the protobuf virtual-resource decoder was accidentally wired to Pod
+  eviction while the actual Binding path still decoded JSON. Binding now uses
+  the `Binding` protobuf schema and captures Content-Type before consuming the
+  body; eviction now decodes its own `Eviction` schema.
+- **Component:** migration CSI fixture. K3s's imported HostPath CSI driver
+  returned `NodePublishVolume` errors because its container could not see
+  `/var/lib/nodelet/pods/...`, where nodelet creates target paths. The fixture
+  now mounts `/var/lib/nodelet` into the CSI hostpath container with bidirectional
+  propagation and checks that mount after rollout.
+- **Component:** `nodestore` learner promotion. Docker cp-3 became Ready and
+  Cilium passed its clean-state/readiness check, then promotion raced the
+  learner's final replicated entry (`matched=2600`, leader tail `2601`). The
+  membership RPC now retries only this explicit not-caught-up result for at
+  most 15 seconds; Raft still checks activity and the log tail before proposing
+  promotion.
+- **Component:** `nodelet` CRI sandbox discovery. K3s logs include one CoreDNS
+  sandbox-name reservation during recovery; later diagnostics show the same
+  Pod scheduled successfully. The CRI lookup now checks source and nodelet label
+  sets together and falls back to exact sandbox metadata namespace/name when
+  legacy CRI labels are absent. This is a defensive correction; the run's
+  terminal K3s failure was CSI target-path visibility, not this recovered
+  reservation.
+- The worker kubelet RBAC and Node-not-found errors in Docker were logged after
+  cp-3 promotion failed and rollback began. They are recovery symptoms after
+  the destination API was stopped, not evidence of an independent pre-failure
+  worker authorization defect.
+
+No retry has run with these corrections. The previous targeted quick-check
+passed `nodelet,nodemigrate` at the tested SHA. No regular build or full e2e
+gate ran.
+
 ## Findings from migration run 36603273571
 
 At SHA `862e48a771b5c645f35594b70cfc5019941f1317`, the branch-built

@@ -1211,6 +1211,41 @@ install_hostpath_driver() {
                 echo "replacement hostpath CSI container does not receive the preserved staging mount" >&2
                 return 1
             }
+
+        # Nodelet creates per-Pod target paths under its own data root before
+        # calling NodePublishVolume. The hostpath CSI process runs in a
+        # separate container, so it must see that same root to create the
+        # target directory and bind mount the staged volume into it.
+        local nodelet_root_volume=nodemigrate-nodelet-root
+        plugin_json="$(kubectl get statefulset csi-hostpathplugin -n default -o json)"
+        stage_container_index="$(jq -r '
+            [.spec.template.spec.containers | to_entries[] | select(.value.name == "hostpath") | .key][0] // empty
+        ' <<<"$plugin_json")"
+        if ! jq -e --arg name "$nodelet_root_volume" \
+            'any(.spec.template.spec.volumes[]?; .name == $name)' <<<"$plugin_json" >/dev/null; then
+            kubectl patch statefulset csi-hostpathplugin -n default --type=json -p \
+                "$(jq -cn --arg name "$nodelet_root_volume" \
+                    '[{op:"add",path:"/spec/template/spec/volumes/-",value:{name:$name,hostPath:{path:"/var/lib/nodelet",type:"DirectoryOrCreate"}}}]')"
+            plugin_json="$(kubectl get statefulset csi-hostpathplugin -n default -o json)"
+        fi
+        if ! jq -e --arg name "$nodelet_root_volume" \
+            '.spec.template.spec.containers[] | select(.name == "hostpath")
+             | any(.volumeMounts[]?; .name == $name)' <<<"$plugin_json" >/dev/null; then
+            kubectl patch statefulset csi-hostpathplugin -n default --type=json -p \
+                "$(jq -cn --arg name "$nodelet_root_volume" --argjson container "$stage_container_index" '
+                    [{op:"add",path:("/spec/template/spec/containers/" + ($container|tostring) + "/volumeMounts/-"),value:{name:$name,mountPath:"/var/lib/nodelet",mountPropagation:"Bidirectional"}}]')"
+        fi
+        kubectl rollout status statefulset/csi-hostpathplugin -n default --timeout=5m
+        plugin_json="$(kubectl get statefulset csi-hostpathplugin -n default -o json)"
+        jq -e --arg name "$nodelet_root_volume" '
+            any(.spec.template.spec.volumes[]?; .name == $name and .hostPath.path == "/var/lib/nodelet") and
+            any(.spec.template.spec.containers[] | select(.name == "hostpath")
+                | .volumeMounts[]?; .name == $name and .mountPath == "/var/lib/nodelet"
+                    and .mountPropagation == "Bidirectional")
+        ' <<<"$plugin_json" >/dev/null || {
+            echo "replacement hostpath CSI container cannot access Nodelet's volume target root" >&2
+            return 1
+        }
     fi
     kubectl get storageclass csi-hostpath-sc
 }

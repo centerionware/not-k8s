@@ -865,13 +865,26 @@ impl pb::cluster_server::Cluster for EtcdApi {
         let mut cc = raft::eraftpb::ConfChangeV2::default();
         cc.mut_changes().push(change);
 
-        raft.promote_learner(
-            req.id,
-            cc,
-            &Command::SetMember(crate::command::Member { is_learner: false, ..existing }),
-        )
-        .await
-        .map_err(Status::from)?;
+        let promoted = Command::SetMember(crate::command::Member { is_learner: false, ..existing });
+        // Learner catch-up is asynchronous. The first promotion request can
+        // arrive just after the leader appends its latest entry, so recheck
+        // Raft progress for a bounded interval instead of making callers
+        // restart the whole node replacement. Each retry is a fresh check in
+        // the Raft owner task; no membership change is proposed until the
+        // learner is active and has matched the log tail.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            match raft.promote_learner(req.id, cc.clone(), &promoted).await {
+                Ok(_) => break,
+                Err(crate::error::Error::Unavailable(message))
+                    if message.starts_with("cannot promote learner ")
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Err(error) => return Err(Status::from(error)),
+            }
+        }
 
         let revision = self.current_revision()?;
         let members = self.node.read(|s| s.members())?;
