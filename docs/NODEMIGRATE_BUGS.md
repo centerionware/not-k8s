@@ -35,6 +35,13 @@ migration but failed the post-forward HostPath CSI scheduling check. Docker
 preflight passed, cp-1 passed forward migration, and cp-2 failed joining. No
 retry has been launched after these failures.
 
+The first targeted quick-check after these fixes,
+[36596720100](https://github.com/centerionware/not-k8s/actions/runs/36596720100)
+at SHA `2f60975d888e8fc6f449a094543bc2812301fc13`, failed compilation because
+the binding handler read `Content-Type` after consuming the request body. The
+handler now saves that header before body decoding. No migration retry has
+been launched.
+
 ## Findings from migration run 36582910964
 
 - **Component:** Docker five-node orchestration. At SHA

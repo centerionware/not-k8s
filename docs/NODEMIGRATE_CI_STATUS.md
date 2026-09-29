@@ -21,6 +21,15 @@ The run is [36591891203](https://github.com/centerionware/not-k8s/actions/runs/3
 Its complete artifacts were captured once under
 `/tmp/nodemigrate-36591891203/`.
 
+Targeted quick-check [36596720100](https://github.com/centerionware/not-k8s/actions/runs/36596720100)
+at SHA `2f60975d888e8fc6f449a094543bc2812301fc13` failed during
+`nodeapiserver` compilation: the binding handler read the request header after
+moving the request into the body reader. The header is now captured before the
+body read. A new targeted quick-check is required before migration can be
+retried. The PR migration-script validation run
+[36596717675](https://github.com/centerionware/not-k8s/actions/runs/36596717675)
+passed at the same SHA; it does not compile Rust.
+
 ## 2026-09-29 Docker failure diagnosis
 
 The artifact from run

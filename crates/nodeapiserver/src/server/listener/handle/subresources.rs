@@ -30,6 +30,11 @@ macro_rules! handle_subresources {
         let Some(mut client) = $storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
         };
+        let content_type = $req
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let body_bytes = match read_body_bytes($req).await {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -37,11 +42,6 @@ macro_rules! handle_subresources {
                 return Ok(body_read_error_response(&$path_str, &error));
             }
         };
-        let content_type = $req
-            .headers()
-            .get("content-type")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
         let body = match decode_virtual_request(
             &body_bytes,
             content_type.as_deref(),
