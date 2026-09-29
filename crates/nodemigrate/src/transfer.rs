@@ -1385,7 +1385,8 @@ impl KubeApi {
                 pending.push(object);
             }
         }
-        runtime.block_on(async {
+        eprintln!("nodemigrate: starting protected API import operation");
+        let import_result = runtime.block_on(async {
             let mut last_error = String::new();
             let mut uid_map = HashMap::new();
             let mut source_crd_apis = BTreeSet::new();
@@ -1621,7 +1622,12 @@ impl KubeApi {
                 )
             })?;
             Ok(())
-        })
+        });
+        eprintln!("nodemigrate: protected API import operation returned");
+        eprintln!("nodemigrate: shutting down protected API import runtime");
+        runtime.shutdown_timeout(std::time::Duration::from_secs(5));
+        eprintln!("nodemigrate: protected API import runtime shutdown returned");
+        import_result
     }
 }
 

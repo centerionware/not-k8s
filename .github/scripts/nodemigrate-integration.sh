@@ -1287,6 +1287,60 @@ ensure_csi_can_access_nodelet_root() {
     }
 }
 
+pin_hostpath_driver_to_fixture_volumes() {
+    local claim pv_json topology_nodes node plugin_json patch
+    local claims=(state-migration-stateful-0 migration-csi-pvc)
+    local -a topology_values=()
+    for claim in "${claims[@]}"; do
+        pv_json="$(kubectl get pvc "$claim" -n migration-apps -o json)"
+        local pv_name
+        pv_name="$(jq -er '.spec.volumeName | select(length > 0)' <<<"$pv_json")"
+        pv_json="$(kubectl get pv "$pv_name" -o json)"
+        while IFS= read -r node; do
+            [[ -n "$node" ]] && topology_values+=("$node")
+        done < <(jq -r '
+          [.spec.nodeAffinity.required.nodeSelectorTerms[]?.matchExpressions[]?
+           | select(.key == "topology.hostpath.csi/node" and .operator == "In")
+           | .values[]?] | unique[]
+        ' <<<"$pv_json")
+    done
+    topology_nodes="$(printf '%s\n' "${topology_values[@]}" | LC_ALL=C sort -u)"
+    [[ -n "$topology_nodes" ]] || {
+        echo "fixture CSI PVs have no topology.hostpath.csi/node placement" >&2
+        return 1
+    }
+    [[ "$(wc -l <<<"$topology_nodes")" -eq 1 ]] || {
+        echo "single-node hostpath CSI fixture volumes span multiple nodes: $topology_nodes" >&2
+        return 1
+    }
+    node="$topology_nodes"
+    kubectl get node "$node" -o json | jq -e '
+      (.metadata.labels // {}) | has("topology.hostpath.csi/node")
+    ' >/dev/null || {
+        echo "CSI topology node $node is not labeled topology.hostpath.csi/node" >&2
+        return 1
+    }
+    plugin_json="$(kubectl get statefulset csi-hostpathplugin -n default -o json)"
+    patch="$(jq -cn --arg node "$node" '
+      {spec:{template:{spec:{nodeSelector:{"topology.hostpath.csi/node":$node}}}}}
+    ')"
+    kubectl patch statefulset csi-hostpathplugin -n default --type=merge -p "$patch"
+    kubectl rollout status statefulset/csi-hostpathplugin -n default --timeout=5m
+    kubectl get pods -n default -l "$(jq -r '
+      .spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")
+    ' <<<"$plugin_json")" -o json | jq -e --arg node "$node" '
+      any(.items[]; .spec.nodeName == $node and .status.phase == "Running" and
+        all(.status.containerStatuses[]?; .ready == true))
+    ' >/dev/null || {
+        echo "CSI hostpath driver did not become Ready on PV topology node $node" >&2
+        kubectl get pods -n default -l "$(jq -r '
+          .spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")
+        ' <<<"$plugin_json")" -o wide >&2 || true
+        return 1
+    }
+    echo "PASS: single-node hostpath CSI fixture and PVC volumes share topology node $node"
+}
+
 apply_fixture_manifest_with_conflict_retry() {
     local manifest_file="$1"
     local attempt output
@@ -2916,6 +2970,7 @@ verify_stage() {
         kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide >&2 || true
         return 1
     fi
+    probe_api_clusterip_from_pod "$CURRENT_KUBECONFIG" "$stage"
     verify_csi_node_registration
     if [[ -n "${NODEMIGRATE_EXPECTED_NODES:-}" ]]; then
         local expected_nodes actual_nodes
@@ -4168,6 +4223,7 @@ main() {
     # comparison continues to check the complete CSI StatefulSet spec.
     KUBECONFIG="$SOURCE_KUBECONFIG" ensure_csi_can_access_nodelet_root
     install_workloads
+    KUBECONFIG="$SOURCE_KUBECONFIG" pin_hostpath_driver_to_fixture_volumes
     verify_stage source "$SOURCE_KUBECONFIG"
     capture_source_csi_device_volume
 

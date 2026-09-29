@@ -13,11 +13,12 @@ to `/tmp/nodemigrate-36633722194-docker-artifact/`.
 
 - **Component: nodemigrate import completion.** `refresh_service_account_token_secrets`
   logged that it refreshed the token, but the caller never logged that API
-  import completed. The captured log does not establish whether the importer
-  was still inside its async runtime, blocked during runtime teardown, or
-  stopped elsewhere. This is a confirmed no-progress hang, but its mechanism
-  remains unverified. Do not retry migration until importer boundary logging
-  and an explicit bounded completion path identify and address it.
+  import completed. The capture shows no further importer log during the next
+  57 minutes. The importer now logs immediately before and after its
+  `block_on` boundary and uses `Runtime::shutdown_timeout(5s)` before returning,
+  which bounds Tokio blocking-task teardown. The boundary logs will distinguish
+  a future that never returned from a runtime shutdown stall. The mechanism is
+  still unverified; quick-check and a migration rerun are required.
 - **Component: Cilium Service datapath after K3s return.** The migration itself
   completed in both directions, and the replacement Cilium agent became Ready.
   After return, the K3s API Service at `10.43.0.1:443` did not serve requests;
@@ -25,17 +26,33 @@ to `/tmp/nodemigrate-36633722194-docker-artifact/`.
   requests. Agent Pod readiness did not prove the Service datapath. The
   post-reset check needs to exercise API Service connectivity before migration
   is called healthy. Exact underlying Cilium datapath cause remains unverified.
-- **Component: five-node test-stage credentials.** The Docker artifact shows
-  forward migration, cluster readiness, and workload readiness, then the
-  `stage=nodestore` ReplicationController check failed when `kubectl logs`
-  received HTTP 401 (`You must be logged in ... get pods`). The script was
-  using `/etc/nodebootstrap/admin.kubeconfig`; prior checks in the same stage
-  succeeded. Investigate credential source/rotation and API audit records
-  before changing the assertion or classifying this as workload failure.
-- The Docker lane's independent worker/CSI/containerd warnings are present in
-  the artifact, but the terminal assertion above is the first confirmed test
-  failure. Treat those warnings as hypotheses unless an earlier causal error
-  is identified.
+- **Component: worker Nodelet client-certificate trust.** The Docker artifact
+  shows the `pods/log` request was rejected with HTTP 401 after the preceding
+  Pod GET succeeded. `nodeapiserver` authenticates its kubelet-proxy requests
+  with a client certificate when configured; Nodelet only accepts that
+  identity when `NODELET_CLIENT_CA_FILE` is set. Bootstrap previously set this
+  only for control planes, leaving workers to use a bearer-token fallback that
+  this proxy does not forward. Worker Nodelet setup now extracts the active
+  cluster CA from the supplied kubeconfig (embedded data or a relative/absolute
+  CA file), writes it as a public local trust file, and configures Nodelet to
+  use it. An explicit `NODELET_CLIENT_CA_FILE` still takes precedence. Focused
+  tests and CI are pending.
+- **Component: five-node CSI fixture and scheduler placement.** Worker-2's
+  Nodelet repeatedly failed the hostpath CSI `NodePublishVolume` call because
+  the target path's parent did not exist in the CSI driver's view. The
+  stateful Pod was scheduled on worker-2 while the imported CSI StatefulSet
+  plugin Pod was on worker-1. The PV evidence shows both fixture CSI volumes
+  carry the `topology.hostpath.csi/node=worker-2` affinity. The integration
+  fixture now pins its single-node hostpath driver to the common topology node
+  before recording the source checkpoint, keeping the node-local volume and
+  driver together through import. Script validation and a five-node run are
+  pending.
+
+The existing Cilium probe exercised Pod-to-API-Service connectivity at source
+and post-restart points but not during each `verify_stage`. It now runs from
+inside a Pod after Node, Cilium, and CoreDNS readiness on every source,
+nodestore, and returned-source verification stage. This directly checks the
+Service datapath that failed on the previous K3s return.
 
 The migration execution steps are now capped at 30 minutes. Prior healthy
 single-node round-trip jobs took about 24–25 minutes including builds; the

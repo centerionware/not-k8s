@@ -18,6 +18,15 @@ the observed 24–25 minute healthy single-node job duration including builds.
 The larger job limits remain for setup/build and failure artifact upload. No
 retry is queued until these failures are actionable.
 
+Follow-up work after this run adds bounded importer runtime shutdown with
+explicit boundary logs, worker Nodelet client-CA configuration from the active
+worker kubeconfig, and Pod-to-Kubernetes-Service probes at each migration
+verification stage. The Docker artifact also shows the migrated hostpath CSI
+StatefulSet Pod on worker-1 while a PVC-backed workload lands on worker-2.
+The fixture now pins the single-node driver to the PV topology node before
+capturing the source checkpoint. Script and Rust focused checks are pending;
+no replacement migration run has been dispatched.
+
 ## 2026-09-29 migration rerun 36627336634
 
 Run [36627336634](https://github.com/centerionware/not-k8s/actions/runs/36627336634)
