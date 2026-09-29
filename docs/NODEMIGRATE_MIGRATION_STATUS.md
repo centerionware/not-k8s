@@ -22,7 +22,12 @@ API/etcd sandboxes are absent, and each source control plane still has its
 static-pod manifests and etcd member data for recovery/return. `bash -n`,
 `git diff --check`, and positive/negative jq checks passed locally. This
 assertion has not run against the Docker cluster; the preflight failure still
-prevents the migration scenario from starting.
+prevents the migration scenario from starting. The stronger check now requires
+non-empty files in each etcd member data directory; migration-workflow
+validation passed in
+[run 36590018844](https://github.com/centerionware/not-k8s/actions/runs/36590018844)
+at SHA `beb54a3aed292dc49d846267e57691b5b9ebabcd`. This validates the script,
+not the live migration assertion.
 
 No regular build or full e2e gate ran.
 
