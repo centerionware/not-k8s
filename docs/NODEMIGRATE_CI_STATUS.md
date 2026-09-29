@@ -11,8 +11,10 @@ this objective.
 
 Commit `875efcd1cdf59a64b830a07e3e171426e6e1306f` added short-lived ServiceAccount
 TokenReview checks and explicit allowed/denied SubjectAccessReview checks at
-each migration checkpoint. `bash -n` passed locally; PR script validation
-passed in [run 36523684540](https://github.com/centerionware/not-k8s/actions/runs/36523684540),
+each migration checkpoint. The fixture now also exercises custom-resource
+`/status` writes and reads at every checkpoint. `bash -n` and four focused
+nodemigrate shell validators passed locally; PR
+script validation passed in [run 36523684540](https://github.com/centerionware/not-k8s/actions/runs/36523684540),
 and nodemigrate crate tests passed in
 [run 36523684432](https://github.com/centerionware/not-k8s/actions/runs/36523684432).
 The migration fixture has not run against a cluster with these assertions; the

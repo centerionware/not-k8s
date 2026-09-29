@@ -1213,6 +1213,8 @@ spec:
     listKind: MigrationRecordList
   conversion:
     strategy: None
+  subresources:
+    status: {}
   versions:
   - name: v1alpha1
     served: true
@@ -1227,6 +1229,11 @@ spec:
             properties:
               marker:
                 type: string
+          status:
+            type: object
+            properties:
+              migrationStage:
+                type: string
   - name: v1
     served: true
     storage: true
@@ -1239,6 +1246,11 @@ spec:
             required: [marker]
             properties:
               marker:
+                type: string
+          status:
+            type: object
+            properties:
+              migrationStage:
                 type: string
 YAML
     kubectl wait --for=condition=Established crd/migrationrecords.migration.nodemigrate.io --timeout=2m
@@ -2509,6 +2521,27 @@ verify_authentication_and_authorization_reviews() {
     echo "PASS TokenReview and allowed/denied SubjectAccessReview behavior at stage=$stage"
 }
 
+verify_custom_resource_status_subresource() {
+    local stage="$1"
+    local patch
+    patch="$(jq -cn --arg stage "$stage" '{status:{migrationStage:$stage}}')"
+    kubectl patch migrationrecord migration-record-0 \
+        --subresource=status --type=merge -p "$patch" >/dev/null || {
+        echo "could not write MigrationRecord /status at stage $stage" >&2
+        return 1
+    }
+    kubectl get migrationrecord migration-record-0 -o json | jq -e \
+        --arg stage "$stage" '
+          .apiVersion == "migration.nodemigrate.io/v1" and
+          .spec.marker == "durable-custom-resource-data" and
+          .status.migrationStage == $stage
+        ' >/dev/null || {
+        echo "MigrationRecord /status readback failed or changed its durable spec at stage $stage" >&2
+        return 1
+    }
+    echo "PASS CRD /status update/readback at stage=$stage"
+}
+
 verify_stage() {
     local stage="$1"
     local stage_dir="$CHECKPOINT_DIR/$stage"
@@ -3016,6 +3049,7 @@ YAML
     kubectl delete job -n migration-apps "$rbac_allow_job" "$rbac_node_job" "$rbac_deny_job" --wait=true
     verify_legacy_service_account_token "$stage"
     verify_authentication_and_authorization_reviews "$stage"
+    verify_custom_resource_status_subresource "$stage"
     kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-static-pvc --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-csi-pvc --timeout=5m

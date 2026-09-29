@@ -23,10 +23,11 @@ unverified; the known post-return Cilium routing failure still blocks a rerun.
 
 The stage fixture now mints a short-lived ServiceAccount token and checks the
 TokenReview identity plus allowed and denied SubjectAccessReview decisions at
-each source, not-k8s, and returned-source checkpoint. Shell syntax and focused
-JSON filter checks pass; the updated migration fixture has not run against a
-cluster yet, and the known Cilium routing failure still blocks a migration
-rerun.
+each source, not-k8s, and returned-source checkpoint. It also exercises a
+versioned custom resource's `/status` update and readback at each checkpoint.
+Shell syntax and focused JSON filter checks pass; these new migration fixture
+assertions have not run against a cluster yet, and the known Cilium routing
+failure still blocks a migration rerun.
 
 The goal allows broader, conflict-driven retirement of old control-plane
 services or files when an in-place destination needs their ports or paths.
