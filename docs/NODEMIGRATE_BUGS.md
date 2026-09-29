@@ -2,6 +2,19 @@
 
 Last updated: 2026-09-29
 
+## Current source-cutover correction (focused verification pending)
+
+- **Forward cutover bulk-removed ordinary CRI sandboxes before migration.**
+  This destroyed runtime records that should remain available for recovery and
+  made the workflow depend on per-Pod teardown. The source path now exports
+  Kubernetes API objects while the API is live, disables the full source
+  service/runtime stack, removes only source Cilium sandboxes and kubeadm
+  control-plane API/etcd sandboxes when needed, then snapshots local PV data
+  with writers stopped. Ordinary sandboxes and runtime data remain on disk.
+  Failed snapshots/imports stop the partial destination and restore the prior
+  runtime/service state. K3s/upstream focused utility CI is still required;
+  no migration run has exercised this change.
+
 ## Latest branch-run findings
 
 - **K3s return leaves ClusterIP/pod routing broken after Cilium reports ready.**

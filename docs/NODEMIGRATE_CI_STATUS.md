@@ -7,6 +7,20 @@ This is the living CI record for the scope in
 is recorded there and overrides conflicting general `AGENTS.md` gates for
 this objective.
 
+## Source shutdown strategy update
+
+The migration code is being revised to export API objects before source
+shutdown, then stop the source service/runtime before copying local volume
+payloads. Cleanup retains ordinary CRI sandboxes, targets Cilium sandboxes,
+and removes kubeadm control-plane static Pods only when needed to release
+local API/etcd ports. The previous all-sandbox probe
+[36519169676](https://github.com/centerionware/not-k8s/actions/runs/36519169676)
+was canceled because it exercised the superseded teardown design. No migration
+run or replacement diagnostic has been dispatched for the new code. Run a
+focused nodemigrate quick-check after the changes are complete; do not rerun a
+full migration until the outstanding Cilium migration failure and other known
+issues are fixed together.
+
 ## Cilium restart/replacement diagnostic
 
 Run [36508298004](https://github.com/centerionware/not-k8s/actions/runs/36508298004)

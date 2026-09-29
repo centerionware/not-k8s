@@ -248,45 +248,11 @@ fn migrate_to_nodestore(
         "Protected API object export saved at {}",
         export.dir.display()
     );
-    // Stopping the K3s service also stops its embedded containerd. Tear down
-    // K3s pod sandboxes while that CRI endpoint is still available; otherwise
-    // cleanup would run after `/run/k3s/containerd/containerd.sock` disappears
-    // and source containers could remain bound to host sockets and mounts.
-    let mut source_cilium_identity = if source.distribution == request::Distribution::K3s {
-        service::stop_source_pod_sandboxes(source)
-            .context("stopping K3s pod sandboxes before disabling the source service")?
-    } else {
-        service::SourceCiliumIdentity::default()
-    };
+    // Stop the source stack as a unit. The service layer handles separate
+    // upstream CRI services and only removes kubeadm control-plane static
+    // pods that must release their API/etcd ports; workload sandboxes remain
+    // intact for source reactivation and reboot recovery.
     let previous_service = service::disable(source)?;
-    if source.distribution == request::Distribution::Kubernetes {
-        if let Err(error) = service::stop_upstream_static_pods(source) {
-            if let Err(restore_error) = service::restore(source, previous_service) {
-                bail!("stopping upstream static pods failed ({error:#}) and restoring the source service failed ({restore_error:#})");
-            }
-            return Err(error)
-                .context("stopping source Kubernetes static pods; source service was restored");
-        }
-        let sandbox_cleanup = service::stop_source_pod_sandboxes(source);
-        match sandbox_cleanup {
-            Ok(identity) => source_cilium_identity = identity,
-            Err(error) => {
-                if let Err(restore_error) = service::restore(source, previous_service) {
-                    bail!("stopping source pod sandboxes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
-                }
-                return Err(error).context(
-                    "stopping source pod sandboxes before migration; source service was restored",
-                );
-            }
-        }
-    }
-    if let Err(error) = service::stop_orphaned_cilium_processes(source, &source_cilium_identity) {
-        if let Err(restore_error) = service::restore(source, previous_service) {
-            bail!("stopping orphaned source Cilium processes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
-        }
-        return Err(error)
-            .context("stopping orphaned source Cilium processes; source service was restored");
-    }
     let snapshot_result = if request.source_export.is_some() {
         export.snapshot_host_paths_for_node(&migrating_node_name)
     } else {
@@ -515,44 +481,28 @@ fn migrate_worker_to_nodestore(
         );
     }
 
-    let mut host_path_snapshot = target_api.snapshot_host_paths(local_node_labels)?;
+    let previous_service = service::disable(source)?;
+    let mut host_path_snapshot = match target_api.snapshot_host_paths(local_node_labels) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            if let Err(restore_error) = service::restore(source, previous_service) {
+                bail!("snapshotting worker local volumes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
+            }
+            return Err(error).context("worker local-volume snapshot failed; source service was restored");
+        }
+    };
     if request.uninstall_after_migrate {
-        host_path_snapshot.snapshot_k3s_cni_paths(source)?;
+        if let Err(error) = host_path_snapshot.snapshot_k3s_cni_paths(source) {
+            if let Err(restore_error) = service::restore(source, previous_service) {
+                bail!("snapshotting worker K3s CNI files failed ({error:#}) and restoring source service failed ({restore_error:#})");
+            }
+            return Err(error).context("worker K3s CNI snapshot failed; source service was restored");
+        }
     }
     println!(
         "Worker local-volume recovery snapshot saved at {}",
         host_path_snapshot.recovery_directory().display()
     );
-    let source_cilium_identity = if source.distribution == request::Distribution::K3s {
-        service::stop_source_pod_sandboxes(source)
-            .context("stopping K3s worker pod sandboxes before disabling the source service")?
-    } else {
-        service::SourceCiliumIdentity::default()
-    };
-    let previous_service = service::disable(source)?;
-    let source_cilium_identity = if source.distribution == request::Distribution::Kubernetes {
-        match service::stop_source_pod_sandboxes(source) {
-            Ok(identity) => identity,
-            Err(error) => {
-                if let Err(restore_error) = service::restore(source, previous_service) {
-                    bail!("stopping source worker pod sandboxes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
-                }
-                return Err(error).context(
-                    "stopping source worker pod sandboxes before migration; source service was restored",
-                );
-            }
-        }
-    } else {
-        source_cilium_identity
-    };
-    if let Err(error) = service::stop_orphaned_cilium_processes(source, &source_cilium_identity) {
-        if let Err(restore_error) = service::restore(source, previous_service) {
-            bail!("stopping orphaned source worker Cilium processes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
-        }
-        return Err(error).context(
-            "stopping orphaned source worker Cilium processes; source service was restored",
-        );
-    }
     let replacement_state = if existing_node {
         match remove_replaced_node(&target_api, &name, replace_existing) {
             Ok(state) => state,
@@ -784,10 +734,10 @@ fn migrate_to_existing(
             .map(|source_api| source_api.export(source))
             .transpose()?;
     }
-    let host_path_snapshot = if request.skip_api_export && !request.stage_target {
+    let needs_host_path_snapshot = request.skip_api_export && !request.stage_target;
+    let local_node_labels = if needs_host_path_snapshot {
         let name = node_name(target);
-        let local_node_labels = target_api.node_labels(&name).ok();
-        Some(target_api.snapshot_host_paths(local_node_labels.as_ref())?)
+        target_api.node_labels(&name).ok()
     } else {
         None
     };
@@ -797,26 +747,36 @@ fn migrate_to_existing(
             export.dir.display()
         );
     }
+    let mut host_path_snapshot = None;
+    let mut recovery_location = export
+        .as_ref()
+        .map(|export| export.dir.display().to_string())
+        .unwrap_or_else(|| "local-volume snapshot pending".to_string());
+    eprintln!("nodemigrate: stopping the nodestore service stack for return migration");
+    let previous_service = disable_nodestore_stack(source).with_context(|| {
+        format!("disabling nodestore failed; recovery data is at {recovery_location}")
+    })?;
+    eprintln!("nodemigrate: nodestore service stack is stopped");
+    if needs_host_path_snapshot {
+        match target_api.snapshot_host_paths(local_node_labels.as_ref()) {
+            Ok(snapshot) => host_path_snapshot = Some(snapshot),
+            Err(error) => {
+                if let Err(restore_error) = service::restore(source, previous_service) {
+                    bail!("snapshotting local persistent volumes failed ({error:#}); restoring nodestore also failed ({restore_error:#}); recovery data is at {recovery_location}");
+                }
+                return Err(error).context(format!(
+                    "local persistent-volume snapshot failed; nodestore was restored; recovery data is at {recovery_location}"
+                ));
+            }
+        }
+    }
     if let Some(snapshot) = &host_path_snapshot {
+        recovery_location = snapshot.recovery_directory().display().to_string();
         println!(
             "Local-volume recovery snapshot saved at {}",
             snapshot.recovery_directory().display()
         );
     }
-    let recovery_location = export
-        .as_ref()
-        .map(|export| export.dir.display().to_string())
-        .or_else(|| {
-            host_path_snapshot
-                .as_ref()
-                .map(|snapshot| snapshot.recovery_directory().display().to_string())
-        })
-        .unwrap_or_else(|| "no new export was created".to_string());
-    eprintln!("nodemigrate: stopping the nodestore service stack for return migration");
-    let previous_service = disable_nodestore_and_stop_pods(source).with_context(|| {
-        format!("disabling nodestore failed; recovery data is at {recovery_location}")
-    })?;
-    eprintln!("nodemigrate: nodestore service stack is stopped");
     if let Some(export) = &mut export {
         eprintln!("nodemigrate: snapshotting local persistent-volume payloads");
         if let Err(error) = export.snapshot_host_paths_for_node(&returning_node_name) {
@@ -1235,13 +1195,21 @@ fn migrate_worker_from_nodestore(
         return Ok(());
     }
 
-    let host_path_snapshot = target_api.snapshot_host_paths(local_node_labels)?;
+    let previous_service = disable_nodestore_stack(source)
+        .context("stopping nodestore worker services before returning to the retained cluster")?;
+    let host_path_snapshot = match target_api.snapshot_host_paths(local_node_labels) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            if let Err(restore_error) = service::restore(source, previous_service) {
+                bail!("snapshotting nodestore worker volumes failed ({error:#}) and restoring nodestore failed ({restore_error:#})");
+            }
+            return Err(error).context("nodestore worker volume snapshot failed; source services were restored");
+        }
+    };
     println!(
         "Worker local-volume recovery snapshot saved at {}",
         host_path_snapshot.recovery_directory().display()
     );
-    let previous_service = disable_nodestore_and_stop_pods(source)
-        .context("stopping nodestore worker services before returning to the retained cluster")?;
     let replacement_state = if existing_node {
         match remove_replaced_node(
             &target_api,
@@ -1300,29 +1268,14 @@ fn run_bootstrap(mut command: Command) -> Result<()> {
     Ok(())
 }
 
-fn disable_nodestore_and_stop_pods(
+fn disable_nodestore_stack(
     source: &detect::Installation,
 ) -> Result<service::PreviousServiceState> {
     ensure!(
         source.distribution == request::Distribution::Nodestore,
-        "pod sandbox handoff is only valid when returning from nodestore"
+        "the source stack shutdown helper is only valid when returning from nodestore"
     );
-    let previous_service = service::disable(source).context("stopping the nodestore service stack")?;
-    eprintln!("nodemigrate: stopping nodestore CRI pod sandboxes before retained-cluster startup");
-    let handoff = service::stop_source_pod_sandboxes(source)
-        .context("stopping nodestore CRI pod sandboxes while containerd is available")
-        .and_then(|identity| {
-            service::stop_orphaned_cilium_processes(source, &identity)
-                .context("stopping nodestore Cilium processes before retained-cluster startup")
-                .map(|_| ())
-        });
-    if let Err(error) = handoff {
-        if let Err(restore_error) = service::restore(source, previous_service) {
-            bail!("stopping nodestore pods failed ({error:#}) and restoring the service stack failed ({restore_error:#})");
-        }
-        return Err(error).context("stopping nodestore pods; nodestore was restored");
-    }
-    Ok(previous_service)
+    service::disable(source).context("stopping the nodestore service and runtime stack")
 }
 
 fn is_root() -> bool {

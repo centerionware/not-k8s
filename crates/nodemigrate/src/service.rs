@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::{os::unix::fs::FileTypeExt, path::Path};
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 
 use crate::{
     detect::{Installation, NodeRole, ServiceManager},
@@ -15,10 +15,12 @@ pub struct PreviousServiceState {
     enabled: bool,
     active: bool,
     services: Vec<ServiceState>,
+    runtime: Option<ServiceState>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SourceCiliumIdentity {
+    sandbox_ids: Vec<String>,
     container_ids: Vec<String>,
     pod_uids: Vec<String>,
 }
@@ -59,13 +61,223 @@ pub fn validate_disable_support(installation: &Installation) -> Result<()> {
     Ok(())
 }
 
+fn runtime_service_state(
+    manager: ServiceManager,
+    installation: &Installation,
+) -> Result<Option<ServiceState>> {
+    if installation.distribution == Distribution::K3s {
+        return Ok(None);
+    }
+    let configured_name = std::env::var("NODEMIGRATE_RUNTIME_SERVICE")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| name.trim().to_string());
+    let name = configured_name
+        .or_else(|| runtime_service_name(installation.runtime_endpoint.as_deref()))
+        .context("could not identify the source CRI service; set NODEMIGRATE_RUNTIME_SERVICE to its service name")?;
+    if !service_exists(manager, &name) {
+        if installation.distribution == Distribution::Nodestore
+            && installation.runtime_endpoint.is_none()
+            && std::env::var_os("NODEMIGRATE_RUNTIME_SERVICE").is_none()
+        {
+            return Ok(None);
+        }
+        anyhow::bail!(
+            "source CRI service '{name}' was not found; set NODEMIGRATE_RUNTIME_SERVICE to the installed runtime service"
+        );
+    }
+    let active = service_active(manager, &name);
+    if installation.distribution == Distribution::Nodestore && !active {
+        return Ok(None);
+    }
+    ensure!(
+        active,
+        "source CRI service '{name}' is not active; refusing to migrate while runtime state is uncertain"
+    );
+    Ok(Some(ServiceState {
+        name: name.clone(),
+        enabled: service_enabled(manager, &name),
+        active,
+    }))
+}
+
+fn runtime_service_name(endpoint: Option<&str>) -> Option<String> {
+    let endpoint = endpoint.unwrap_or("");
+    if endpoint.contains("crio") {
+        Some("crio".to_string())
+    } else if endpoint.contains("cri-dockerd") {
+        Some("docker".to_string())
+    } else if endpoint.is_empty() || endpoint.contains("containerd") {
+        Some("containerd".to_string())
+    } else {
+        None
+    }
+}
+
+fn capture_source_cilium_identity(installation: &Installation) -> Result<SourceCiliumIdentity> {
+    let is_cilium = installation
+        .cluster
+        .as_ref()
+        .and_then(|cluster| cluster.cni.as_deref())
+        .is_some_and(|cni| cni.eq_ignore_ascii_case("cilium"));
+    if !is_cilium {
+        return Ok(SourceCiliumIdentity::default());
+    }
+    let endpoint = std::env::var("NODEMIGRATE_CRI_ENDPOINT")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| installation.runtime_endpoint.clone())
+        .unwrap_or_else(|| "unix:///run/containerd/containerd.sock".to_string());
+    let pods = checked_output(
+        "crictl",
+        &["--runtime-endpoint", &endpoint, "pods", "-o", "json"],
+        "listing Cilium source pod identities",
+    )?;
+    let pods: serde_json::Value =
+        serde_json::from_slice(&pods).context("parsing Cilium source pod identities")?;
+    let (sandbox_ids, pod_uids) = cilium_source_sandbox_ids(&pods);
+    let containers = checked_output(
+        "crictl",
+        &["--runtime-endpoint", &endpoint, "ps", "-a", "-o", "json"],
+        "listing Cilium source container identities",
+    )?;
+    let containers: serde_json::Value = serde_json::from_slice(&containers)
+        .context("parsing Cilium source container identities")?;
+    Ok(SourceCiliumIdentity {
+        sandbox_ids,
+        container_ids: cilium_host_container_ids(&containers),
+        pod_uids,
+    })
+}
+
+fn cilium_source_sandbox_ids(pods: &serde_json::Value) -> (Vec<String>, Vec<String>) {
+    let mut sandbox_ids = Vec::new();
+    let mut pod_uids = Vec::new();
+    for pod in pods
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let namespace_is_cilium = pod
+            .pointer("/metadata/namespace")
+            .and_then(serde_json::Value::as_str)
+            == Some("kube-system");
+        let pod_name_is_cilium = pod
+            .pointer("/metadata/name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| name.starts_with("cilium"));
+        let cilium_app_label = pod
+            .pointer("/labels/k8s-app")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|app| app == "cilium" || app == "cilium-envoy");
+        let is_cilium = namespace_is_cilium && (pod_name_is_cilium || cilium_app_label);
+        if !is_cilium {
+            continue;
+        }
+        if let Some(id) = pod
+            .pointer("/id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+        {
+            sandbox_ids.push(id.to_string());
+        }
+        if let Some(uid) = pod
+            .pointer("/metadata/uid")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                pod.pointer("/labels/io.kubernetes.pod.uid")
+                    .and_then(serde_json::Value::as_str)
+            })
+            .or_else(|| {
+                pod.pointer("/labels/nodelet.dev/pod-uid")
+                    .and_then(serde_json::Value::as_str)
+            })
+            .filter(|uid| !uid.is_empty())
+        {
+            pod_uids.push(uid.to_string());
+        }
+    }
+    (sandbox_ids, pod_uids)
+}
+
+fn stop_cilium_source_sandboxes(
+    installation: &Installation,
+    identity: &SourceCiliumIdentity,
+) -> Result<()> {
+    if identity.sandbox_ids.is_empty() {
+        return Ok(());
+    }
+    let endpoint = std::env::var("NODEMIGRATE_CRI_ENDPOINT")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| installation.runtime_endpoint.clone())
+        .unwrap_or_else(|| "unix:///run/containerd/containerd.sock".to_string());
+    for id in &identity.sandbox_ids {
+        checked("crictl", &["--runtime-endpoint", &endpoint, "stopp", id])
+            .with_context(|| format!("stopping source Cilium pod sandbox {id}"))?;
+        checked("crictl", &["--runtime-endpoint", &endpoint, "rmp", id])
+            .with_context(|| format!("removing source Cilium pod sandbox {id}"))?;
+    }
+    Ok(())
+}
+
+fn checked_output(program: &str, args: &[&str], operation: &str) -> Result<Vec<u8>> {
+    let output = command(program, args).with_context(|| operation.to_string())?;
+    ensure!(
+        output.status.success(),
+        "{operation} failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(output.stdout)
+}
+
 pub fn disable(installation: &Installation) -> Result<PreviousServiceState> {
     let manager = installation
         .service_manager
         .context("source service manager could not be identified; refusing to stop the source")?;
     let name = &installation.service_name;
     if installation.distribution == crate::request::Distribution::Nodestore {
-        return stop_nodestore_stack(manager, true);
+        let runtime = runtime_service_state(manager, installation)?;
+        let cilium_identity = if runtime.is_some() {
+            capture_source_cilium_identity(installation)?
+        } else {
+            SourceCiliumIdentity::default()
+        };
+        let mut previous = stop_nodestore_stack(manager, true)?;
+        previous.runtime = runtime;
+        if let Err(error) = stop_cilium_source_sandboxes(installation, &cilium_identity) {
+            if let Err(restore_error) = restore(installation, previous) {
+                bail!(
+                    "stopping nodestore Cilium sandboxes failed ({error:#}) and restoring nodestore failed ({restore_error:#})"
+                );
+            }
+            return Err(error)
+                .context("stopping nodestore Cilium sandboxes; nodestore was restored");
+        }
+        if let Some(runtime) = &previous.runtime {
+            let runtime_name = runtime.name.clone();
+            if let Err(error) = stop_and_disable(manager, &runtime_name) {
+                if let Err(restore_error) = restore(installation, previous) {
+                    bail!(
+                        "stopping nodestore runtime '{runtime_name}' failed ({error:#}) and restoring nodestore failed ({restore_error:#})"
+                    );
+                }
+                return Err(error).with_context(|| {
+                    format!("stopping nodestore runtime {runtime_name}; nodestore was restored")
+                });
+            }
+        }
+        if let Err(error) = stop_orphaned_cilium_processes(installation, &cilium_identity) {
+            if let Err(restore_error) = restore(installation, previous) {
+                bail!(
+                    "stopping nodestore Cilium processes failed ({error:#}) and restoring nodestore failed ({restore_error:#})"
+                );
+            }
+            return Err(error)
+                .context("stopping nodestore Cilium processes; nodestore was restored");
+        }
+        return Ok(previous);
     }
     let previous = match manager {
         ServiceManager::Systemd => {
@@ -77,6 +289,7 @@ pub fn disable(installation: &Installation) -> Result<PreviousServiceState> {
                 enabled,
                 active,
                 services: Vec::new(),
+                runtime: None,
             }
         }
         ServiceManager::OpenRc => {
@@ -89,6 +302,7 @@ pub fn disable(installation: &Installation) -> Result<PreviousServiceState> {
                 enabled: default_runlevel,
                 active,
                 services: Vec::new(),
+                runtime: None,
             }
         }
         ServiceManager::SysVInit => PreviousServiceState {
@@ -96,6 +310,7 @@ pub fn disable(installation: &Installation) -> Result<PreviousServiceState> {
             active: command("service", &[name, "status"])
                 .is_ok_and(|output| output.status.success()),
             services: Vec::new(),
+            runtime: None,
         },
         ServiceManager::Runit => {
             let service_dir = runit_service_dir(name);
@@ -110,6 +325,7 @@ pub fn disable(installation: &Installation) -> Result<PreviousServiceState> {
                     })
                 }),
                 services: Vec::new(),
+                runtime: None,
             }
         }
     };
@@ -118,11 +334,66 @@ pub fn disable(installation: &Installation) -> Result<PreviousServiceState> {
         "source service '{}' is not active; refusing to migrate a stopped cluster",
         installation.service_name
     );
+    let mut previous = previous;
+    if installation.distribution == Distribution::Kubernetes {
+        previous.runtime = runtime_service_state(manager, installation)?;
+    }
+    let cilium_identity = capture_source_cilium_identity(installation)?;
+    if installation.distribution == Distribution::K3s {
+        stop_cilium_source_sandboxes(installation, &cilium_identity)
+            .context("tearing down source Cilium pod sandboxes before stopping K3s")?;
+    }
     if let Err(error) = stop_and_disable(manager, name) {
         if let Err(restore_error) = restore(installation, previous) {
-            bail!("disabling source service failed ({error:#}) and restoring its previous state failed ({restore_error:#})");
+            bail!(
+                "disabling source service failed ({error:#}) and restoring its previous state failed ({restore_error:#})"
+            );
         }
         return Err(error).context("could not disable source service; previous state was restored");
+    }
+    if installation.distribution == Distribution::Kubernetes
+        && installation.role == NodeRole::ControlPlane
+    {
+        if let Err(error) = stop_upstream_static_pods(installation) {
+            if let Err(restore_error) = restore(installation, previous) {
+                bail!(
+                    "stopping source control-plane static pods failed ({error:#}) and restoring the source failed ({restore_error:#})"
+                );
+            }
+            return Err(error)
+                .context("stopping source control-plane static pods; source was restored");
+        }
+    }
+    if installation.distribution == Distribution::Kubernetes {
+        if let Err(error) = stop_cilium_source_sandboxes(installation, &cilium_identity) {
+            if let Err(restore_error) = restore(installation, previous) {
+                bail!(
+                    "stopping source Cilium sandboxes failed ({error:#}) and restoring the source failed ({restore_error:#})"
+                );
+            }
+            return Err(error).context("stopping source Cilium sandboxes; source was restored");
+        }
+    }
+    if let Some(runtime) = &previous.runtime {
+        let runtime_name = runtime.name.clone();
+        if let Err(error) = stop_and_disable(manager, &runtime_name) {
+            if let Err(restore_error) = restore(installation, previous) {
+                bail!(
+                    "stopping source runtime '{runtime_name}' failed ({error:#}) and restoring the source failed ({restore_error:#})"
+                );
+            }
+            return Err(error).with_context(|| {
+                format!("stopping source runtime {runtime_name}; source was restored")
+            });
+        }
+    }
+    if let Err(error) = stop_orphaned_cilium_processes(installation, &cilium_identity) {
+        if let Err(restore_error) = restore(installation, previous) {
+            bail!(
+                "stopping source Cilium processes failed ({error:#}) and restoring the source failed ({restore_error:#})"
+            );
+        }
+        return Err(error).context("stopping source Cilium processes; source was restored");
     }
     Ok(previous)
 }
@@ -179,9 +450,6 @@ fn stop_upstream_static_pods_inner(
 /// must be quiesced first so its API server, CNI, and workloads cannot conflict
 /// with the restored source services or mutate the recovery snapshot.
 pub fn stop_reverse_migration_target(installation: &Installation) -> Result<()> {
-    let manager = installation
-        .service_manager
-        .context("target service manager is unknown; cannot roll back the retained target")?;
     ensure!(
         matches!(
             installation.distribution,
@@ -189,106 +457,9 @@ pub fn stop_reverse_migration_target(installation: &Installation) -> Result<()> 
         ),
         "reverse migration rollback requires a retained K3s or Kubernetes target"
     );
-
-    let cilium_identity = if installation.distribution == Distribution::K3s {
-        stop_source_pod_sandboxes(installation)
-            .context("stopping retained K3s pod sandboxes before rollback")?
-    } else {
-        SourceCiliumIdentity::default()
-    };
-
-    stop_and_disable(manager, &installation.service_name).with_context(|| {
-        format!(
-            "stopping retained target service {}",
-            installation.service_name
-        )
-    })?;
-
-    let cilium_identity = if installation.distribution == Distribution::Kubernetes {
-        stop_upstream_static_pods_inner(installation, false)
-            .context("stopping retained kubeadm static pods during rollback")?;
-        stop_source_pod_sandboxes(installation)
-            .context("stopping retained Kubernetes pod sandboxes during rollback")?
-    } else {
-        cilium_identity
-    };
-    stop_orphaned_cilium_processes(installation, &cilium_identity)
-        .context("stopping retained Cilium processes during rollback")?;
-    Ok(())
-}
-
-/// Remove CRI pod sandboxes left behind after stopping the source Kubernetes
-/// service. Stopping kubelet/K3s does not stop existing containers. Leaving
-/// them running lets the new node agent start a second copy of the migrated
-/// Pods, which can collide on host ports, sockets, and mounted data.
-pub fn stop_source_pod_sandboxes(installation: &Installation) -> Result<SourceCiliumIdentity> {
-    let endpoint = std::env::var("NODEMIGRATE_CRI_ENDPOINT")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .or_else(|| installation.runtime_endpoint.clone())
-        .unwrap_or_else(|| "unix:///run/containerd/containerd.sock".to_string());
-    let output = command(
-        "crictl",
-        &["--runtime-endpoint", &endpoint, "pods", "-o", "json"],
-    )
-    .context("listing source pod sandboxes; install crictl or set NODEMIGRATE_CRI_ENDPOINT")?;
-    ensure!(
-        output.status.success(),
-        "crictl could not list source pod sandboxes: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    let pods: serde_json::Value =
-        serde_json::from_slice(&output.stdout).context("parsing CRI pod sandbox list")?;
-    let (ready, all, cilium_pod_uids) = source_pod_sandbox_ids(&pods);
-    tracing::info!(
-        count = all.len(),
-        runtime_endpoint = %endpoint,
-        "stopping source pod sandboxes before cutover"
-    );
-    let mut stop_failures = Vec::new();
-    for id in &ready {
-        if let Err(error) = checked("crictl", &["--runtime-endpoint", &endpoint, "stopp", id]) {
-            stop_failures.push((id.clone(), format!("{error:#}")));
-        }
-    }
-    let output = command(
-        "crictl",
-        &["--runtime-endpoint", &endpoint, "ps", "-a", "-o", "json"],
-    )
-    .context("checking for running source containers after stopping pod sandboxes")?;
-    ensure!(
-        output.status.success(),
-        "crictl could not list source containers: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    let containers: serde_json::Value =
-        serde_json::from_slice(&output.stdout).context("parsing CRI container list")?;
-    let running = running_sandbox_ids(&containers);
-    ensure_failed_stops_are_inactive(&stop_failures, &running)?;
-    for (id, error) in stop_failures {
-        tracing::warn!(sandbox_id = %id, error = %error, "source sandbox stop failed but CRI confirms it has no running containers");
-    }
-    let cilium_host_containers = cilium_host_container_ids(&containers);
-    if !cilium_host_containers.is_empty() || !cilium_pod_uids.is_empty() {
-        eprintln!(
-            "nodemigrate: source Cilium host-process identities: CRI containers [{}], pod UIDs [{}]",
-            cilium_host_containers.join(","),
-            cilium_pod_uids.join(",")
-        );
-    }
-    for id in &all {
-        if let Err(error) = checked("crictl", &["--runtime-endpoint", &endpoint, "rmp", id]) {
-            ensure!(
-                !running.contains(id),
-                "removing source pod sandbox {id} failed while its container is still running: {error:#}"
-            );
-            tracing::warn!(sandbox_id = id, error = %error, "stopped source sandbox could not be removed; continuing with no running containers");
-        }
-    }
-    Ok(SourceCiliumIdentity {
-        container_ids: cilium_host_containers,
-        pod_uids: cilium_pod_uids,
-    })
+    disable(installation)
+        .map(|_| ())
+        .context("stopping the retained target stack during reverse-migration rollback")
 }
 
 /// Source Cilium host-network containers can leave their agent, operator, or
@@ -318,7 +489,9 @@ pub fn stop_orphaned_cilium_processes(
 
     let stopped = signal_processes(&pids, libc::SIGTERM)?;
     if wait_for_source_process_exit(proc_root, identity, Duration::from_secs(5))? {
-        eprintln!("nodemigrate: stopped {stopped} leftover source Cilium daemon process(es) by exact container or pod identity");
+        eprintln!(
+            "nodemigrate: stopped {stopped} leftover source Cilium daemon process(es) by exact container or pod identity"
+        );
         cleanup_stale_cilium_envoy_sockets(installation)?;
         return Ok(stopped);
     }
@@ -418,7 +591,7 @@ fn processes_in_source_cilium_identity(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
                 return Err(error)
-                    .with_context(|| format!("reading command line for process {pid}"))
+                    .with_context(|| format!("reading command line for process {pid}"));
             }
         };
         if !is_cilium_host_process(&command_line) {
@@ -428,7 +601,7 @@ fn processes_in_source_cilium_identity(
             Ok(cgroup) => cgroup,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
-                return Err(error).with_context(|| format!("reading cgroup for process {pid}"))
+                return Err(error).with_context(|| format!("reading cgroup for process {pid}"));
             }
         };
         if cgroup_container_id(&cgroup).is_some_and(|id| container_ids.contains(id))
@@ -454,7 +627,7 @@ fn process_has_source_shim_ancestor(
             Ok(stat) => stat,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => {
-                return Err(error).with_context(|| format!("reading process stat for {current}"))
+                return Err(error).with_context(|| format!("reading process stat for {current}"));
             }
         };
         let Some((_, fields)) = stat.rsplit_once(") ") else {
@@ -474,7 +647,7 @@ fn process_has_source_shim_ancestor(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => {
                 return Err(error)
-                    .with_context(|| format!("reading command line for process {parent_pid}"))
+                    .with_context(|| format!("reading command line for process {parent_pid}"));
             }
         };
         if is_containerd_shim_for_source(&command_line, container_ids) {
@@ -612,100 +785,6 @@ fn wait_for_source_process_exit(
     }
 }
 
-fn source_pod_sandbox_ids(pods: &serde_json::Value) -> (Vec<String>, Vec<String>, Vec<String>) {
-    let Some(items) = pods.get("items").and_then(serde_json::Value::as_array) else {
-        return (Vec::new(), Vec::new(), Vec::new());
-    };
-    let mut sandboxes = Vec::new();
-    let mut cilium_pod_uids = Vec::new();
-    for pod in items {
-        let Some(id) = pod
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .filter(|id| !id.is_empty())
-        else {
-            continue;
-        };
-        let is_cilium = pod
-            .get("metadata")
-            .and_then(|metadata| metadata.get("name"))
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|name| name.starts_with("cilium"))
-            || pod
-                .get("labels")
-                .and_then(|labels| labels.get("k8s-app"))
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|app| app == "cilium" || app == "cilium-envoy");
-        let is_ready =
-            pod.get("state").and_then(serde_json::Value::as_str) == Some("SANDBOX_READY");
-        if is_cilium {
-            if let Some(uid) = pod
-                .get("metadata")
-                .and_then(|metadata| metadata.get("uid"))
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| {
-                    pod.get("labels")
-                        .and_then(|labels| labels.get("io.kubernetes.pod.uid"))
-                        .and_then(serde_json::Value::as_str)
-                })
-                .or_else(|| {
-                    pod.get("labels")
-                        .and_then(|labels| labels.get("nodelet.dev/pod-uid"))
-                        .and_then(serde_json::Value::as_str)
-                })
-                .filter(|uid| !uid.is_empty())
-            {
-                cilium_pod_uids.push(uid.to_string());
-            }
-        }
-        sandboxes.push((id.to_string(), is_ready, is_cilium));
-    }
-    // CNI teardown for ordinary pods may depend on the Cilium agent. Stop and
-    // remove Cilium pods last, after the rest of the source sandboxes.
-    sandboxes.sort_by_key(|(_, _, is_cilium)| *is_cilium);
-    let ready = sandboxes
-        .iter()
-        .filter(|(_, is_ready, _)| *is_ready)
-        .map(|(id, _, _)| id.clone())
-        .collect();
-    let all = sandboxes.into_iter().map(|(id, _, _)| id).collect();
-    cilium_pod_uids.sort_unstable();
-    cilium_pod_uids.dedup();
-    (ready, all, cilium_pod_uids)
-}
-
-fn running_sandbox_ids(containers: &serde_json::Value) -> std::collections::HashSet<String> {
-    containers
-        .get("containers")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|container| {
-            container.get("state").and_then(serde_json::Value::as_str) == Some("CONTAINER_RUNNING")
-        })
-        .filter_map(|container| {
-            container
-                .get("podSandboxId")
-                .and_then(serde_json::Value::as_str)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-        })
-        .collect()
-}
-
-fn ensure_failed_stops_are_inactive(
-    failures: &[(String, String)],
-    running: &std::collections::HashSet<String>,
-) -> Result<()> {
-    for (id, error) in failures {
-        ensure!(
-            !running.contains(id),
-            "stopping source pod sandbox {id} failed while its container is still running: {error}"
-        );
-    }
-    Ok(())
-}
-
 fn cleanup_stale_cilium_envoy_sockets(installation: &Installation) -> Result<usize> {
     let is_cilium = installation
         .cluster
@@ -734,7 +813,7 @@ fn remove_unix_sockets(directory: &Path) -> Result<usize> {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(error) => {
-            return Err(error).with_context(|| format!("reading {}", directory.display()))
+            return Err(error).with_context(|| format!("reading {}", directory.display()));
         }
     };
     ensure!(
@@ -787,24 +866,15 @@ fn static_pod_sandbox_ids(pods: &serde_json::Value) -> Vec<String> {
             let namespace = pod
                 .pointer("/metadata/namespace")
                 .and_then(serde_json::Value::as_str);
-            let static_source = pod
-                .pointer("/labels/kubernetes.io~1config.source")
-                .and_then(serde_json::Value::as_str)
-                == Some("file");
             let control_plane_name = pod
                 .pointer("/metadata/name")
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|name| {
-                    [
-                        "kube-apiserver-",
-                        "etcd-",
-                        "kube-scheduler-",
-                        "kube-controller-manager-",
-                    ]
-                    .iter()
-                    .any(|prefix| name.starts_with(prefix))
+                    ["kube-apiserver-", "etcd-"]
+                        .iter()
+                        .any(|prefix| name.starts_with(prefix))
                 });
-            namespace == Some("kube-system") && (static_source || control_plane_name)
+            namespace == Some("kube-system") && control_plane_name
         })
         .filter_map(|pod| {
             pod.pointer("/id")
@@ -819,6 +889,10 @@ pub fn restore(installation: &Installation, previous: PreviousServiceState) -> R
         .service_manager
         .context("source service manager is unknown")?;
     let name = &installation.service_name;
+    if let Some(runtime) = &previous.runtime {
+        restore_named(manager, runtime)
+            .with_context(|| format!("restoring source runtime service {}", runtime.name))?;
+    }
     if !previous.services.is_empty() {
         restore_nodestore_stack(manager, &previous)?;
         return Ok(());
@@ -870,7 +944,12 @@ pub fn stop_nodestore_for_rollback(installation: &Installation) -> Result<()> {
     let manager = installation
         .service_manager
         .context("service manager is unknown; cannot stop the partial nodestore stack")?;
-    stop_nodestore_stack(manager, false).map(|_| ())
+    stop_nodestore_stack(manager, false)?;
+    if service_exists(manager, "containerd") && service_active(manager, "containerd") {
+        stop_and_disable(manager, "containerd")
+            .context("stopping the partial nodestore containerd runtime")?;
+    }
+    Ok(())
 }
 
 fn stop_nodestore_stack(
@@ -903,6 +982,7 @@ fn stop_nodestore_stack(
         enabled: false,
         active: false,
         services,
+        runtime: None,
     };
     for service in &previous.services {
         if service.active || service.enabled {
@@ -913,7 +993,10 @@ fn stop_nodestore_stack(
             };
             if let Err(error) = result {
                 if let Err(restore_error) = restore_nodestore_stack(manager, &previous) {
-                    bail!("stopping nodebootstrap service '{}' failed ({error:#}) and restoring the stack failed ({restore_error:#})", service.name);
+                    bail!(
+                        "stopping nodebootstrap service '{}' failed ({error:#}) and restoring the stack failed ({restore_error:#})",
+                        service.name
+                    );
                 }
                 return Err(error)
                     .with_context(|| format!("stopping nodebootstrap service {}", service.name));
@@ -1231,31 +1314,49 @@ fn command(program: &str, args: &[&str]) -> Result<Output> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cilium_host_container_ids, ensure_failed_stops_are_inactive, running_sandbox_ids,
-        source_pod_sandbox_ids, static_pod_sandbox_ids, SourceCiliumIdentity,
+        SourceCiliumIdentity, cilium_host_container_ids, cilium_source_sandbox_ids,
+        runtime_service_name, static_pod_sandbox_ids,
     };
 
     const SOURCE_CONTAINER_ID: &str =
         "ef96e5cf937fed840c1bfcc03df0ef667927c7f666ba4963da35faaa9f80f39a";
 
     #[test]
-    fn selects_only_kube_system_file_static_pod_sandboxes() {
+    fn maps_supported_cri_endpoints_to_their_host_service() {
+        assert_eq!(
+            runtime_service_name(Some("unix:///run/containerd/containerd.sock")),
+            Some("containerd".to_string())
+        );
+        assert_eq!(
+            runtime_service_name(Some("unix:///run/crio/crio.sock")),
+            Some("crio".to_string())
+        );
+        assert_eq!(
+            runtime_service_name(Some("unix:///run/cri-dockerd.sock")),
+            Some("docker".to_string())
+        );
+        assert_eq!(runtime_service_name(None), Some("containerd".to_string()));
+        assert_eq!(
+            runtime_service_name(Some("unix:///custom/runtime.sock")),
+            None
+        );
+    }
+
+    #[test]
+    fn selects_only_kubeadm_api_and_etcd_sandboxes() {
         let pods = serde_json::json!({
             "items": [
                 {
-                    "id": "static-sandbox",
-                    "metadata": {"name": "custom-static-pod", "namespace": "kube-system"},
-                    "labels": {"kubernetes.io/config.source": "file"}
+                    "id": "apiserver-sandbox",
+                    "metadata": {"name": "kube-apiserver-node-a", "namespace": "kube-system"}
                 },
                 {
-                    "id": "apiserver-sandbox",
-                    "metadata": {"name": "kube-apiserver-node-a", "namespace": "kube-system"},
-                    "labels": {}
+                    "id": "etcd-sandbox",
+                    "metadata": {"name": "etcd-node-a", "namespace": "kube-system"}
                 },
                 {
                     "id": "controller-sandbox",
-                    "metadata": {"namespace": "kube-system"},
-                    "labels": {"kubernetes.io/config.source": "api"}
+                    "metadata": {"name": "kube-scheduler-node-a", "namespace": "kube-system"}
                 },
                 {
                     "id": "application-sandbox",
@@ -1266,84 +1367,28 @@ mod tests {
         });
         assert_eq!(
             static_pod_sandbox_ids(&pods),
-            ["static-sandbox", "apiserver-sandbox"]
+            ["apiserver-sandbox", "etcd-sandbox"]
         );
     }
 
     #[test]
-    fn selects_every_source_sandbox_and_only_stops_ready_ones() {
+    fn selects_only_cilium_sandboxes_for_targeted_cleanup() {
         let pods = serde_json::json!({
             "items": [
-                {"id": "cilium", "state": "SANDBOX_READY", "metadata": {"name": "cilium-agent", "namespace": "kube-system", "uid": "11111111-2222-4333-8444-555555555555"}},
-                {"id": "ready", "state": "SANDBOX_READY"},
-                {"id": "not-ready", "state": "SANDBOX_NOTREADY"},
-                {"id": "other-cilium", "state": "SANDBOX_READY", "metadata": {"name": "cilium-envoy-node-a", "namespace": "kube-system", "uid": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}},
-                {"id": "operator", "state": "SANDBOX_READY", "metadata": {"name": "cilium-operator-abc", "namespace": "kube-system", "uid": "22222222-3333-4444-8555-666666666666"}},
-                {"metadata": {"name": "missing-id"}, "state": "SANDBOX_READY"},
-                {"id": "", "state": "SANDBOX_READY"}
+                {"id": "cilium-agent-id", "metadata": {"name": "cilium-agent-node-a", "namespace": "kube-system", "uid": "agent-uid"}},
+                {"id": "cilium-operator-id", "metadata": {"name": "cilium-operator-abc", "namespace": "kube-system", "uid": "operator-uid"}},
+                {"id": "workload-id", "metadata": {"name": "app", "namespace": "apps", "uid": "workload-uid"}},
+                {"id": "other-system-id", "metadata": {"name": "cilium-agent", "namespace": "default", "uid": "other-uid"}}
             ]
         });
 
         assert_eq!(
-            source_pod_sandbox_ids(&pods),
+            cilium_source_sandbox_ids(&pods),
             (
-                vec![
-                    "ready".to_string(),
-                    "cilium".to_string(),
-                    "other-cilium".to_string(),
-                    "operator".to_string()
-                ],
-                vec![
-                    "ready".to_string(),
-                    "not-ready".to_string(),
-                    "cilium".to_string(),
-                    "other-cilium".to_string(),
-                    "operator".to_string()
-                ],
-                vec![
-                    "11111111-2222-4333-8444-555555555555".to_string(),
-                    "22222222-3333-4444-8555-666666666666".to_string(),
-                    "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee".to_string()
-                ]
+                vec!["cilium-agent-id", "cilium-operator-id"],
+                vec!["agent-uid", "operator-uid"]
             )
         );
-    }
-
-    #[test]
-    fn source_sandbox_listing_without_items_is_empty() {
-        assert_eq!(
-            source_pod_sandbox_ids(&serde_json::json!({})),
-            (vec![], vec![], vec![])
-        );
-    }
-
-    #[test]
-    fn running_container_ids_are_grouped_by_pod_sandbox() {
-        let containers = serde_json::json!({
-            "containers": [
-                {"podSandboxId": "running", "state": "CONTAINER_RUNNING"},
-                {"podSandboxId": "exited", "state": "CONTAINER_EXITED"},
-                {"podSandboxId": "", "state": "CONTAINER_RUNNING"}
-            ]
-        });
-
-        assert_eq!(
-            running_sandbox_ids(&containers),
-            ["running".to_string()].into_iter().collect()
-        );
-    }
-
-    #[test]
-    fn tolerates_stop_failure_only_when_cri_confirms_no_running_container() {
-        let failures = vec![("stopped".to_string(), "deadline exceeded".to_string())];
-        assert!(
-            ensure_failed_stops_are_inactive(&failures, &std::collections::HashSet::new()).is_ok()
-        );
-
-        let running = ["stopped".to_string()].into_iter().collect();
-        let error = ensure_failed_stops_are_inactive(&failures, &running).unwrap_err();
-        assert!(error.to_string().contains("still running"));
-        assert!(error.to_string().contains("deadline exceeded"));
     }
 
     #[test]
@@ -1552,6 +1597,7 @@ mod tests {
             processes_in_source_cilium_identity(
                 proc_root.path(),
                 &SourceCiliumIdentity {
+                    sandbox_ids: Vec::new(),
                     container_ids: vec![SOURCE_CONTAINER_ID.to_string()],
                     pod_uids: vec!["8536f215-fc22-41fa-b8b6-f0245c88e125".to_string()],
                 }

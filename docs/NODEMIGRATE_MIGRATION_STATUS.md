@@ -7,6 +7,14 @@ This is the living implementation status record for the full scope in
 that exists; verification marks describe evidence from a run. A passing
 compile or unit test does not mark a real migration path as verified.
 
+The source cutover implementation is being changed to export API objects while
+the source API is live, then stop the source service/runtime before copying
+node-local PV data. Ordinary Pod sandboxes are retained; explicit removal is
+limited to Cilium sandboxes and kubeadm control-plane static Pods needed to
+release API/etcd ports. Upstream runtime service state is captured so a failed
+snapshot/import can restart the original runtime and source services. This code
+is not yet CI-verified, and no migration run has been started for it.
+
 The non-migration K3s+Cilium diagnostic [36509703232](https://github.com/centerionware/not-k8s/actions/runs/36509703232)
 completed a same-name Node UID replacement. Workload, storage, all 119 API
 resources, and Cilium service datapath checks passed; the API ClusterIP's BPF
@@ -46,19 +54,20 @@ nodemigrate. Recreating the agent Pod alone does not reproduce the
 cross-cluster-only failure; cause and fix remain unverified, and migration
 must not be retried yet.
 
-Follow-up diagnosis is being expanded to mirror the source cutover's CRI
-handoff in one run: remove all source Pod sandboxes with Cilium last, restart
-K3s, verify a new Cilium container and unchanged Node identity, then repeat the
-fixture and API ClusterIP packet-flow checks before same-name Node replacement.
-The focused stub check passes; runtime evidence for this broader condition is
-pending. Initial live run
+Follow-up diagnosis was expanded to mirror the then-current source cutover's
+CRI handoff by removing all source Pod sandboxes with Cilium last, restarting
+K3s, and repeating the fixture and API ClusterIP checks. The initial live run
 [36518048359](https://github.com/centerionware/not-k8s/actions/runs/36518048359)
 stopped before service restart when `crictl rmp` returned a canceled RPC for a
 stopped sandbox. The probe incorrectly treated it as fatal even though
 production tolerates removal failure after confirming no containers remain
 running. The harness now mirrors that behavior and a stub verifies it continues
-removing later sandboxes. Corrected live diagnostic pending; migration remains
-skipped.
+removing later sandboxes. Run
+[36519169676](https://github.com/centerionware/not-k8s/actions/runs/36519169676)
+was canceled after the migration design changed to avoid bulk sandbox removal;
+that probe no longer represents the intended cutover. Migration remains
+skipped pending focused verification of the new source shutdown path and a
+concrete fix for the post-migration Cilium routing failure.
 
 Latest batch migration run
 [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)

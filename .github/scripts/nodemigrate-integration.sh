@@ -585,69 +585,33 @@ restart_cilium_agent_pod() {
     return 1
 }
 
-source_sandbox_plan() {
-    jq -er '
-      if (.items | type) != "array" then
-        error("CRI pod sandbox response has no items array")
-      else
-        [.items[]?
-         | select((.id? | type) == "string" and (.id | length) > 0)
-         | [
-             .id,
-             (.state == "SANDBOX_READY"),
-             ((.metadata.name // "" | startswith("cilium"))
-              or (.labels["k8s-app"] // "" | IN("cilium", "cilium-envoy")))
-           ]]
-        | if length == 0 then error("CRI returned no pod sandboxes")
-          else .[] | @tsv end
-      end
-    ' | LC_ALL=C sort -t $'\t' -k3,3
-}
-
-stop_source_sandboxes_for_probe() {
+stop_source_cilium_sandboxes_for_probe() {
     local endpoint="${NODEMIGRATE_CRI_ENDPOINT:-unix:///run/k3s/containerd/containerd.sock}"
-    local pod_json plan id ready is_cilium stop_error remove_error ps_json running_ids
-    local -a sandbox_ids=() stop_failures=() remove_failures=()
+    local pod_json sandbox_ids id
+    local -a cilium_sandboxes=()
     pod_json="$(crictl --runtime-endpoint "$endpoint" pods -o json)" || {
         echo "could not list K3s CRI pod sandboxes for the cutover diagnostic" >&2
         return 1
     }
-    plan="$(source_sandbox_plan <<< "$pod_json")" || return 1
-    while IFS=$'\t' read -r id ready is_cilium; do
-        [[ -n "$id" ]] || continue
-        sandbox_ids+=("$id")
-        if [[ "$ready" == true ]]; then
-            if ! stop_error="$(crictl --runtime-endpoint "$endpoint" stopp "$id" 2>&1)"; then
-                stop_failures+=("$id: $stop_error")
-            fi
-        fi
-    done <<< "$plan"
-    echo "Stopped ready source CRI sandboxes; Cilium sandboxes were ordered last. total=${#sandbox_ids[@]}"
+    sandbox_ids="$(jq -er '
+      if (.items | type) != "array" then error("CRI response has no items array") else
+        [.items[]?
+         | select((.metadata.namespace // "") == "kube-system")
+         | select((.id? | type) == "string" and (.id | length) > 0)
+         | select((.metadata.name // "" | startswith("cilium"))
+                  or (.labels["k8s-app"] // "" | IN("cilium", "cilium-envoy")))
+         | .id]
+        | if length == 0 then error("no source Cilium pod sandboxes were found")
+          else .[] end
+      end
+    ' <<< "$pod_json")" || return 1
+    mapfile -t cilium_sandboxes <<< "$sandbox_ids"
 
-    ps_json="$(crictl --runtime-endpoint "$endpoint" ps -a -o json)" || {
-        echo "could not check source CRI containers after sandbox stop" >&2
-        return 1
-    }
-    running_ids="$(jq -r '[.containers[]? | select(.state == "CONTAINER_RUNNING") | .podSandboxId // empty] | unique | .[]' <<< "$ps_json")"
-    for id in "${sandbox_ids[@]}"; do
-        if grep -Fxq "$id" <<< "$running_ids"; then
-            printf 'source sandbox %s still has a running container after stop\n' "$id" >&2
-            return 1
-        fi
+    for id in "${cilium_sandboxes[@]}"; do
+        crictl --runtime-endpoint "$endpoint" stopp "$id" || return 1
+        crictl --runtime-endpoint "$endpoint" rmp "$id" || return 1
     done
-    for stop_error in "${stop_failures[@]}"; do
-        echo "WARN source sandbox stop failed but CRI confirms no container is running: $stop_error" >&2
-    done
-
-    for id in "${sandbox_ids[@]}"; do
-        if ! remove_error="$(crictl --runtime-endpoint "$endpoint" rmp "$id" 2>&1)"; then
-            remove_failures+=("$id: $remove_error")
-        fi
-    done
-    for remove_error in "${remove_failures[@]}"; do
-        echo "WARN source sandbox removal failed after CRI confirmed no running containers: $remove_error" >&2
-    done
-    echo "PASS stopped all ready source sandboxes and attempted removal of ${#sandbox_ids[@]} source sandboxes; remove failures=${#remove_failures[@]}"
+    echo "PASS stopped and removed ${#cilium_sandboxes[@]} source Cilium sandbox(es); ordinary sandboxes were retained"
 }
 
 capture_cni_host_diagnostics() {
@@ -3841,8 +3805,8 @@ main() {
             echo "could not identify the source Cilium agent container before sandbox handoff" >&2
             return 1
         }
-        echo "Recreating all source CRI pod sandboxes before restarting K3s; nodemigrate remains disabled"
-        stop_source_sandboxes_for_probe
+        echo "Stopping only source Cilium pod sandboxes before restarting K3s; nodemigrate remains disabled"
+        stop_source_cilium_sandboxes_for_probe
         systemctl restart k3s
         local attempt
         for attempt in $(seq 1 90); do
