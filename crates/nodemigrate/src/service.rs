@@ -457,9 +457,48 @@ pub fn stop_reverse_migration_target(installation: &Installation) -> Result<()> 
         ),
         "reverse migration rollback requires a retained K3s or Kubernetes target"
     );
-    disable(installation)
-        .map(|_| ())
-        .context("stopping the retained target stack during reverse-migration rollback")
+    let manager = installation
+        .service_manager
+        .context("target service manager is unknown; cannot roll back the retained target")?;
+    if service_active(manager, &installation.service_name) {
+        return disable(installation)
+            .map(|_| ())
+            .context("stopping the retained target stack during reverse-migration rollback");
+    }
+
+    let identity = capture_source_cilium_identity(installation)
+        .context("capturing retained target Cilium identities for rollback")?;
+    if installation.distribution == Distribution::K3s {
+        stop_cilium_source_sandboxes(installation, &identity)
+            .context("stopping retained K3s Cilium sandboxes during rollback")?;
+    }
+    stop_and_disable(manager, &installation.service_name).with_context(|| {
+        format!(
+            "stopping retained target service {}",
+            installation.service_name
+        )
+    })?;
+    if installation.distribution == Distribution::Kubernetes {
+        if installation.role == NodeRole::ControlPlane {
+            stop_upstream_static_pods_inner(installation, false)
+                .context("stopping partial retained kubeadm control-plane sandboxes")?;
+        }
+        stop_cilium_source_sandboxes(installation, &identity)
+            .context("stopping retained Kubernetes Cilium sandboxes during rollback")?;
+    }
+    if installation.distribution == Distribution::Kubernetes {
+        if let Some(runtime_name) = std::env::var("NODEMIGRATE_RUNTIME_SERVICE")
+            .ok()
+            .or_else(|| runtime_service_name(installation.runtime_endpoint.as_deref()))
+            .filter(|name| service_exists(manager, name) && service_active(manager, name))
+        {
+            stop_and_disable(manager, &runtime_name)
+                .with_context(|| format!("stopping retained target runtime {runtime_name}"))?;
+        }
+    }
+    stop_orphaned_cilium_processes(installation, &identity)
+        .context("stopping retained target Cilium processes during rollback")?;
+    Ok(())
 }
 
 /// Source Cilium host-network containers can leave their agent, operator, or
@@ -467,7 +506,7 @@ pub fn stop_reverse_migration_target(installation: &Installation) -> Result<()> 
 /// container and Pod identities; signal only known Cilium daemons attached to
 /// those identities so unrelated or destination processes remain untouched.
 #[cfg(unix)]
-pub fn stop_orphaned_cilium_processes(
+pub(crate) fn stop_orphaned_cilium_processes(
     installation: &Installation,
     identity: &SourceCiliumIdentity,
 ) -> Result<usize> {
@@ -510,7 +549,7 @@ pub fn stop_orphaned_cilium_processes(
 }
 
 #[cfg(not(unix))]
-pub fn stop_orphaned_cilium_processes(
+pub(crate) fn stop_orphaned_cilium_processes(
     installation: &Installation,
     _identity: &SourceCiliumIdentity,
 ) -> Result<usize> {
@@ -944,12 +983,45 @@ pub fn stop_nodestore_for_rollback(installation: &Installation) -> Result<()> {
     let manager = installation
         .service_manager
         .context("service manager is unknown; cannot stop the partial nodestore stack")?;
+    let cilium_identity = capture_source_cilium_identity(installation)
+        .context("capturing partial nodestore Cilium identities for rollback")?;
     stop_nodestore_stack(manager, false)?;
+    stop_nodestore_runtime_for_rollback(installation, manager, &cilium_identity)?;
+    Ok(())
+}
+
+fn stop_nodestore_runtime_for_rollback(
+    installation: &Installation,
+    manager: ServiceManager,
+    cilium_identity: &SourceCiliumIdentity,
+) -> Result<()> {
+    stop_cilium_source_sandboxes(installation, cilium_identity)
+        .context("stopping partial nodestore Cilium sandboxes")?;
     if service_exists(manager, "containerd") && service_active(manager, "containerd") {
         stop_and_disable(manager, "containerd")
             .context("stopping the partial nodestore containerd runtime")?;
     }
+    stop_orphaned_cilium_processes(installation, cilium_identity)
+        .context("stopping partial nodestore Cilium processes")?;
     Ok(())
+}
+
+/// Stop only the local node services and runtime installed by a failed worker
+/// join. The remote nodestore control-plane services belong to the cluster and
+/// must remain available.
+pub fn stop_nodestore_worker_for_rollback(installation: &Installation) -> Result<()> {
+    let manager = installation
+        .service_manager
+        .context("service manager is unknown; cannot stop the partial nodestore worker")?;
+    let cilium_identity = capture_source_cilium_identity(installation)
+        .context("capturing partial nodestore worker Cilium identities for rollback")?;
+    for service in ["nodelet", "nodeproxy", "flanneld"] {
+        if service_exists(manager, service) && service_active(manager, service) {
+            stop_and_disable(manager, service)
+                .with_context(|| format!("stopping partial nodestore worker service {service}"))?;
+        }
+    }
+    stop_nodestore_runtime_for_rollback(installation, manager, &cilium_identity)
 }
 
 fn stop_nodestore_stack(
@@ -1385,8 +1457,11 @@ mod tests {
         assert_eq!(
             cilium_source_sandbox_ids(&pods),
             (
-                vec!["cilium-agent-id", "cilium-operator-id"],
-                vec!["agent-uid", "operator-uid"]
+                vec![
+                    "cilium-agent-id".to_string(),
+                    "cilium-operator-id".to_string()
+                ],
+                vec!["agent-uid".to_string(), "operator-uid".to_string()]
             )
         );
     }

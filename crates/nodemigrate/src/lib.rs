@@ -9,7 +9,7 @@ use std::{
     process::Command,
 };
 
-use anyhow::{bail, ensure, Context, Error, Result};
+use anyhow::{Context, Error, Result, bail, ensure};
 
 pub fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
     let args: Vec<String> = args.into_iter().collect();
@@ -141,10 +141,8 @@ fn migrate_to_nodestore(
         (_, Some(export)) => export.kube_proxy_daemonset_present()?,
         _ => false,
     };
-    let disable_nodeproxy = nodeproxy_should_be_disabled(
-        cilium_kube_proxy_replacement,
-        source_kube_proxy_daemonset,
-    )?;
+    let disable_nodeproxy =
+        nodeproxy_should_be_disabled(cilium_kube_proxy_replacement, source_kube_proxy_daemonset)?;
     let source_nodes = if let Some(api) = &source_api {
         api.node_count()?
     } else {
@@ -217,7 +215,26 @@ fn migrate_to_nodestore(
         } else {
             "nodeproxy enabled"
         };
-        println!("Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}; proxy={proxy}{replacement}; replace-existing-node={replace_existing_node}; cluster-api-import={}; {}source service will be disabled; uninstall-after-migrate={}", request.from, if joins_existing { "existing cluster" } else { "new cluster" }, if request.skip_api_import { "skipped (state imported by an earlier control plane)" } else { "enabled" }, if joins_existing { "install node agent on joined node; " } else { "" }, request.uninstall_after_migrate);
+        println!(
+            "Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}; proxy={proxy}{replacement}; replace-existing-node={replace_existing_node}; cluster-api-import={}; {}source service will be disabled; uninstall-after-migrate={}",
+            request.from,
+            if joins_existing {
+                "existing cluster"
+            } else {
+                "new cluster"
+            },
+            if request.skip_api_import {
+                "skipped (state imported by an earlier control plane)"
+            } else {
+                "enabled"
+            },
+            if joins_existing {
+                "install node agent on joined node; "
+            } else {
+                ""
+            },
+            request.uninstall_after_migrate
+        );
         return Ok(());
     }
 
@@ -260,7 +277,9 @@ fn migrate_to_nodestore(
     };
     if let Err(error) = snapshot_result {
         if let Err(restore_error) = service::restore(source, previous_service) {
-            bail!("snapshotting local persistent volumes failed ({error:#}); restoring the source service also failed ({restore_error:#})");
+            bail!(
+                "snapshotting local persistent volumes failed ({error:#}); restoring the source service also failed ({restore_error:#})"
+            );
         }
         return Err(error)
             .context("local persistent volume snapshot failed; original service was restored");
@@ -268,80 +287,113 @@ fn migrate_to_nodestore(
     if request.uninstall_after_migrate {
         if let Err(error) = export.snapshot_k3s_cni_paths(source) {
             if let Err(restore_error) = service::restore(source, previous_service) {
-                bail!("snapshotting K3s CNI files failed ({error:#}); restoring the source service also failed ({restore_error:#})");
+                bail!(
+                    "snapshotting K3s CNI files failed ({error:#}); restoring the source service also failed ({restore_error:#})"
+                );
             }
             return Err(error).context("K3s CNI snapshot failed; original service was restored");
         }
     }
+    let rollback =
+        |cause| rollback_forward_migration(source, previous_service.clone(), &export, cause);
     if let Err(error) = run_bootstrap(bootstrap) {
-        return Err(rollback_forward_migration(
-            source,
-            previous_service,
-            &export,
-            error.context("nodestore bootstrap failed"),
-        ));
+        return Err(rollback(error.context("nodestore bootstrap failed")));
     }
 
     if let Err(error) = wait_for_api(&target_api) {
-        return Err(rollback_forward_migration(
-            source,
-            previous_service,
-            &export,
-            error.context("destination did not become ready"),
-        ));
+        return Err(rollback(error.context("destination did not become ready")));
     }
     if !request.skip_api_import {
         if let Err(error) = target_api.import(&export) {
-            return Err(rollback_forward_migration(
-                source,
-                previous_service,
-                &export,
-                error
-                    .context("destination bootstrap succeeded but Kubernetes object import failed"),
-            ));
+            return Err(rollback(error.context(
+                "destination bootstrap succeeded but Kubernetes object import failed",
+            )));
         }
     }
     let replacement_state = if destination_node_exists {
-        remove_replaced_node(&target_api, &migrating_node_name, replace_existing_node)
-            .with_context(|| {
-                format!(
+        match remove_replaced_node(&target_api, &migrating_node_name, replace_existing_node) {
+            Ok(state) => state.or(source_node_state),
+            Err(error) => {
+                return Err(rollback(error.context(format!(
                     "preparing destination control-plane node; export retained at {}",
                     export.dir.display()
-                )
-            })?
-            .or(source_node_state)
+                ))));
+            }
+        }
     } else {
         source_node_state
     };
     if joins_existing {
-        let cilium_kube_proxy_replacement = source
+        let cilium_kube_proxy_replacement = if source
             .cluster
             .as_ref()
             .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
-            && target_api.cilium_kube_proxy_replacement()?;
-        let disable_nodeproxy = nodeproxy_should_be_disabled(
-            cilium_kube_proxy_replacement,
-            target_api.kube_proxy_daemonset_present()?,
-        )?;
-        let worker = replacement_worker_command(
-            source,
-            &migrating_node_name,
-            disable_nodeproxy,
-        )?;
-        run_bootstrap(worker).with_context(|| format!(
-            "installing the node agent on the joined replacement node; source remains disabled and the protected export is at {}",
-            export.dir.display()
-        ))?;
+        {
+            match target_api.cilium_kube_proxy_replacement() {
+                Ok(value) => value,
+                Err(error) => {
+                    return Err(rollback(
+                        error.context("checking destination Cilium proxy ownership"),
+                    ));
+                }
+            }
+        } else {
+            false
+        };
+        let kube_proxy_present = match target_api.kube_proxy_daemonset_present() {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(rollback(
+                    error.context("checking destination kube-proxy ownership"),
+                ));
+            }
+        };
+        let disable_nodeproxy =
+            match nodeproxy_should_be_disabled(cilium_kube_proxy_replacement, kube_proxy_present) {
+                Ok(value) => value,
+                Err(error) => {
+                    return Err(rollback(
+                        error.context("selecting destination Service proxy"),
+                    ));
+                }
+            };
+        let worker =
+            match replacement_worker_command(source, &migrating_node_name, disable_nodeproxy) {
+                Ok(worker) => worker,
+                Err(error) => {
+                    return Err(rollback(error.context("preparing replacement node agent")));
+                }
+            };
+        if let Err(error) = run_bootstrap(worker) {
+            return Err(rollback(error.context(format!(
+                "installing the node agent on the joined replacement node; protected export is at {}",
+                export.dir.display()
+            ))));
+        }
     }
-    wait_for_node(&target_api, &migrating_node_name)?;
-    restore_node_scheduling_state(
+    if let Err(error) = wait_for_node(&target_api, &migrating_node_name) {
+        return Err(rollback(
+            error.context("replacement control-plane node did not become Ready"),
+        ));
+    }
+    if let Err(error) = restore_node_scheduling_state(
         &target_api,
         &migrating_node_name,
         replacement_state.as_ref(),
-    )
-    .context("restoring destination control-plane node labels and scheduling state")?;
+    ) {
+        return Err(rollback(error.context(
+            "restoring destination control-plane node labels and scheduling state",
+        )));
+    }
     let repaired_owner_references =
-        target_api.restore_node_owner_references(&export, &migrating_node_name)?;
+        match target_api.restore_node_owner_references(&export, &migrating_node_name) {
+            Ok(count) => count,
+            Err(error) => {
+                return Err(rollback(
+                    error.context("repairing destination Node owner references"),
+                ));
+            }
+        };
     if repaired_owner_references > 0 {
         eprintln!(
             "nodemigrate: restored {repaired_owner_references} owner reference(s) to replacement Node {migrating_node_name}"
@@ -349,20 +401,37 @@ fn migrate_to_nodestore(
     }
     if joins_existing {
         let membership_command = if let Some(old_member_id) = replacement_member_id {
-            replace_member_command(&old_member_id.to_string())?
+            match replace_member_command(&old_member_id.to_string()) {
+                Ok(command) => command,
+                Err(error) => {
+                    return Err(rollback(
+                        error.context("preparing control-plane member replacement"),
+                    ));
+                }
+            }
         } else {
-            promote_member_command()?
+            match promote_member_command() {
+                Ok(command) => command,
+                Err(error) => {
+                    return Err(rollback(error.context("preparing control-plane promotion")));
+                }
+            }
         };
-        run_bootstrap(membership_command).with_context(|| format!(
-            "promoting this Ready control-plane member and completing any requested member replacement; source remains disabled and recovery export is at {}",
-            export.dir.display()
-        ))?;
+        if let Err(error) = run_bootstrap(membership_command) {
+            return Err(rollback(error.context(format!(
+                "promoting the replacement control-plane member; recovery export is at {}",
+                export.dir.display()
+            ))));
+        }
     }
     if request.uninstall_after_migrate {
         if let Err(uninstall_error) = service::uninstall_source(source) {
             let host_path_error = export.restore_host_paths().err();
             let cni_path_error = export.restore_k3s_cni_paths().err();
-            bail!("source uninstall failed ({uninstall_error:#}); persistent-path restore error={host_path_error:#?}; CNI-path restore error={cni_path_error:#?}; recovery export retained at {}", export.dir.display());
+            bail!(
+                "source uninstall failed ({uninstall_error:#}); persistent-path restore error={host_path_error:#?}; CNI-path restore error={cni_path_error:#?}; recovery export retained at {}",
+                export.dir.display()
+            );
         }
         let host_path_error = export.restore_host_paths().err();
         let cni_path_error = export.restore_k3s_cni_paths().err();
@@ -378,7 +447,10 @@ fn migrate_to_nodestore(
         wait_for_node(&target_api, &migrating_node_name)
             .context("replacement node failed readiness after K3s uninstall cleanup")?;
     }
-    println!("Migration completed and the destination API passed readiness checks. Export retained at {}", export.dir.display());
+    println!(
+        "Migration completed and the destination API passed readiness checks. Export retained at {}",
+        export.dir.display()
+    );
     Ok(())
 }
 
@@ -394,14 +466,40 @@ fn rollback_forward_migration(
             "stopping the partial nodestore stack failed ({stop_error:#}); source remains disabled; protected export retained at {recovery}"
         ));
     }
+    let host_path_error = export.restore_host_paths().err();
+    let cni_path_error = export.restore_k3s_cni_paths().err();
     if let Err(restore_error) = service::restore(source, previous_service) {
         return cause.context(format!(
-            "source service restoration failed ({restore_error:#}); source remains disabled; partial nodestore services were stopped; protected export retained at {recovery}"
+            "source service restoration failed ({restore_error:#}); source remains disabled; partial nodestore services were stopped; PV restore error={host_path_error:#?}; CNI restore error={cni_path_error:#?}; protected export retained at {recovery}"
+        ));
+    }
+    if host_path_error.is_some() || cni_path_error.is_some() {
+        return cause.context(format!(
+            "partial nodestore services were stopped and the source service was restored, but PV restore error={host_path_error:#?}; CNI restore error={cni_path_error:#?}; protected export retained at {recovery}"
         ));
     }
     cause.context(format!(
-        "source service was restored after rollback; partial nodestore services were stopped; protected export retained at {recovery}"
+        "source service was restored after rollback; partial nodestore services were stopped; source PV and CNI data were restored; protected export retained at {recovery}"
     ))
+}
+
+fn rollback_forward_worker_migration(
+    source: &detect::Installation,
+    previous_service: service::PreviousServiceState,
+    cause: anyhow::Error,
+) -> anyhow::Error {
+    if let Err(stop_error) = service::stop_nodestore_worker_for_rollback(source) {
+        return cause.context(format!(
+            "stopping the partial nodestore worker failed ({stop_error:#}); source remains disabled"
+        ));
+    }
+    if let Err(restore_error) = service::restore(source, previous_service) {
+        return cause.context(format!(
+            "source worker restoration failed ({restore_error:#}); partial nodestore worker was stopped"
+        ));
+    }
+    cause
+        .context("partial nodestore worker was stopped and the original source worker was restored")
 }
 
 fn migrate_worker_to_nodestore(
@@ -465,14 +563,19 @@ fn migrate_worker_to_nodestore(
         } else {
             "nodeproxy"
         };
-        println!("Migration plan: {:?} worker -> existing nodestore cluster; node={name}; source CNI={cni}; target Service proxy={service_proxy}; replace-existing-node={existing_node}; source service '{}' will be disabled; cluster API objects are managed by the control-plane migration", request.from, source.service_name);
+        println!(
+            "Migration plan: {:?} worker -> existing nodestore cluster; node={name}; source CNI={cni}; target Service proxy={service_proxy}; replace-existing-node={existing_node}; source service '{}' will be disabled; cluster API objects are managed by the control-plane migration",
+            request.from, source.service_name
+        );
         return Ok(());
     }
 
     if let Some(export) = source_export.take() {
-        source_export = Some(export.private_copy_for_node(&name).with_context(|| {
-            format!("creating private protected export for worker {name}")
-        })?);
+        source_export = Some(
+            export
+                .private_copy_for_node(&name)
+                .with_context(|| format!("creating private protected export for worker {name}"))?,
+        );
     }
     if let Some(export) = source_export.as_ref() {
         eprintln!(
@@ -486,17 +589,23 @@ fn migrate_worker_to_nodestore(
         Ok(snapshot) => snapshot,
         Err(error) => {
             if let Err(restore_error) = service::restore(source, previous_service) {
-                bail!("snapshotting worker local volumes failed ({error:#}) and restoring the source service failed ({restore_error:#})");
+                bail!(
+                    "snapshotting worker local volumes failed ({error:#}) and restoring the source service failed ({restore_error:#})"
+                );
             }
-            return Err(error).context("worker local-volume snapshot failed; source service was restored");
+            return Err(error)
+                .context("worker local-volume snapshot failed; source service was restored");
         }
     };
     if request.uninstall_after_migrate {
         if let Err(error) = host_path_snapshot.snapshot_k3s_cni_paths(source) {
             if let Err(restore_error) = service::restore(source, previous_service) {
-                bail!("snapshotting worker K3s CNI files failed ({error:#}) and restoring source service failed ({restore_error:#})");
+                bail!(
+                    "snapshotting worker K3s CNI files failed ({error:#}) and restoring source service failed ({restore_error:#})"
+                );
             }
-            return Err(error).context("worker K3s CNI snapshot failed; source service was restored");
+            return Err(error)
+                .context("worker K3s CNI snapshot failed; source service was restored");
         }
     }
     println!(
@@ -518,18 +627,40 @@ fn migrate_worker_to_nodestore(
     }
     .or(local_node_state);
     if let Err(error) = run_bootstrap(worker) {
-        if let Err(restore_error) = service::restore(source, previous_service) {
-            bail!("worker bootstrap failed ({error:#}) and restoring source service failed ({restore_error:#})");
-        }
-        return Err(error).context("installing the worker into the joined nodestore cluster");
+        return Err(rollback_forward_worker_migration(
+            source,
+            previous_service.clone(),
+            error.context("installing the worker into the joined nodestore cluster"),
+        ));
     }
-    wait_for_node(&target_api, &name).context(format!(
-        "replacement worker {name} did not become Ready; source remains disabled"
-    ))?;
-    restore_node_scheduling_state(&target_api, &name, replacement_state.as_ref())
-        .context("restoring replacement worker labels and scheduling state")?;
+    if let Err(error) = wait_for_node(&target_api, &name) {
+        return Err(rollback_forward_worker_migration(
+            source,
+            previous_service.clone(),
+            error.context(format!("replacement worker {name} did not become Ready")),
+        ));
+    }
+    if let Err(error) =
+        restore_node_scheduling_state(&target_api, &name, replacement_state.as_ref())
+    {
+        return Err(rollback_forward_worker_migration(
+            source,
+            previous_service.clone(),
+            error.context("restoring replacement worker labels and scheduling state"),
+        ));
+    }
     if let Some(export) = source_export.as_ref() {
-        let repaired_owner_references = target_api.restore_node_owner_references(export, &name)?;
+        let repaired_owner_references =
+            match target_api.restore_node_owner_references(export, &name) {
+                Ok(count) => count,
+                Err(error) => {
+                    return Err(rollback_forward_worker_migration(
+                        source,
+                        previous_service.clone(),
+                        error.context("restoring worker Node owner references"),
+                    ));
+                }
+            };
         if repaired_owner_references > 0 {
             eprintln!(
                 "nodemigrate: restored {repaired_owner_references} owner reference(s) to replacement Node {name}"
@@ -553,7 +684,10 @@ fn migrate_worker_to_nodestore(
             host_path_snapshot.recovery_directory().display()
         );
     }
-    println!("Worker {name} joined the nodestore cluster and is Ready. Cluster-wide API resources were not re-imported from this worker; local-volume recovery snapshot retained at {}", host_path_snapshot.recovery_directory().display());
+    println!(
+        "Worker {name} joined the nodestore cluster and is Ready. Cluster-wide API resources were not re-imported from this worker; local-volume recovery snapshot retained at {}",
+        host_path_snapshot.recovery_directory().display()
+    );
     Ok(())
 }
 
@@ -716,7 +850,22 @@ fn migrate_to_existing(
             .as_ref()
             .and_then(|cluster| cluster.cni.as_deref())
             .unwrap_or("external or undetected");
-        println!("Migration plan: nodestore -> {:?}; retained target service '{}' will be enabled and started; target CNI={cni}; replace-existing-node={replace_existing_node}; source-api-export={}; staged-source-export={}; stage-target={}; uninstall-after-migrate={}", request.to, target.service_name, if request.skip_api_export { "skipped (destination already has cluster state)" } else { "enabled" }, request.source_export.as_ref().map_or("none", |_| "reused for offline node/PV recovery"), request.stage_target, request.uninstall_after_migrate);
+        println!(
+            "Migration plan: nodestore -> {:?}; retained target service '{}' will be enabled and started; target CNI={cni}; replace-existing-node={replace_existing_node}; source-api-export={}; staged-source-export={}; stage-target={}; uninstall-after-migrate={}",
+            request.to,
+            target.service_name,
+            if request.skip_api_export {
+                "skipped (destination already has cluster state)"
+            } else {
+                "enabled"
+            },
+            request
+                .source_export
+                .as_ref()
+                .map_or("none", |_| "reused for offline node/PV recovery"),
+            request.stage_target,
+            request.uninstall_after_migrate
+        );
         return Ok(());
     }
     if let Some(source_export) = export.take() {
@@ -762,7 +911,9 @@ fn migrate_to_existing(
             Ok(snapshot) => host_path_snapshot = Some(snapshot),
             Err(error) => {
                 if let Err(restore_error) = service::restore(source, previous_service) {
-                    bail!("snapshotting local persistent volumes failed ({error:#}); restoring nodestore also failed ({restore_error:#}); recovery data is at {recovery_location}");
+                    bail!(
+                        "snapshotting local persistent volumes failed ({error:#}); restoring nodestore also failed ({restore_error:#}); recovery data is at {recovery_location}"
+                    );
                 }
                 return Err(error).context(format!(
                     "local persistent-volume snapshot failed; nodestore was restored; recovery data is at {recovery_location}"
@@ -781,7 +932,9 @@ fn migrate_to_existing(
         eprintln!("nodemigrate: snapshotting local persistent-volume payloads");
         if let Err(error) = export.snapshot_host_paths_for_node(&returning_node_name) {
             if let Err(restore_error) = service::restore(source, previous_service) {
-                bail!("snapshotting local persistent volumes failed ({error:#}); restoring nodestore also failed ({restore_error:#}); recovery data is at {recovery_location}");
+                bail!(
+                    "snapshotting local persistent volumes failed ({error:#}); restoring nodestore also failed ({restore_error:#}); recovery data is at {recovery_location}"
+                );
             }
             return Err(error).context(format!(
                 "local persistent volume snapshot failed; nodestore was restored; recovery data is at {recovery_location}"
@@ -813,7 +966,10 @@ fn migrate_to_existing(
             .as_ref()
             .map(|export| export.dir.display().to_string())
             .unwrap_or_else(|| "not created".to_string());
-        println!("Retained control plane staged: source nodestore services are disabled and '{}' is running. The destination API may remain unavailable until another retained control plane is started. API export retained at {recovery}", target.service_name);
+        println!(
+            "Retained control plane staged: source nodestore services are disabled and '{}' is running. The destination API may remain unavailable until another retained control plane is started. API export retained at {recovery}",
+            target.service_name
+        );
         return Ok(());
     }
     eprintln!("nodemigrate: waiting for retained destination API readiness");
@@ -928,7 +1084,20 @@ fn migrate_to_existing(
     }
     if let Some(export) = export.as_ref() {
         let repaired_owner_references =
-            target_api.restore_node_owner_references(export, &returning_node_name)?;
+            match target_api.restore_node_owner_references(export, &returning_node_name) {
+                Ok(count) => count,
+                Err(error) => {
+                    return Err(rollback_reverse_migration(
+                        source,
+                        target,
+                        previous_service,
+                        Some(export),
+                        host_path_snapshot.as_ref(),
+                        error.context("restoring retained control-plane Node owner references"),
+                        &recovery_location,
+                    ));
+                }
+            };
         if repaired_owner_references > 0 {
             eprintln!(
                 "nodemigrate: restored {repaired_owner_references} owner reference(s) to replacement Node {returning_node_name}"
@@ -1191,7 +1360,10 @@ fn migrate_worker_from_nodestore(
     validate_destination_node_replacement(existing_node, replace_existing_node)
         .with_context(|| format!("destination already has node {name}"))?;
     if request.plan_only {
-        println!("Migration plan: nodestore worker -> {:?} worker; node={name}; retained target service '{}' will be enabled and started; cluster API objects are managed by the control-plane migration", request.to, target.service_name);
+        println!(
+            "Migration plan: nodestore worker -> {:?} worker; node={name}; retained target service '{}' will be enabled and started; cluster API objects are managed by the control-plane migration",
+            request.to, target.service_name
+        );
         return Ok(());
     }
 
@@ -1201,9 +1373,12 @@ fn migrate_worker_from_nodestore(
         Ok(snapshot) => snapshot,
         Err(error) => {
             if let Err(restore_error) = service::restore(source, previous_service) {
-                bail!("snapshotting nodestore worker volumes failed ({error:#}) and restoring nodestore failed ({restore_error:#})");
+                bail!(
+                    "snapshotting nodestore worker volumes failed ({error:#}) and restoring nodestore failed ({restore_error:#})"
+                );
             }
-            return Err(error).context("nodestore worker volume snapshot failed; source services were restored");
+            return Err(error)
+                .context("nodestore worker volume snapshot failed; source services were restored");
         }
     };
     println!(
@@ -1228,17 +1403,45 @@ fn migrate_worker_from_nodestore(
         None
     }
     .or(local_node_state);
+    let recovery_location = host_path_snapshot
+        .recovery_directory()
+        .display()
+        .to_string();
     if let Err(error) = service::activate(target) {
-        if let Err(restore_error) = service::restore(source, previous_service) {
-            bail!("starting the retained worker service failed ({error:#}) and restoring nodestore services failed ({restore_error:#})");
-        }
-        return Err(error).context("starting the retained Kubernetes worker service");
+        return Err(rollback_reverse_migration(
+            source,
+            target,
+            previous_service,
+            None,
+            Some(&host_path_snapshot),
+            error.context("starting the retained worker service"),
+            &recovery_location,
+        ));
     }
-    wait_for_node(&target_api, &name).context(format!(
-        "retained worker {name} did not become Ready; nodestore worker remains disabled"
-    ))?;
-    restore_node_scheduling_state(&target_api, &name, replacement_state.as_ref())
-        .context("restoring retained worker labels and scheduling state")?;
+    if let Err(error) = wait_for_node(&target_api, &name) {
+        return Err(rollback_reverse_migration(
+            source,
+            target,
+            previous_service,
+            None,
+            Some(&host_path_snapshot),
+            error.context(format!("retained worker {name} did not become Ready")),
+            &recovery_location,
+        ));
+    }
+    if let Err(error) =
+        restore_node_scheduling_state(&target_api, &name, replacement_state.as_ref())
+    {
+        return Err(rollback_reverse_migration(
+            source,
+            target,
+            previous_service,
+            None,
+            Some(&host_path_snapshot),
+            error.context("restoring retained worker labels and scheduling state"),
+            &recovery_location,
+        ));
+    }
     if request.uninstall_after_migrate {
         service::uninstall_source(source).with_context(|| {
             format!(
@@ -1253,7 +1456,11 @@ fn migrate_worker_from_nodestore(
             )
         })?;
     }
-    println!("Worker {name} returned to the retained {:?} installation and is Ready. Cluster-wide API resources were not re-imported from this worker; local-volume recovery snapshot retained at {}", request.to, host_path_snapshot.recovery_directory().display());
+    println!(
+        "Worker {name} returned to the retained {:?} installation and is Ready. Cluster-wide API resources were not re-imported from this worker; local-volume recovery snapshot retained at {}",
+        request.to,
+        host_path_snapshot.recovery_directory().display()
+    );
     Ok(())
 }
 
@@ -1268,9 +1475,7 @@ fn run_bootstrap(mut command: Command) -> Result<()> {
     Ok(())
 }
 
-fn disable_nodestore_stack(
-    source: &detect::Installation,
-) -> Result<service::PreviousServiceState> {
+fn disable_nodestore_stack(source: &detect::Installation) -> Result<service::PreviousServiceState> {
     ensure!(
         source.distribution == request::Distribution::Nodestore,
         "the source stack shutdown helper is only valid when returning from nodestore"
@@ -1299,7 +1504,9 @@ fn wait_for_api(target: &transfer::KubeApi) -> Result<()> {
         match target.ready() {
             Ok(()) => return Ok(()),
             Err(error) => {
-                eprintln!("nodemigrate: destination API readiness probe {attempt} failed: {error:#}");
+                eprintln!(
+                    "nodemigrate: destination API readiness probe {attempt} failed: {error:#}"
+                );
                 last_error = Some(error);
             }
         }
@@ -1427,7 +1634,11 @@ fn replacement_worker_command(
         .context("source cluster config was not detected")?;
     eprintln!(
         "nodemigrate: replacement worker Service router: {}",
-        if disable_nodeproxy { "existing cluster proxy" } else { "nodeproxy" }
+        if disable_nodeproxy {
+            "existing cluster proxy"
+        } else {
+            "nodeproxy"
+        }
     );
     let kubeconfig = std::env::var_os("NODEBOOTSTRAP_WORKER_KUBECONFIG")
         .or_else(|| std::env::var_os("NODEMIGRATE_DESTINATION_KUBECONFIG"))
@@ -1438,12 +1649,7 @@ fn replacement_worker_command(
                 .unwrap_or_else(|| PathBuf::from("/etc/nodebootstrap"))
                 .join("admin.kubeconfig")
         });
-    let args = replacement_worker_args(
-        config,
-        &kubeconfig,
-        node_name,
-        disable_nodeproxy,
-    );
+    let args = replacement_worker_args(config, &kubeconfig, node_name, disable_nodeproxy);
     bootstrap_command_with_config(args, config, None)
 }
 
@@ -1774,9 +1980,9 @@ mod tests {
     use super::{
         append_nodeproxy_mode, apply_cni_runtime_paths, confirm_migration, detect_csi_staging_root,
         migration_csi_staging_root, nodeproxy_should_be_disabled, replacement_worker_args,
-        reverse_node_replacement_state,
-        rollback_reverse_migration_with, validate_destination_node_replacement,
-        validate_reverse_control_plane_options, validate_skip_api_import,
+        reverse_node_replacement_state, rollback_reverse_migration_with,
+        validate_destination_node_replacement, validate_reverse_control_plane_options,
+        validate_skip_api_import,
     };
     use crate::transfer::NodeSchedulingState;
     use crate::{
@@ -1873,9 +2079,11 @@ mod tests {
 
         let error = confirm_migration(true, &mut input, &mut output).unwrap_err();
 
-        assert!(error
-            .to_string()
-            .contains("confirmation must be exactly 'yes'"));
+        assert!(
+            error
+                .to_string()
+                .contains("confirmation must be exactly 'yes'")
+        );
         let warning = String::from_utf8(output).unwrap();
         assert!(warning.contains("⚠️⚠️⚠️⚠️⚠️"));
         assert!(warning.contains("HIGH PROBABILITY OF DATA LOSS"));
@@ -1933,14 +2141,16 @@ mod tests {
             false,
         );
         assert!(args.iter().any(|arg| arg == "--worker"));
-        assert!(args
-            .iter()
-            .any(|arg| arg == "--kubeconfig=/etc/nodebootstrap/admin.kubeconfig"));
+        assert!(
+            args.iter()
+                .any(|arg| arg == "--kubeconfig=/etc/nodebootstrap/admin.kubeconfig")
+        );
         assert!(args.iter().any(|arg| arg == "--node-name=old-node"));
         assert!(args.iter().any(|arg| arg == "--cni=none"));
-        assert!(args
-            .iter()
-            .any(|arg| arg == "--cluster-domain=cluster.example"));
+        assert!(
+            args.iter()
+                .any(|arg| arg == "--cluster-domain=cluster.example")
+        );
     }
 
     #[test]
@@ -2030,12 +2240,14 @@ mod tests {
     fn rejects_incomplete_or_relative_cni_runtime_directories() {
         let mut command = Command::new("nodebootstrap");
         assert!(apply_cni_runtime_paths(&mut command, Some(Path::new("relative")), None).is_err());
-        assert!(apply_cni_runtime_paths(
-            &mut command,
-            Some(Path::new("relative")),
-            Some(Path::new("/opt/cni/bin"))
-        )
-        .is_err());
+        assert!(
+            apply_cni_runtime_paths(
+                &mut command,
+                Some(Path::new("relative")),
+                Some(Path::new("/opt/cni/bin"))
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -2070,11 +2282,13 @@ mod tests {
             migration_csi_staging_root(None, &mountinfo).unwrap(),
             PathBuf::from(root)
         );
-        assert!(migration_csi_staging_root(
-            Some(PathBuf::from("/var/lib/kubelet/plugins/kubernetes.io/csi")),
-            &mountinfo
-        )
-        .is_err());
+        assert!(
+            migration_csi_staging_root(
+                Some(PathBuf::from("/var/lib/kubelet/plugins/kubernetes.io/csi")),
+                &mountinfo
+            )
+            .is_err()
+        );
     }
 
     #[test]

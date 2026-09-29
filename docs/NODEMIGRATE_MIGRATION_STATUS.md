@@ -12,8 +12,12 @@ the source API is live, then stop the source service/runtime before copying
 node-local PV data. Ordinary Pod sandboxes are retained; explicit removal is
 limited to Cilium sandboxes and kubeadm control-plane static Pods needed to
 release API/etcd ports. Upstream runtime service state is captured so a failed
-snapshot/import can restart the original runtime and source services. This code
-is not yet CI-verified, and no migration run has been started for it.
+snapshot/import can stop the partial destination, restore saved PV/CNI
+payloads, and restart the original runtime and source services. Late failures
+during node join, readiness, and scheduling use the same rollback path. Target
+rollback removes only identified Cilium sandboxes/processes and kubeadm API/etcd
+static Pods; ordinary Pod sandboxes remain on disk. This code is not yet
+CI-verified, and no migration run has been started for it.
 
 The non-migration K3s+Cilium diagnostic [36509703232](https://github.com/centerionware/not-k8s/actions/runs/36509703232)
 completed a same-name Node UID replacement. Workload, storage, all 119 API

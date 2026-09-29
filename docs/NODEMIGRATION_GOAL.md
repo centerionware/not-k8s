@@ -105,9 +105,9 @@ bump the regular release version. This is a target, not publication authority.
   conflicts. Identify standard containerd, CRI-O, and Docker-backed runtimes
   from the CRI endpoint; use `NODEMIGRATE_RUNTIME_SERVICE` for a custom runtime
   service. On a failed
-  snapshot or import, stop the partial destination and restore the source
-  services/runtime; the retained source must remain usable after re-enable or
-  reboot.
+  snapshot or import, stop the partial destination, restore the saved local
+  PV/CNI payloads, and restart the source runtime/services; the retained source
+  must remain usable after re-enable or reboot.
 - Protect exports and secrets, retain the export for recovery, restore the
   prior source service state when cutover has not succeeded, and report a
   usable recovery location and state when later stages fail.

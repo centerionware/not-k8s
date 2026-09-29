@@ -21,6 +21,15 @@ focused nodemigrate quick-check after the changes are complete; do not rerun a
 full migration until the outstanding Cilium migration failure and other known
 issues are fixed together.
 
+Focused quick-check [36521140201](https://github.com/centerionware/not-k8s/actions/runs/36521140201)
+at SHA `a65611fa` compiled the crate, then failed while compiling the new unit
+test because its expected tuple used `&str` vectors instead of `String`
+vectors. That assertion is corrected. Review also found late post-start
+failure paths without rollback; those now stop the partial target, remove only
+identified Cilium artifacts, restore captured local PV/CNI data, and restart
+the source/runtime. Ordinary Pod sandboxes remain untouched. The complete fix
+batch is pending another nodemigrate-only quick-check.
+
 ## Cilium restart/replacement diagnostic
 
 Run [36508298004](https://github.com/centerionware/not-k8s/actions/runs/36508298004)
