@@ -387,6 +387,12 @@ impl CriRuntime {
         let linux = config.linux.get_or_insert_with(LinuxPodSandboxConfig::default);
         linux.cgroup_parent = cgroup_parent;
         linux.overhead = overhead;
+        info!(
+            pod = %format!("{}/{}", id.namespace, id.name),
+            uid = %id.uid,
+            cgroup_parent = %linux.cgroup_parent,
+            "creating pod sandbox with CRI cgroup parent"
+        );
         let resp = rt
             .run_pod_sandbox(RunPodSandboxRequest { config: Some(config), runtime_handler })
             .await?

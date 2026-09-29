@@ -114,6 +114,28 @@ fn runtime_service_name(endpoint: Option<&str>) -> Option<String> {
     }
 }
 
+fn installation_runtime_endpoint(installation: &Installation) -> String {
+    installation
+        .runtime_endpoint
+        .clone()
+        .unwrap_or_else(|| "unix:///run/containerd/containerd.sock".to_string())
+}
+
+fn installation_runtime_service_name(installation: &Installation) -> Result<String> {
+    std::env::var("NODEMIGRATE_RUNTIME_SERVICE")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| name.trim().to_string())
+        .or_else(|| runtime_service_name(installation.runtime_endpoint.as_deref()))
+        .context("could not identify the retained Kubernetes CRI service")
+}
+
+fn runtime_endpoint_available(endpoint: &str) -> bool {
+    endpoint
+        .strip_prefix("unix://")
+        .map_or(true, |path| std::path::Path::new(path).exists())
+}
+
 fn capture_source_cilium_identity(installation: &Installation) -> Result<SourceCiliumIdentity> {
     let endpoint = std::env::var("NODEMIGRATE_CRI_ENDPOINT")
         .ok()
@@ -473,8 +495,20 @@ pub fn stop_reverse_migration_target(installation: &Installation) -> Result<()> 
             .context("stopping the retained target stack during reverse-migration rollback");
     }
 
-    let identity = capture_source_cilium_identity(installation)
-        .context("capturing retained target Cilium identities for rollback")?;
+    let runtime_name = (installation.distribution == Distribution::Kubernetes)
+        .then(|| installation_runtime_service_name(installation))
+        .transpose()?;
+    let runtime_active = runtime_name
+        .as_deref()
+        .is_some_and(|name| service_active(manager, name));
+    let endpoint = installation_runtime_endpoint(installation);
+    let cri_available = runtime_active && runtime_endpoint_available(&endpoint);
+    let identity = if cri_available {
+        capture_cilium_identity_at(installation, &endpoint)
+            .context("capturing retained target Cilium identities for rollback")?
+    } else {
+        SourceCiliumIdentity::default()
+    };
     if installation.distribution == Distribution::K3s {
         stop_cilium_source_sandboxes(installation, &identity)
             .context("stopping retained K3s Cilium sandboxes during rollback")?;
@@ -486,21 +520,20 @@ pub fn stop_reverse_migration_target(installation: &Installation) -> Result<()> 
         )
     })?;
     if installation.distribution == Distribution::Kubernetes {
-        if installation.role == NodeRole::ControlPlane {
+        if cri_available && installation.role == NodeRole::ControlPlane {
             stop_upstream_static_pods_inner(installation, false)
                 .context("stopping partial retained kubeadm control-plane sandboxes")?;
         }
-        stop_cilium_source_sandboxes(installation, &identity)
-            .context("stopping retained Kubernetes Cilium sandboxes during rollback")?;
-    }
-    if installation.distribution == Distribution::Kubernetes {
-        if let Some(runtime_name) = std::env::var("NODEMIGRATE_RUNTIME_SERVICE")
-            .ok()
-            .or_else(|| runtime_service_name(installation.runtime_endpoint.as_deref()))
-            .filter(|name| service_exists(manager, name) && service_active(manager, name))
-        {
-            stop_and_disable(manager, &runtime_name)
-                .with_context(|| format!("stopping retained target runtime {runtime_name}"))?;
+        if cri_available {
+            stop_cilium_source_sandboxes(installation, &identity)
+                .context("stopping retained Kubernetes Cilium sandboxes during rollback")?;
+        }
+        if let Some(runtime_name) = runtime_name {
+            if service_exists(manager, &runtime_name) && service_active(manager, &runtime_name) {
+                stop_and_disable(manager, &runtime_name).with_context(|| {
+                    format!("stopping retained target runtime {runtime_name} during rollback")
+                })?;
+            }
         }
     }
     stop_orphaned_cilium_processes(installation, &identity)
@@ -1107,6 +1140,18 @@ pub fn activate(installation: &Installation) -> Result<()> {
         installation.distribution != crate::request::Distribution::Nodestore,
         "activating an existing nodestore target requires restoring its full stack"
     );
+    if installation.distribution == Distribution::Kubernetes {
+        let runtime_name = installation_runtime_service_name(installation)?;
+        ensure!(
+            service_exists(manager, &runtime_name),
+            "retained Kubernetes runtime service '{runtime_name}' was not found"
+        );
+        restore_named(
+            manager,
+            &ServiceState { name: runtime_name, enabled: true, active: true },
+        )
+        .context("starting the retained Kubernetes container runtime before kubelet")?;
+    }
     restore_named(
         manager,
         &ServiceState {

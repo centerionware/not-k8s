@@ -16,10 +16,32 @@ Last updated: 2026-09-29
   destination's `/run/containerd/containerd.sock` only when its containerd
   service and socket are present, then stops partial destination services and
   restores the source. The observed source restore was blocked by this cleanup
-  error; the change has not yet been validated in CI.
-- The run's upstream Kubernetes lane and five-node kubeadm/Cilium lane are
-  still running. Do not retry migration until those lanes complete and every
-  newly observed failure has been fixed together.
+  error. Both K3s fixes passed `nodebootstrap,nodemigrate` quick-check
+  [36554687444](https://github.com/centerionware/not-k8s/actions/runs/36554687444)
+  at SHA `9e33da42ea9fd408d1551a089f73dd7b425e00d6`.
+- **Component:** `nodemigrate` upstream return activation. The completed
+  Kubernetes lane migrated forward, then return activation started kubelet
+  before the retained source containerd service. Kubelet could not connect to
+  `/run/containerd/containerd.sock` and the return API stayed unavailable.
+  `service::activate` now restores the retained runtime before kubelet.
+- **Component:** `nodemigrate` reverse rollback. On the same lane, rollback
+  queried Cilium CRI state after the target runtime/socket was gone, preventing
+  the partial target from being stopped and leaving nodestore stopped. Cleanup
+  now skips CRI and static-pod operations when the runtime is unavailable and
+  stops an available target runtime as part of rollback.
+- **Component:** `nodelet` CRI cgroup placement. The five-node lane reached
+  replacement Cilium on `cp-1`, where the `config` init container failed with
+  runc reporting `expected cgroupsPath ... slice:prefix:name ... got
+  "/k8s.io/<container-id>"`; containerd had `SystemdCgroup=true`. The source
+  log does not show the `RunPodSandbox` cgroup parent, so it does not prove
+  whether the parent was omitted or transformed incorrectly. Nodelet now
+  passes only the QoS parent (the runtime owns the per-pod child) and logs that
+  CRI parent at sandbox creation. This targets the observed malformed path;
+  the exact failure has not yet been re-exercised.
+- The run is complete and failed in all three lanes. The K3s PKI and forward
+  rollback fixes passed focused CI. The upstream return/rollback and nodelet
+  cgroup corrections remain unvalidated. Finish the fixes and verify them
+  before another migration attempt.
 
 ## Findings from migration run 36546160178
 

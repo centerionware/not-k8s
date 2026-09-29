@@ -10,11 +10,22 @@ PEM, which the migration PKI path had not converted. The lane then exposed a
 rollback cleanup error: it queried the stopped K3s CRI socket for partial
 destination Cilium identities. The branch now uses the CSR signer's established
 SEC1-to-PKCS#8 conversion and queries the destination containerd socket during
-rollback only when available. These fixes are local and pending focused CI.
-The upstream Kubernetes and five-node kubeadm/Cilium jobs in run
+rollback only when available. The upstream return lane exposed an activation
+order failure: kubelet started before the retained containerd runtime. Its
+rollback also tried CRI cleanup after the target runtime/socket was gone. The
+five-node kubeadm/Cilium lane found runc rejecting `/k8s.io/<container-id>`
+under `SystemdCgroup=true`. The saved log did not include the CRI sandbox
+parent, so its omission or transformation is not yet proven. Local changes now
+start containerd before kubelet, gate rollback CRI cleanup on runtime/socket
+availability, pass only the QoS cgroup parent, and log the parent sent to CRI.
+The K3s PKI and forward rollback fixes passed focused
+`nodebootstrap,nodemigrate` quick-check
+[36554687444](https://github.com/centerionware/not-k8s/actions/runs/36554687444)
+at SHA `9e33da42ea9fd408d1551a089f73dd7b425e00d6`. The upstream return/rollback
+and nodelet cgroup corrections are not yet validated. Run
 [36552342215](https://github.com/centerionware/not-k8s/actions/runs/36552342215)
-are still running; do not launch another migration run until they finish and
-all new failures are addressed.
+completed with failures in all three lanes. No retry until every finding is
+fixed and focused component checks pass.
 
 ## 2026-09-29 migration run 36546160178
 

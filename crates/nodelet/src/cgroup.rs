@@ -1,7 +1,6 @@
-//! Node cgroup hierarchy: a QoS-scoped `cgroup_parent` per pod sandbox (so
-//! pods actually land under `kubepods/<qos>/pod<uid>`, matching real
-//! kubelet, instead of an unscoped flat cgroup tree with no relationship
-//! between QoS class and cgroup placement) and node allocatable enforcement
+//! Node cgroup hierarchy: a QoS-scoped `cgroup_parent` per pod sandbox (the
+//! runtime adds the sandbox-specific child beneath this parent, matching
+//! real kubelet) and node allocatable enforcement
 //! (capping the top-level `kubepods` cgroup at `Node.status.allocatable`,
 //! cgroup v2 only).
 //!
@@ -25,26 +24,23 @@ pub enum Driver {
     Systemd,
 }
 
-/// The cgroupfs-style parent path CRI expects for a pod sandbox, scoped by
-/// QoS class exactly like real kubelet: `Guaranteed` pods sit directly
-/// under `kubepods` (no QoS subdirectory — a Guaranteed pod's resources are
-/// exact, so there's nothing to additionally bound at the QoS level),
-/// `Burstable`/`BestEffort` get their own subdirectory so cgroup-aware
-/// tooling (and a human debugging with `systemd-cgls`/`cat
-/// /sys/fs/cgroup/.../cgroup.procs`) can see QoS grouping at a glance.
-pub fn cgroup_parent_for(qos: QosClass, pod_uid: &str, driver: Driver) -> String {
+/// The parent path CRI expects for a pod sandbox, scoped by QoS class exactly
+/// like real kubelet. The runtime creates the unique per-pod cgroup below this
+/// parent, so this value must not include the pod UID. CRI accepts cgroupfs
+/// style paths for either driver and converts them to systemd semantics when
+/// needed.
+pub fn cgroup_parent_for(qos: QosClass, driver: Driver) -> String {
     match driver {
         Driver::Cgroupfs => match qos {
-            QosClass::Guaranteed => format!("/{CGROUP_ROOT_NAME}/pod{pod_uid}"),
-            QosClass::Burstable => format!("/{CGROUP_ROOT_NAME}/burstable/pod{pod_uid}"),
-            QosClass::BestEffort => format!("/{CGROUP_ROOT_NAME}/besteffort/pod{pod_uid}"),
+            QosClass::Guaranteed => format!("/{CGROUP_ROOT_NAME}"),
+            QosClass::Burstable => format!("/{CGROUP_ROOT_NAME}/burstable"),
+            QosClass::BestEffort => format!("/{CGROUP_ROOT_NAME}/besteffort"),
         },
         Driver::Systemd => {
-            let uid = pod_uid.replace('-', "_");
             match qos {
-                QosClass::Guaranteed => format!("/{CGROUP_ROOT_NAME}.slice/kubepods-pod{uid}.slice"),
-                QosClass::Burstable => format!("/{CGROUP_ROOT_NAME}.slice/kubepods-burstable.slice/kubepods-burstable-pod{uid}.slice"),
-                QosClass::BestEffort => format!("/{CGROUP_ROOT_NAME}.slice/kubepods-besteffort.slice/kubepods-besteffort-pod{uid}.slice"),
+                QosClass::Guaranteed => format!("/{CGROUP_ROOT_NAME}.slice"),
+                QosClass::Burstable => format!("/{CGROUP_ROOT_NAME}.slice/kubepods-burstable.slice"),
+                QosClass::BestEffort => format!("/{CGROUP_ROOT_NAME}.slice/kubepods-besteffort.slice"),
             }
         }
     }

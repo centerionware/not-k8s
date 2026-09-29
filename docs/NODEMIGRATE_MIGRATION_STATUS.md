@@ -4,13 +4,24 @@ Last updated: 2026-09-29
 
 ## Current run: 36552342215
 
-At SHA `a91fc102b553248dd697d17f97896f6b0f84680f`, K3s reached source
-shutdown but failed to parse its SEC1/P-256 serving CA key. Its rollback then
-queried the stopped source CRI socket while cleaning up the partial destination.
-Local fixes now convert SEC1 CA keys using the existing CSR-signer path and
-inspect the destination containerd socket for rollback cleanup. The upstream
-and five-node lanes remain in progress. Do not retry until this run concludes
-and all newly encountered failures are fixed.
+At SHA `a91fc102b553248dd697d17f97896f6b0f84680f`, all three lanes in
+[run 36552342215](https://github.com/centerionware/not-k8s/actions/runs/36552342215)
+completed with failures. K3s failed parsing its SEC1/P-256 serving CA key, then
+rollback queried the stopped source CRI socket. Upstream Kubernetes completed
+forward migration but return activation started kubelet before containerd;
+rollback also queried CRI after the target runtime was unavailable. The
+five-node Cilium lane failed to start its replacement `config` init container
+because runc rejected `/k8s.io/<container-id>` under `SystemdCgroup=true`.
+The saved log did not record the CRI sandbox parent, so whether nodelet omitted
+or misformatted it is not yet proven. Local corrections cover SEC1 key
+conversion, runtime-aware rollback cleanup, containerd-before-kubelet
+activation, QoS-parent cgroup placement, and logging the parent sent to CRI.
+The K3s PKI and forward rollback changes passed focused
+`nodebootstrap,nodemigrate` quick-check
+[36554687444](https://github.com/centerionware/not-k8s/actions/runs/36554687444)
+at `9e33da42ea9fd408d1551a089f73dd7b425e00d6`. Upstream return/rollback and
+nodelet cgroup changes remain pending focused CI; do not retry migration until
+all are verified together.
 
 ## Latest migration result: 36546160178
 
