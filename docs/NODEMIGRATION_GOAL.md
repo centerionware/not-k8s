@@ -378,7 +378,12 @@ instructions in `AGENTS.md` for nodemigrate work:
   specific cause is understood and fixed. A follow-up diagnostic now adds the
   complete source CRI sandbox stop/remove sequence before the K3s restart; the
   focused local stub verifies ordinary sandboxes stop before Cilium and every
-  sandbox is removed. Its live run is pending and migration remains skipped.
+  sandbox receives a removal attempt. Live run `36518048359` stopped before
+  restart because its harness failed on one canceled CRI sandbox removal,
+  although production tolerates removal failure after confirming no active
+  containers. That harness rule is now aligned and the focused stub exercises
+  the recoverable failure. Corrected live diagnostic pending; migration stays
+  skipped.
 - A release workflow run is required only when carrying out the separately
   authorized publication. The initial `v0.8.1` nodemigrate publication must
   use the matching regular `v0.8.1` version built from this branch's accepted

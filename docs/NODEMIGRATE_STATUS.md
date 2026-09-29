@@ -48,7 +48,14 @@ no migration retry is queued.
 The follow-up probe is being expanded to stop and remove every K3s CRI pod
 sandbox in cutover order, restart K3s, and check a new Cilium container,
 unchanged Node UID, workload/storage/API parity, and Pod-to-API TCP before the
-same-name Node replacement. This remains a non-migration diagnostic.
+same-name Node replacement. Run
+[36518048359](https://github.com/centerionware/not-k8s/actions/runs/36518048359)
+at SHA `652538eefea844c0b4e609f6867e27993536c38c` passed compile/setup and
+agent-only recovery, then stopped before K3s restart because the probe treated
+a canceled `crictl rmp` on a stopped sandbox as fatal. Production allows that
+case after confirming no container remains running. The probe now matches
+that behavior and its stub exercises the recoverable removal failure; the
+corrected live diagnostic is pending. Migration was skipped.
 See the [CI status](NODEMIGRATE_CI_STATUS.md) and
 [bug tracker](NODEMIGRATE_BUGS.md).
 

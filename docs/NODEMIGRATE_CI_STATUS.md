@@ -89,6 +89,19 @@ checks before the same-name Node replacement phase. A focused local stub
 checks CRI ordering and removal. This probe does not run nodemigrate and
 cannot establish a migration fix by itself.
 
+Run [36518048359](https://github.com/centerionware/not-k8s/actions/runs/36518048359)
+failed at SHA `652538eefea844c0b4e609f6867e27993536c38c` during source sandbox
+cleanup, before K3s restart. The build and source/agent-only fixture checks
+passed, and all 21 source sandbox stops completed. The first `crictl rmp`
+returned `DeadlineExceeded`/`RST_STREAM CANCEL`; the probe aborted on that
+single remove failure. Production `stop_source_pod_sandboxes` tolerates remove
+failure after CRI confirms the sandbox has no running containers, then
+continues cutover. The diagnostic now follows that same rule, reports these
+recoverable removals, and proceeds to the service restart; its stub test
+injects a remove deadline and verifies later sandbox removals still run.
+Migration `109244652203`, validation `109244652107`, and Docker preflight
+`109244652924` were skipped. Corrected live diagnostic pending.
+
 ## Latest completed migration batch
 
 Run [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212)

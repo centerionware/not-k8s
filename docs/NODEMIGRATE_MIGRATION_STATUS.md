@@ -51,7 +51,14 @@ handoff in one run: remove all source Pod sandboxes with Cilium last, restart
 K3s, verify a new Cilium container and unchanged Node identity, then repeat the
 fixture and API ClusterIP packet-flow checks before same-name Node replacement.
 The focused stub check passes; runtime evidence for this broader condition is
-pending. This remains a non-migration probe.
+pending. Initial live run
+[36518048359](https://github.com/centerionware/not-k8s/actions/runs/36518048359)
+stopped before service restart when `crictl rmp` returned a canceled RPC for a
+stopped sandbox. The probe incorrectly treated it as fatal even though
+production tolerates removal failure after confirming no containers remain
+running. The harness now mirrors that behavior and a stub verifies it continues
+removing later sandboxes. Corrected live diagnostic pending; migration remains
+skipped.
 
 Latest batch migration run
 [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)

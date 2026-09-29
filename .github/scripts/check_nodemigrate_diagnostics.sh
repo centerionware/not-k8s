@@ -94,6 +94,8 @@ case "$*" in
         ;;
     *"rmp ordinary"*)
         echo rmp-ordinary >> "${NODEMIGRATE_CRI_CALLS:?}"
+        echo 'simulated stopped-sandbox remove deadline' >&2
+        exit 1
         ;;
     *"rmp cilium-not-ready"*)
         echo rmp-cilium-not-ready >> "${NODEMIGRATE_CRI_CALLS:?}"
@@ -308,8 +310,12 @@ output="$(stop_source_sandboxes_for_probe 2>&1)" || {
     echo "full source sandbox handoff fixture failed: $output" >&2
     exit 1
 }
-grep -Fq 'PASS removed all 3 source CRI pod sandboxes' <<< "$output" || {
-    echo "full source sandbox removal was not reported: $output" >&2
+grep -Fq 'PASS stopped all ready source sandboxes and attempted removal of 3 source sandboxes; remove failures=1' <<< "$output" || {
+    echo "full source sandbox handoff was not reported: $output" >&2
+    exit 1
+}
+grep -Fq 'WARN source sandbox removal failed after CRI confirmed no running containers: ordinary: simulated stopped-sandbox remove deadline' <<< "$output" || {
+    echo "recoverable source sandbox removal failure was not reported: $output" >&2
     exit 1
 }
 expected_calls=$'stopp-ordinary\nstopp-cilium\nrmp-ordinary\nrmp-cilium\nrmp-cilium-not-ready'

@@ -606,8 +606,8 @@ source_sandbox_plan() {
 
 stop_source_sandboxes_for_probe() {
     local endpoint="${NODEMIGRATE_CRI_ENDPOINT:-unix:///run/k3s/containerd/containerd.sock}"
-    local pod_json plan id ready is_cilium stop_error ps_json running_ids verify_json
-    local -a sandbox_ids=() stop_failures=()
+    local pod_json plan id ready is_cilium stop_error remove_error ps_json running_ids
+    local -a sandbox_ids=() stop_failures=() remove_failures=()
     pod_json="$(crictl --runtime-endpoint "$endpoint" pods -o json)" || {
         echo "could not list K3s CRI pod sandboxes for the cutover diagnostic" >&2
         return 1
@@ -640,22 +640,14 @@ stop_source_sandboxes_for_probe() {
     done
 
     for id in "${sandbox_ids[@]}"; do
-        if ! crictl --runtime-endpoint "$endpoint" rmp "$id"; then
-            printf 'could not remove stopped source CRI sandbox %s\n' "$id" >&2
-            return 1
+        if ! remove_error="$(crictl --runtime-endpoint "$endpoint" rmp "$id" 2>&1)"; then
+            remove_failures+=("$id: $remove_error")
         fi
     done
-    verify_json="$(crictl --runtime-endpoint "$endpoint" pods -o json)" || {
-        echo "could not verify source CRI pod sandbox removal" >&2
-        return 1
-    }
-    for id in "${sandbox_ids[@]}"; do
-        if jq -e --arg id "$id" 'any(.items[]?; .id == $id)' <<< "$verify_json" >/dev/null; then
-            printf 'source CRI sandbox %s remained after remove\n' "$id" >&2
-            return 1
-        fi
+    for remove_error in "${remove_failures[@]}"; do
+        echo "WARN source sandbox removal failed after CRI confirmed no running containers: $remove_error" >&2
     done
-    echo "PASS removed all ${#sandbox_ids[@]} source CRI pod sandboxes before K3s restart"
+    echo "PASS stopped all ready source sandboxes and attempted removal of ${#sandbox_ids[@]} source sandboxes; remove failures=${#remove_failures[@]}"
 }
 
 capture_cni_host_diagnostics() {
