@@ -48,7 +48,7 @@ agent last. Migration has not been retried.
 Corrected nodemigrate-only quick-check
 [36582679193](https://github.com/centerionware/not-k8s/actions/runs/36582679193)
 passed all 115 tests at SHA `603d8f1d31ee47d5625c677e1459691bb1e3ec26`.
-The migration-specific runtime retry can now proceed.
+The migration-specific runtime retry followed in run 36582910964.
 
 ## Previous migration result: 36573504554
 
