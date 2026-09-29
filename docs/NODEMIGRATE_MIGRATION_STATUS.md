@@ -52,6 +52,18 @@ recovery snapshots and ordered to preserve source quorum until destination
 quorum and API/data checks pass. No general old-control-plane teardown has
 been verified.
 
+Forensic review of failed K3s run [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212)
+found that the returned source Cilium agent restarted inside its original Pod
+UID; its `clean-cilium-state` init container had completed only on initial Pod
+creation. Cilium's host bpffs state is designed to persist across agent
+restarts, so destination/source state reuse is a plausible lead, not a proven
+cause. Recreating the Pod alone does not guarantee a reset because the Cilium
+`cleanState` setting may be false. No runtime fix is accepted until a
+controlled test records the returned-stage service/BPF backend and Pod route.
+The failure collector now includes that Pod/init status and the Cilium cleanup
+ConfigMap flags alongside service/BPF/endpoint maps; `bash -n` and whitespace
+checks pass locally, but the added capture has not run live.
+
 The non-migration K3s+Cilium diagnostic [36509703232](https://github.com/centerionware/not-k8s/actions/runs/36509703232)
 completed a same-name Node UID replacement. Workload, storage, all 119 API
 resources, and Cilium service datapath checks passed; the API ClusterIP's BPF

@@ -100,9 +100,27 @@ Last updated: 2026-09-29
   `lxc0bd1f34c7d60` missing and say a `CiliumEndpoint` was deleted externally
   while endpoint synchronization would recreate it. The pod IP and endpoint
   identity still appear in agent state. These stale-endpoint messages are a
-  lead, not proof that they caused the Service routing failure.
-  Failure diagnostics now capture `cilium-dbg service list`, `bpf lb list`,
-  and `endpoint list` to expose the missing or stale datapath state.
+  lead, not proof that they caused the Service routing failure. The saved Pod
+  status adds a second concrete lead: the source `cilium` Pod kept the same UID
+  while its agent container restarted after nodestore had used the host. Its
+  `clean-cilium-state` init container completed only during the original Pod
+  initialization; that init does not rerun for a regular container restart.
+  Cilium documents that bpffs pins BPF resources across agent restarts, so
+  source/destination host-state reuse is plausible ([Cilium bpffs
+  persistence](https://docs.cilium.io/en/stable/operations/system_requirements/)),
+  but the failed run lacks the returned-stage service/BPF map dump needed to
+  prove it. A Pod recreation by itself is not yet a fix: Cilium's
+  [`cleanState` Helm
+  value](https://github.com/cilium/cilium/blob/v1.20.2/install/kubernetes/cilium/values.yaml)
+  defaults to false, and the init container's presence alone does not show
+  that it erased state.
+  Any cleanup fix must reset only this node's datapath, preserve/reinstall its
+  CNI configuration and binaries, and verify the returned Service backend and
+  Pod-to-API route before another full migration attempt.
+  Failure diagnostics capture `cilium-dbg service list`, `bpf lb list`, and
+  `endpoint list`; they now also record the Cilium Pod UID, cleanup-init exit
+  code, and `clean-cilium-state`/`clean-cilium-bpf-state` settings so the next
+  failure can distinguish persisted host state from API reconciliation.
   A diagnostic probe [36506647392](https://github.com/centerionware/not-k8s/actions/runs/36506647392)
   passed a K3s service restart with the original Node UID and repeated all
   workload/API-state checks successfully. This shows an ordinary K3s restart

@@ -475,6 +475,12 @@ capture_cilium_datapath() {
         return 0
     fi
     echo "Cilium datapath from pod/$pod:"
+    KUBECONFIG="$kubeconfig" kubectl -n kube-system get pod "$pod" \
+        -o jsonpath='pod-uid={.metadata.uid} clean-cilium-state-init-exit-code={.status.initContainerStatuses[?(@.name=="clean-cilium-state")].state.terminated.exitCode}{"\n"}' \
+        2>&1 || true
+    KUBECONFIG="$kubeconfig" kubectl -n kube-system get configmap cilium-config \
+        -o go-template='clean-cilium-state={{index .data "clean-cilium-state"}} clean-cilium-bpf-state={{index .data "clean-cilium-bpf-state"}}{{"\n"}}' \
+        2>&1 || true
     KUBECONFIG="$kubeconfig" kubectl -n kube-system exec "$pod" -c cilium-agent -- \
         cilium-dbg status --verbose 2>&1 || true
     echo "Cilium Kubernetes Service datapath from pod/$pod:"
