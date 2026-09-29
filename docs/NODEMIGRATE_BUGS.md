@@ -43,8 +43,12 @@ Last updated: 2026-09-29
   disproves bare restart/replacement as the cause, but not the cross-cluster
   migration path. That failure remains unresolved; no migration retry until
   its cause is fixed. Map presence alone does not prove Pod packet delivery;
-  the next diagnostic adds an in-Pod TCP probe to the API ClusterIP at each
-  transition. Result pending.
+  run [36513067748](https://github.com/centerionware/not-k8s/actions/runs/36513067748)
+  passed an in-Pod TCP probe to the API ClusterIP before and after restart and
+  Node replacement. The Cilium agent Pod UID did not change in those stages.
+  Since migration recreates that Pod, the next diagnostic explicitly restarts
+  it before repeating the Pod TCP, workload, and datapath checks. Result
+  pending.
 - **Replacement diagnostic used a kubectl flag that is not supported.** The
   unchanged-UID restart and all fixture checks passed in run
   [36508298004](https://github.com/centerionware/not-k8s/actions/runs/36508298004),

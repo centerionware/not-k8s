@@ -550,6 +550,39 @@ EOF
     return 1
 }
 
+restart_cilium_agent_pod() {
+    local kubeconfig="${1:?missing probe kubeconfig}"
+    local old_pod_json old_pod_name old_pod_uid replacement_json attempt
+    old_pod_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+        -l k8s-app=cilium -o json | jq -ce '.items | length == 1 and .[0]')" || {
+        echo "expected exactly one K3s Cilium agent Pod before restart" >&2
+        return 1
+    }
+    old_pod_name="$(jq -er '.metadata.name' <<< "$old_pod_json")"
+    old_pod_uid="$(jq -er '.metadata.uid' <<< "$old_pod_json")"
+    echo "Restarting Cilium agent Pod $old_pod_name UID=$old_pod_uid without changing Node identity"
+    KUBECONFIG="$kubeconfig" kubectl delete pod "$old_pod_name" -n kube-system \
+        --wait=true --timeout=120s
+
+    for attempt in $(seq 1 90); do
+        replacement_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+            -l k8s-app=cilium -o json 2>/dev/null | jq -c --arg old_uid "$old_pod_uid" '
+              .items[]?
+              | select(.metadata.uid != $old_uid and .status.phase == "Running")
+              | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+              | {name: .metadata.name, uid: .metadata.uid}
+            ' | head -n 1)" || replacement_json=""
+        if [[ -n "$replacement_json" ]]; then
+            echo "Replacement Cilium agent Pod $(jq -r '.name' <<< "$replacement_json") UID=$(jq -r '.uid' <<< "$replacement_json") is Ready"
+            return 0
+        fi
+        sleep 2
+    done
+    echo "Cilium agent Pod did not become Ready with a new UID after deletion" >&2
+    KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system -l k8s-app=cilium -o wide >&2 || true
+    return 1
+}
+
 capture_cni_host_diagnostics() {
     local config file
     for config in /etc/containerd/config.toml \
@@ -3717,6 +3750,16 @@ main() {
         probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" source
         echo "Cilium datapath before K3s restart"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
+
+        restart_cilium_agent_pod "$SOURCE_KUBECONFIG"
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl wait \
+            --for=condition=Ready node --all --timeout=5m
+        verify_stage cilium-agent-restarted "$SOURCE_KUBECONFIG"
+        assert_migratable_api_objects_retained source cilium-agent-restarted
+        probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" cilium-agent-restarted
+        echo "Cilium datapath after Cilium agent Pod recreation"
+        capture_cilium_datapath "$SOURCE_KUBECONFIG"
+
         echo "Restarting the K3s service without running nodemigrate"
         systemctl restart k3s
         local attempt

@@ -353,9 +353,11 @@ instructions in `AGENTS.md` for nodemigrate work:
   run `36511406969` passed at SHA `11a401e50ddcc1d0f83d5ecc0970a9b4545bbb89`;
   the source, restart, and replacement API ClusterIP BPF maps were active and
   their workload/state assertions passed. Do not retry nodemigrate until its
-  migration-specific cause is fixed. The next non-migration diagnostic adds
-  an in-Pod TCP probe to the Kubernetes API ClusterIP at each transition so
-  actual packet flow is checked alongside the programmed BPF map.
+  migration-specific cause is fixed. Run `36513067748` passed in-Pod TCP
+  probes to the Kubernetes API ClusterIP at source, after K3s restart, and
+  after Node replacement. The Cilium agent Pod UID remained unchanged; the
+  next non-migration diagnostic explicitly recreates that Pod and repeats
+  the packet-flow and workload checks.
 - A release workflow run is required only when carrying out the separately
   authorized publication. The initial `v0.8.1` nodemigrate publication must
   use the matching regular `v0.8.1` version built from this branch's accepted

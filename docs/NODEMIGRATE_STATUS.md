@@ -29,8 +29,11 @@ only in this diagnostic, with regression checks that reject other data
 changes. This result shows plain K3s restart/Node replacement does not
 reproduce the outage. It does not identify or fix the cross-cluster migration
 cause, so no migration retry is queued. No regular build gate or full e2e ran.
-The next diagnostic adds a Pod-to-API-ClusterIP TCP probe at each transition
-to check actual in-cluster packet delivery. Live result is pending.
+Pod-to-API-ClusterIP TCP probes also passed at all three checkpoints in run
+[36513067748](https://github.com/centerionware/not-k8s/actions/runs/36513067748).
+The Cilium agent Pod UID remained unchanged throughout, so the next diagnostic
+will explicitly restart that Pod before repeating the checks. No migration
+retry is queued until the migration-specific Cilium issue is fixed.
 See the [CI status](NODEMIGRATE_CI_STATUS.md) and
 [bug tracker](NODEMIGRATE_BUGS.md).
 

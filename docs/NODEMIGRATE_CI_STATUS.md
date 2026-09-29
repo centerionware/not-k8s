@@ -48,7 +48,20 @@ migration rerun has started.
 The next non-migration diagnostic adds a TCP connection from a temporary Pod to
 the Kubernetes API ClusterIP at the source, unchanged-UID restart, and
 replacement checkpoints. This checks actual Pod packet flow alongside the
-Cilium service/BPF map snapshots; dispatch and result are pending.
+Cilium service/BPF map snapshots.
+
+Run [36513067748](https://github.com/centerionware/not-k8s/actions/runs/36513067748)
+passed at SHA `171bda73494dbba82ec6edcbc4f752525d7ad72e` in 15m31s. The Pod-to-
+API-ClusterIP TCP probes passed at source, after unchanged-UID restart, and
+after same-name Node replacement. The API ClusterIP retained an active BPF
+backend at all three checkpoints; API, workload, storage, normalized object,
+and durable-state checks passed. Probe job `109229270880` passed; validation
+`109229272191`, Docker preflight `109229272215`, and migration `109229272225`
+were skipped. CRI and Kubernetes identity records show the Cilium agent Pod
+UID remained unchanged through restart and Node replacement. Since nodemigrate
+stops and recreates source Pod sandboxes, the next non-migration probe will
+restart the Cilium agent Pod explicitly, then repeat the API ClusterIP and
+workload checks. Its result is pending.
 
 ## Latest completed migration batch
 
