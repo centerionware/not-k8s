@@ -310,6 +310,15 @@ fn migrate_to_nodestore(
             )));
         }
     }
+    if source
+        .cluster
+        .as_ref()
+        .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
+    {
+        if let Err(error) = target_api.reset_cilium_agent_state(&migrating_node_name) {
+            return Err(rollback(error.context("rebuilding destination Cilium host datapath state")));
+        }
+    }
     let replacement_state = if destination_node_exists {
         match remove_replaced_node(&target_api, &migrating_node_name, replace_existing_node) {
             Ok(state) => state.or(source_node_state),
@@ -639,6 +648,26 @@ fn migrate_worker_to_nodestore(
             previous_service.clone(),
             error.context(format!("replacement worker {name} did not become Ready")),
         ));
+    }
+    if source
+        .cluster
+        .as_ref()
+        .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
+    {
+        if let Err(error) = target_api.reset_cilium_agent_state(&name) {
+            return Err(rollback_forward_worker_migration(
+                source,
+                previous_service.clone(),
+                error.context("rebuilding destination worker Cilium host datapath state"),
+            ));
+        }
+        if let Err(error) = wait_for_node(&target_api, &name) {
+            return Err(rollback_forward_worker_migration(
+                source,
+                previous_service.clone(),
+                error.context(format!("Cilium reset left replacement worker {name} unready")),
+            ));
+        }
     }
     if let Err(error) =
         restore_node_scheduling_state(&target_api, &name, replacement_state.as_ref())
@@ -985,6 +1014,26 @@ fn migrate_to_existing(
         ));
     }
     eprintln!("nodemigrate: retained destination API is ready");
+    if target
+        .cluster
+        .as_ref()
+        .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
+    {
+        eprintln!(
+            "nodemigrate: rebuilding retained Cilium host datapath state for node {returning_node_name}"
+        );
+        if let Err(error) = target_api.reset_cilium_agent_state(&returning_node_name) {
+            return Err(rollback_reverse_migration(
+                source,
+                target,
+                previous_service,
+                export.as_ref(),
+                host_path_snapshot.as_ref(),
+                error.context("rebuilding retained Cilium host datapath state"),
+                &recovery_location,
+            ));
+        }
+    }
     if let Some(export) = &export {
         eprintln!("nodemigrate: importing protected Kubernetes API export");
         if let Err(error) = target_api.import(export) {
@@ -1428,6 +1477,34 @@ fn migrate_worker_from_nodestore(
             error.context(format!("retained worker {name} did not become Ready")),
             &recovery_location,
         ));
+    }
+    if target
+        .cluster
+        .as_ref()
+        .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
+    {
+        if let Err(error) = target_api.reset_cilium_agent_state(&name) {
+            return Err(rollback_reverse_migration(
+                source,
+                target,
+                previous_service,
+                None,
+                Some(&host_path_snapshot),
+                error.context("rebuilding retained worker Cilium host datapath state"),
+                &recovery_location,
+            ));
+        }
+        if let Err(error) = wait_for_node(&target_api, &name) {
+            return Err(rollback_reverse_migration(
+                source,
+                target,
+                previous_service,
+                None,
+                Some(&host_path_snapshot),
+                error.context(format!("Cilium reset left retained worker {name} unready")),
+                &recovery_location,
+            ));
+        }
     }
     if let Err(error) =
         restore_node_scheduling_state(&target_api, &name, replacement_state.as_ref())

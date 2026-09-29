@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{bail, ensure, Context, Result};
 use base64::Engine;
-use k8s_openapi::api::core::v1::{ConfigMap, Namespace};
+use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Pod};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{
     api::{
@@ -860,6 +860,203 @@ impl KubeApi {
         })
     }
 
+    /// Reset this node's Cilium host state by briefly enabling Cilium's
+    /// documented cleanup init and replacing its agent Pod. The cleanup flag
+    /// lives in a cluster-wide ConfigMap, but changing it does not roll the
+    /// DaemonSet; restore the original value as soon as the local init starts
+    /// so later Pod restarts on peer nodes do not erase their datapaths.
+    pub fn reset_cilium_agent_state(&self, node_name: &str) -> Result<()> {
+        let (runtime, client) = self.connected()?;
+        runtime.block_on(async {
+            let pods: Api<Pod> = Api::namespaced(client.clone(), "kube-system");
+            let config: Api<ConfigMap> = Api::namespaced(client, "kube-system");
+            let initial_pods = pods
+                .list(&ListParams::default().labels("k8s-app=cilium"))
+                .await
+                .context("listing Cilium agent Pods")?;
+            let pod = initial_pods.items.into_iter().find(|pod| {
+                pod.spec
+                    .as_ref()
+                    .and_then(|spec| spec.node_name.as_deref())
+                    == Some(node_name)
+                    && pod
+                        .metadata
+                        .owner_references
+                        .as_ref()
+                        .is_some_and(|owners| owners.iter().any(|owner| owner.kind == "DaemonSet"))
+            });
+            let pod = pod.with_context(|| {
+                format!("no DaemonSet-managed Cilium agent Pod is scheduled on node {node_name}")
+            })?;
+            let name = pod
+                .metadata
+                .name
+                .as_deref()
+                .context("Cilium agent Pod has no name")?
+                .to_owned();
+            let uid = pod
+                .metadata
+                .uid
+                .as_deref()
+                .context("Cilium agent Pod has no UID")?
+                .to_owned();
+            let has_clean_state_init = pod
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.init_containers.as_ref())
+                .is_some_and(|containers| {
+                    containers
+                        .iter()
+                        .any(|container| container.name == "clean-cilium-state")
+                });
+            ensure!(
+                has_clean_state_init,
+                "Cilium agent Pod {name} has no clean-cilium-state init container; refusing a cross-cluster handoff with shared host datapath state"
+            );
+
+            let original_config = config
+                .get("cilium-config")
+                .await
+                .context("reading kube-system/cilium-config before host-state reset")?;
+            let original_clean_state = original_config
+                .data
+                .as_ref()
+                .and_then(|data| data.get("clean-cilium-state"))
+                .cloned();
+            let mut cleanup_flag_changed = false;
+
+            let operation = async {
+                if original_clean_state.as_deref() != Some("true") {
+                    let resource_version = original_config
+                        .metadata
+                        .resource_version
+                        .as_deref()
+                        .context("Cilium ConfigMap has no resourceVersion")?;
+                    let patch = serde_json::json!({
+                        "metadata": {"resourceVersion": resource_version},
+                        "data": {"clean-cilium-state": "true"}
+                    });
+                    config
+                        .patch(
+                            "cilium-config",
+                            &PatchParams::default(),
+                            &Patch::Merge(&patch),
+                        )
+                        .await
+                        .context("temporarily enabling Cilium's per-node state cleanup")?;
+                    cleanup_flag_changed = true;
+                }
+
+                pods.delete(
+                    &name,
+                    &DeleteParams {
+                        grace_period_seconds: Some(0),
+                        preconditions: Some(Preconditions {
+                            uid: Some(uid.clone()),
+                            resource_version: None,
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .with_context(|| format!("recreating Cilium agent Pod {name} for state cleanup"))?;
+
+                let deadline =
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+                let mut cleanup_init_exit_code = None;
+                let mut cleanup_flag_restored = !cleanup_flag_changed;
+                loop {
+                    let current_pods = pods
+                        .list(&ListParams::default().labels("k8s-app=cilium"))
+                        .await
+                        .with_context(|| format!("waiting for replacement Cilium agent on {node_name}"))?;
+                    let replacement = current_pods.items.into_iter().find(|pod| {
+                        pod.spec
+                            .as_ref()
+                            .and_then(|spec| spec.node_name.as_deref())
+                            == Some(node_name)
+                            && pod
+                                .metadata
+                                .owner_references
+                                .as_ref()
+                                .is_some_and(|owners| {
+                                    owners.iter().any(|owner| owner.kind == "DaemonSet")
+                                })
+                            && pod.metadata.uid.as_deref().is_some_and(|pod_uid| pod_uid != uid)
+                    });
+                    if let Some(current) = replacement {
+                        let init_state = current
+                            .status
+                            .as_ref()
+                            .and_then(|status| status.init_container_statuses.as_ref())
+                            .and_then(|statuses| {
+                                statuses.iter().find(|status| status.name == "clean-cilium-state")
+                            });
+                        if let Some(init_state) = init_state {
+                            if let Some(terminated) = init_state
+                                .state
+                                .as_ref()
+                                .and_then(|state| state.terminated.as_ref())
+                            {
+                                cleanup_init_exit_code = Some(terminated.exit_code);
+                            }
+                            let init_started = init_state.state.as_ref().is_some_and(|state| {
+                                state.running.is_some() || state.terminated.is_some()
+                            });
+                            if init_started && !cleanup_flag_restored {
+                                restore_cilium_clean_state_flag(&config, original_clean_state.as_deref())
+                                    .await?;
+                                cleanup_flag_restored = true;
+                                cleanup_flag_changed = false;
+                            }
+                        }
+                        if let Some(exit_code) = cleanup_init_exit_code {
+                            ensure!(
+                                exit_code == 0,
+                                "Cilium clean-cilium-state init failed for replacement Pod {} with exit code {exit_code}",
+                                current.metadata.name.as_deref().unwrap_or("<unnamed>")
+                            );
+                            let ready = current.status.as_ref().is_some_and(|status| {
+                                status.conditions.as_ref().is_some_and(|conditions| {
+                                    conditions.iter().any(|condition| {
+                                        condition.type_ == "Ready" && condition.status == "True"
+                                    })
+                                })
+                            });
+                            if ready {
+                                eprintln!(
+                                    "nodemigrate: rebuilt Cilium host state on node {node_name} with a fresh agent Pod and clean-cilium-state init"
+                                );
+                                return Ok(());
+                            }
+                        }
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        bail!(
+                            "Cilium clean-cilium-state did not complete and the replacement agent did not become Ready on node {node_name}"
+                        );
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+            .await;
+
+            let restore_result = if cleanup_flag_changed {
+                restore_cilium_clean_state_flag(&config, original_clean_state.as_deref()).await
+            } else {
+                Ok(())
+            };
+            match (operation, restore_result) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) => Err(error),
+                (Ok(()), Err(error)) => Err(error),
+                (Err(operation_error), Err(restore_error)) => Err(operation_error.context(
+                    format!("restoring original Cilium clean-state flag also failed ({restore_error:#})"),
+                )),
+            }
+        })
+    }
+
     /// Back up hostPath/local PV payloads present on this node without
     /// exporting or re-applying cluster-wide API objects from a worker.
     pub fn node_labels(&self, node_name: &str) -> Result<HashMap<String, String>> {
@@ -1371,6 +1568,48 @@ impl KubeApi {
             Ok(())
         })
     }
+}
+
+async fn restore_cilium_clean_state_flag(
+    api: &Api<ConfigMap>,
+    original: Option<&str>,
+) -> Result<()> {
+    let current = api
+        .get("cilium-config")
+        .await
+        .context("reading Cilium ConfigMap while restoring clean-state flag")?;
+    let current_value = current
+        .data
+        .as_ref()
+        .and_then(|data| data.get("clean-cilium-state"))
+        .map(String::as_str);
+    if current_value == original {
+        return Ok(());
+    }
+    ensure!(
+        current_value == Some("true"),
+        "Cilium clean-state flag changed concurrently; leaving the operator's value untouched"
+    );
+    let resource_version = current
+        .metadata
+        .resource_version
+        .as_deref()
+        .context("Cilium ConfigMap has no resourceVersion while restoring clean-state flag")?;
+    let value = original.map_or(serde_json::Value::Null, |value| {
+        serde_json::Value::String(value.to_owned())
+    });
+    let patch = serde_json::json!({
+        "metadata": {"resourceVersion": resource_version},
+        "data": {"clean-cilium-state": value}
+    });
+    api.patch(
+        "cilium-config",
+        &PatchParams::default(),
+        &Patch::Merge(&patch),
+    )
+    .await
+    .context("restoring original Cilium clean-state flag")?;
+    Ok(())
 }
 
 fn parse_cilium_kube_proxy_replacement(value: Option<&str>) -> Result<bool> {

@@ -3269,6 +3269,14 @@ YAML
         echo "could not read Cilium Helm values at stage $stage" >&2
         return 1
     }
+    local expected_clean_state actual_clean_state
+    expected_clean_state="$(jq -r '.cleanState // false | tostring' <<<"$cilium_values")"
+    actual_clean_state="$(kubectl -n kube-system get configmap cilium-config -o json \
+        | jq -r '.data["clean-cilium-state"] // "false"')"
+    if [[ "$actual_clean_state" != "$expected_clean_state" ]]; then
+        echo "Cilium clean-cilium-state flag was not restored at stage $stage: expected=$expected_clean_state actual=$actual_clean_state" >&2
+        return 1
+    fi
     if ! jq -e --argjson kpr "$expected_kpr" \
         '.ipam.mode == "kubernetes" and .kubeProxyReplacement == $kpr and .cni.confPath == "/etc/cni/net.d"' \
         <<<"$cilium_values" >/dev/null; then
