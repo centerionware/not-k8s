@@ -23,10 +23,13 @@ Last updated: 2026-09-29
   lead, not proof that they caused the Service routing failure.
   Failure diagnostics now capture `cilium-dbg service list`, `bpf lb list`,
   and `endpoint list` to expose the missing or stale datapath state.
-  An optional K3s+Cilium restart-only probe has been added to test the retained
-  K3s service restart without invoking nodemigrate; it can separate an ordinary
-  restart failure from a migration-specific failure. It is not a fix and has
-  not yet run.
+  A diagnostic probe [36506647392](https://github.com/centerionware/not-k8s/actions/runs/36506647392)
+  passed a K3s service restart with the original Node UID and repeated all
+  workload/API-state checks successfully. This shows an ordinary K3s restart
+  alone does not reproduce the outage; it does not establish the cause of the
+  migration failure. The probe is being extended with same-name Node deletion,
+  K3s re-registration, and before/after Cilium service/BPF/endpoint maps. It
+  never invokes nodemigrate and is diagnostic only.
 - **Five-node fixture used unsupported container-to-container `docker cp`.**
   Docker job `109195297329` in run `36502166212` passed topology, Cilium, and
   control-plane recovery checks, then failed while copying PKI/kubeconfig

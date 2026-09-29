@@ -465,8 +465,31 @@ stop_target_forward_watch() {
     fi
 }
 
+capture_cilium_datapath() {
+    local kubeconfig="${1:-${KUBECONFIG:-${CURRENT_KUBECONFIG:-$SOURCE_KUBECONFIG}}}"
+    local pod
+    pod="$(KUBECONFIG="$kubeconfig" kubectl -n kube-system get pods \
+        -l k8s-app=cilium -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+    if [[ -z "$pod" ]]; then
+        echo "Cilium agent Pod is unavailable for datapath capture"
+        return 0
+    fi
+    echo "Cilium datapath from pod/$pod:"
+    KUBECONFIG="$kubeconfig" kubectl -n kube-system exec "$pod" -c cilium-agent -- \
+        cilium-dbg status --verbose 2>&1 || true
+    echo "Cilium Kubernetes Service datapath from pod/$pod:"
+    KUBECONFIG="$kubeconfig" kubectl -n kube-system exec "$pod" -c cilium-agent -- \
+        cilium-dbg service list 2>&1 || true
+    echo "Cilium BPF load-balancer map from pod/$pod:"
+    KUBECONFIG="$kubeconfig" kubectl -n kube-system exec "$pod" -c cilium-agent -- \
+        cilium-dbg bpf lb list 2>&1 || true
+    echo "Cilium endpoint state from pod/$pod:"
+    KUBECONFIG="$kubeconfig" kubectl -n kube-system exec "$pod" -c cilium-agent -- \
+        cilium-dbg endpoint list 2>&1 || true
+}
+
 capture_cni_host_diagnostics() {
-    local config file pod
+    local config file
     for config in /etc/containerd/config.toml \
         /var/lib/rancher/k3s/agent/etc/containerd/config.toml; do
         [[ -f "$config" ]] || continue
@@ -499,22 +522,7 @@ capture_cni_host_diagnostics() {
         echo "Cilium runtime socket inventory: $dir"
         find "$dir" -maxdepth 3 -type s -printf '%p\n' 2>/dev/null || true
     done
-    pod="$(kubectl -n kube-system get pods -l k8s-app=cilium \
-        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-    if [[ -n "$pod" ]]; then
-        echo "Cilium agent status from pod/$pod:"
-        kubectl -n kube-system exec "$pod" -c cilium-agent -- \
-            cilium-dbg status --verbose 2>&1 || true
-        echo "Cilium Kubernetes Service datapath from pod/$pod:"
-        kubectl -n kube-system exec "$pod" -c cilium-agent -- \
-            cilium-dbg service list 2>&1 || true
-        echo "Cilium BPF load-balancer map from pod/$pod:"
-        kubectl -n kube-system exec "$pod" -c cilium-agent -- \
-            cilium-dbg bpf lb list 2>&1 || true
-        echo "Cilium endpoint state from pod/$pod:"
-        kubectl -n kube-system exec "$pod" -c cilium-agent -- \
-            cilium-dbg endpoint list 2>&1 || true
-    fi
+    capture_cilium_datapath
 }
 
 watch_cilium_mount_cgroup_logs() {
@@ -3608,6 +3616,8 @@ main() {
 
     if [[ "${NODEMIGRATE_K3S_CILIUM_RESTART_PROBE:-false}" == true ]]; then
         MIGRATION_STARTED_AT="$(date -u --iso-8601=seconds)"
+        echo "Cilium datapath before K3s restart"
+        capture_cilium_datapath "$SOURCE_KUBECONFIG"
         echo "Restarting the K3s service without running nodemigrate"
         systemctl restart k3s
         local attempt
@@ -3627,7 +3637,52 @@ main() {
             --for=condition=Ready node --all --timeout=5m
         verify_stage restarted "$SOURCE_KUBECONFIG"
         assert_migratable_api_objects_retained source restarted
-        echo "PASS: K3s+Cilium Service and workload behavior survived a K3s service restart without nodemigrate"
+        echo "Cilium datapath after K3s restart with unchanged Node identity"
+        capture_cilium_datapath "$SOURCE_KUBECONFIG"
+
+        local node_name previous_node_uid replacement_node_json replacement_node_uid
+        node_name="$(KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get nodes \
+            -o jsonpath='{.items[0].metadata.name}')"
+        previous_node_uid="$(KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get node "$node_name" \
+            -o jsonpath='{.metadata.uid}')"
+        echo "Deleting Node $node_name UID=$previous_node_uid before another K3s restart"
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl delete node "$node_name" \
+            --preconditions="uid=$previous_node_uid" --wait=true --timeout=60s
+        systemctl restart k3s
+        replacement_node_uid=""
+        for attempt in $(seq 1 90); do
+            if ! KUBECONFIG="$SOURCE_KUBECONFIG" kubectl --request-timeout=2s \
+                get --raw=/readyz >/dev/null 2>&1; then
+                sleep 2
+                continue
+            fi
+            replacement_node_json="$(KUBECONFIG="$SOURCE_KUBECONFIG" \
+                kubectl --request-timeout=2s get node "$node_name" -o json 2>/dev/null || true)"
+            replacement_node_uid="$(jq -r '.metadata.uid // empty' \
+                <<<"$replacement_node_json")"
+            if [[ -n "$replacement_node_uid" && "$replacement_node_uid" != "$previous_node_uid" ]] \
+                && jq -e 'any(.status.conditions[]?; .type == "Ready" and .status == "True")' \
+                    <<<"$replacement_node_json" >/dev/null; then
+                break
+            fi
+            sleep 2
+        done
+        [[ -n "$replacement_node_uid" && "$replacement_node_uid" != "$previous_node_uid" ]] || {
+            echo "K3s did not register a Ready replacement Node $node_name after restart" >&2
+            return 1
+        }
+        echo "Replacement Node $node_name UID=$replacement_node_uid is Ready"
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl label node "$node_name" \
+            operator.example/pool=blue --overwrite
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl annotate node "$node_name" \
+            nodemigrate.io/source-uid=operator-node-value --overwrite
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl taint node "$node_name" \
+            operator.example/dedicated=migration:PreferNoSchedule --overwrite
+        echo "Cilium datapath after same-name Node replacement"
+        capture_cilium_datapath "$SOURCE_KUBECONFIG"
+        verify_stage replaced "$SOURCE_KUBECONFIG"
+        assert_migratable_api_objects_retained source replaced
+        echo "PASS: K3s+Cilium Service and workload behavior survived restart and same-name Node replacement without nodemigrate"
         return 0
     fi
 

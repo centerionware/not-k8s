@@ -1759,13 +1759,17 @@ service/BPF maps prevent establishing whether they explain the ClusterIP
 failure. No migration rerun has been started.
 
 To isolate the Cilium issue before another migration attempt, the branch adds
-an optional CI restart-only probe mode. It builds the branch's combined
-`notk8s` runtime, creates the K3s+Cilium workload fixture, restarts the K3s
-service without running `nodemigrate`, and reruns the same behavioral and API
-inventory checks. A pass would establish that plain K3s restart recovers; a
-failure would narrow the outage to the K3s+Cilium service lifecycle. Either
-result is diagnostic only and cannot satisfy a migration merge gate. The mode
-has not yet been validated or dispatched.
+an optional CI restart-only probe mode. Run
+[36506647392](https://github.com/centerionware/not-k8s/actions/runs/36506647392)
+passed at SHA `a17fddd844a6882a075a3c461cfccd386f588e3f`: the branch combined
+runtime built, the K3s+Cilium workload fixture passed, K3s restarted with its
+Node identity unchanged, and all workload, storage, API-inventory, and durable
+state checks passed again. Therefore, the plain K3s service restart alone does
+not reproduce the prior route outage. The probe is now extended to capture
+Cilium service/BPF/endpoint maps and test the same-name Node deletion and
+re-registration sequence that nodemigrate uses. It still will not invoke
+nodemigrate or import a migration export. This diagnostic result cannot satisfy
+a migration merge gate; no migration rerun has started.
 
 ## Current follow-up (2026-09-27)
 

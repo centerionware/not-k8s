@@ -41,12 +41,18 @@ static checks only; the Docker transfer is not yet exercised at runtime.
 
 The K3s artifact also showed Cilium endpoint link and CiliumEndpoint
 reconciliation warnings around the Service-routing failure, without enough
-service-map evidence to establish causality. The migration workflow now has a
-`k3s_cilium_restart_probe` mode that installs the K3s+Cilium workload fixture,
-restarts K3s without invoking nodemigrate, and repeats behavior and API-state
-checks. It isolates plain K3s restart behavior from migration effects and does
-not count as a migration run. This probe is pending static PR validation and
-runtime dispatch; no migration rerun is queued.
+service-map evidence to establish causality. Restart-only diagnostic run
+[36506647392](https://github.com/centerionware/not-k8s/actions/runs/36506647392)
+passed on SHA `a17fddd844a6882a075a3c461cfccd386f588e3f`; its branch `notk8s`
+build and K3s+Cilium source fixture passed, K3s restarted with the original
+Node identity, and the entire fixture plus all 119 discovered listable API
+resource types passed again. API state and durable fixture data matched before
+and after restart. Job `109209455963`; artifact log captured once at
+`/tmp/nodemigrate-36506647392/nodemigrate-k3s-cilium-restart-36506647392/nodemigrate-k3s-cilium-restart.log`.
+This confirms a plain K3s restart does not reproduce the reported outage. It
+does not test migration or Node replacement. The probe is being extended to
+record Cilium service/BPF/endpoint maps and test a same-name Node deletion plus
+K3s re-registration. No migration rerun is queued.
 
 Run [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)
 completed at SHA `1f6b5064936ca2001dea2527483848aebc7e14ad` with

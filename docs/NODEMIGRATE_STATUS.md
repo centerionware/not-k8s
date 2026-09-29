@@ -16,13 +16,16 @@ K3s returned successfully and passed its replacement Node audit, but
 returned-stage checks then found Cilium service and pod routing failures
 affecting `metrics-server`. The five-node Docker fixture passed recovery
 preflight but hit an unsupported container-to-container file copy. The Docker
-copy helper is fixed and Cilium datapath diagnostics are expanded; both changes
-need live CI verification. The Cilium cause is unresolved, so no migration
-retry is queued. An optional K3s+Cilium restart-only CI probe now tests the
-retained service and workloads without invoking nodemigrate, to distinguish
-ordinary restart behavior from a migration-specific problem. It has not yet
-run. No regular build gate or full e2e ran. See the [CI status](NODEMIGRATE_CI_STATUS.md)
-and [bug tracker](NODEMIGRATE_BUGS.md).
+copy helper is fixed and Cilium datapath diagnostics are expanded; the Docker
+transfer still needs live fixture verification. The restart-only probe
+[36506647392](https://github.com/centerionware/not-k8s/actions/runs/36506647392)
+passed source-to-restarted-stage workload and API parity with unchanged Node
+identity, showing a plain K3s restart does not reproduce the Cilium failure.
+The next probe adds same-name Node deletion/re-registration and Cilium map
+capture. This is diagnostic only and will not run nodemigrate. The root cause
+is unresolved, so no migration retry is queued. No regular build gate or full
+e2e ran. See the [CI status](NODEMIGRATE_CI_STATUS.md) and
+[bug tracker](NODEMIGRATE_BUGS.md).
 
 Latest batch migration run
 [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)
