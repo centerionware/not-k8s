@@ -9,6 +9,29 @@ this objective.
 
 ## Latest completed migration batch
 
+Run [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212)
+completed at SHA `7bb853b462aaaad48ca3708e59a082c24e0b8525` with
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+The upstream Kubernetes single-node round trip passed. K3s completed return,
+passed the returned Node UID/audit checks, then failed returned-stage health
+because `metrics-server` repeatedly crashed after connections to the Kubernetes
+ClusterIP (`10.43.0.1:443`) returned `no route to host`. Cilium later reported
+KubeProxyReplacement true and healthy controllers, but the artifact does not
+show the service and BPF load-balancer maps, so the K3s datapath cause is not
+yet established. No fix or retry is claimed. Docker five-node preflight passed
+its topology, Cilium, and recovery checks, then the script failed because
+Docker does not support `docker cp container:path container:path`. The helper
+now transfers through a host temporary file and failure diagnostics now print
+Cilium service, BPF LB, and endpoint maps. These script changes pass
+`bash -n`, `check_nodemigrate_diagnostics.sh`, and `git diff --check`; the
+Docker transfer fix has not yet been exercised in CI. Do not start another
+migration run until the K3s Cilium routing failure is fixed as part of the same
+batch. Exact jobs: Docker `109195297329`, K3s `109195297576`, upstream
+`109195297739`; logs captured once under `/tmp/nodemigrate-36502166212/`.
+The focused `quick-check.yml` run [36501891816](https://github.com/centerionware/not-k8s/actions/runs/36501891816)
+passed for `nodemigrate,nodecontroller` at this SHA. No regular build gate or
+full e2e ran.
+
 Run [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)
 completed at SHA `1f6b5064936ca2001dea2527483848aebc7e14ad` with
 `runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.

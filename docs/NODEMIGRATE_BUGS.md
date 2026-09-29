@@ -4,6 +4,29 @@ Last updated: 2026-09-29
 
 ## Latest branch-run findings
 
+- **K3s return leaves ClusterIP/pod routing broken after Cilium reports ready.**
+  In K3s job `109195297576` of run
+  [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212),
+  the return migration passed Node replacement and audit checks. Returned-stage
+  verification then failed because `metrics-server` repeatedly panicked when
+  its in-cluster request for `kube-system/extension-apiserver-authentication`
+  reached `10.43.0.1:443` with `no route to host`; pod-IP probes also reported
+  no route during recovery. Cilium later reported KubeProxyReplacement true
+  and all controllers healthy, but no service/BPF LB/endpoint map dump was
+  collected. This is a real post-return Cilium datapath failure with an
+  unconfirmed mechanism. Do not count the run as passed, hide the failed
+  workload check, or dispatch another migration until the cause is fixed.
+  Failure diagnostics now capture `cilium-dbg service list`, `bpf lb list`,
+  and `endpoint list` to expose the missing or stale datapath state.
+- **Five-node fixture used unsupported container-to-container `docker cp`.**
+  Docker job `109195297329` in run `36502166212` passed topology, Cilium, and
+  control-plane recovery checks, then failed while copying PKI/kubeconfig
+  files. Docker requires container-to-host or host-to-container copies. The
+  helper now stages each file through a host temporary file and streams it to
+  the destination container. Syntax and focused diagnostics checks pass; the
+  repaired copy path still needs the next permitted migration batch for live
+  verification.
+
 - **Same-name Node deletion is asynchronous during return cutover.** K3s job
   `109181807925` in run
   [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)

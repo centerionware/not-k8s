@@ -8,6 +8,19 @@ separate living documents below.
 
 ## Current state
 
+The latest batch [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212)
+at SHA `7bb853b462aaaad48ca3708e59a082c24e0b8525` passed the upstream
+Kubernetes round trip, including return, and the focused
+[`nodemigrate,nodecontroller` quick-check](https://github.com/centerionware/not-k8s/actions/runs/36501891816).
+K3s returned successfully and passed its replacement Node audit, but
+returned-stage checks then found Cilium service and pod routing failures
+affecting `metrics-server`. The five-node Docker fixture passed recovery
+preflight but hit an unsupported container-to-container file copy. The Docker
+copy helper is fixed and Cilium datapath diagnostics are expanded; both changes
+need live CI verification. The Cilium cause is unresolved, so no migration
+retry is queued. No regular build gate or full e2e ran. See the [CI status](NODEMIGRATE_CI_STATUS.md)
+and [bug tracker](NODEMIGRATE_BUGS.md).
+
 Latest batch migration run
 [36497949349](https://github.com/centerionware/not-k8s/actions/runs/36497949349)
 at SHA `1f6b5064936ca2001dea2527483848aebc7e14ad` passed all migration builds

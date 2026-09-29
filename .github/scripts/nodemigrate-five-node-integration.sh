@@ -73,8 +73,15 @@ copy_tree() {
 
 copy_file() {
     local source_node="$1" source_path="$2" target_node="$3" target_path="$4"
-    docker cp "$(container "$source_node"):$source_path" \
-        "$(container "$target_node"):$target_path" >/dev/null
+    local temporary_file
+    temporary_file="$(mktemp)"
+    if ! docker cp "$(container "$source_node"):$source_path" "$temporary_file" \
+        >/dev/null || ! docker exec -i "$(container "$target_node")" \
+        sh -c 'umask 077; cat > "$1"' sh "$target_path" <"$temporary_file"; then
+        rm -f -- "$temporary_file"
+        fail "copying $source_node:$source_path to $target_node:$target_path failed"
+    fi
+    rm -f -- "$temporary_file"
 }
 
 export_dir_from() {

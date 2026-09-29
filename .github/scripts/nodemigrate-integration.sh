@@ -505,6 +505,15 @@ capture_cni_host_diagnostics() {
         echo "Cilium agent status from pod/$pod:"
         kubectl -n kube-system exec "$pod" -c cilium-agent -- \
             cilium-dbg status --verbose 2>&1 || true
+        echo "Cilium Kubernetes Service datapath from pod/$pod:"
+        kubectl -n kube-system exec "$pod" -c cilium-agent -- \
+            cilium-dbg service list 2>&1 || true
+        echo "Cilium BPF load-balancer map from pod/$pod:"
+        kubectl -n kube-system exec "$pod" -c cilium-agent -- \
+            cilium-dbg bpf lb list 2>&1 || true
+        echo "Cilium endpoint state from pod/$pod:"
+        kubectl -n kube-system exec "$pod" -c cilium-agent -- \
+            cilium-dbg endpoint list 2>&1 || true
     fi
 }
 

@@ -1725,6 +1725,30 @@ the workflow environment when testing a different compatibility combination,
 and record the resolved versions in the run log.
 
 
+## Current follow-up (2026-09-29)
+
+Run [36502166212](https://github.com/centerionware/not-k8s/actions/runs/36502166212)
+at SHA `7bb853b462aaaad48ca3708e59a082c24e0b8525` used branch-built
+`nodemigrate` and combined `notk8s` components with Cilium KPR and the five-node
+Docker migration enabled. The upstream Kubernetes single-node round trip
+passed through return. K3s also completed return and passed Node replacement
+audit, then failed the returned-stage metrics-server rollout: its in-cluster
+API request to `10.43.0.1:443` repeatedly returned `no route to host`; other
+pod/service probes had the same symptom during recovery. Cilium later reported
+KPR enabled and controllers healthy. Its service and BPF load-balancer maps
+were not captured, so this remains an unresolved runtime failure. Docker
+five-node topology, Cilium setup, and recovery preflight passed, but the next
+step exposed unsupported container-to-container `docker cp`. The helper now
+uses a host temporary-file transfer. Failure diagnostics now capture Cilium
+service, BPF LB, and endpoint maps. Shell syntax, focused migration diagnostics,
+and diff checks pass locally; the script fixes have not been exercised live.
+Do not retry migration until the K3s routing failure has a concrete fix and
+both fixes can be verified together. Exact lane jobs: Docker `109195297329`,
+K3s `109195297576`, upstream `109195297739`; one-time captured logs are under
+`/tmp/nodemigrate-36502166212/`. Focused
+[`nodemigrate,nodecontroller` quick-check run 36501891816](https://github.com/centerionware/not-k8s/actions/runs/36501891816)
+passed on the tested SHA. No regular build or full e2e gate ran.
+
 ## Current follow-up (2026-09-27)
 
 Run [36300720876](https://github.com/centerionware/not-k8s/actions/runs/36300720876) at SHA `958f75fd85c7a8145765432a6f80590f7995c9b9` failed both the K3s+Cilium and upstream Kubernetes+Cilium lanes. Docker five-node preflight and utility/runtime builds passed. K3s never reached its nodestore workload checkpoint because API discovery continued to omit `nodes.metrics.k8s.io` and `pods.metrics.k8s.io` after the 60-second inventory retry, despite APIService `Available=True`; upstream reached its checkpoint but strict source-object parity failed. Neither lane completed reverse migration. Full logs are under `/tmp/nodemigrate-36300720876/`.
