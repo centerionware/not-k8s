@@ -54,12 +54,33 @@ kubelet. The updated checker passes locally and in PR validation
 [36713670774](https://github.com/centerionware/not-k8s/actions/runs/36713670774)
 on SHA `efcddde95ef7720d0974d5698b3dad2a73bac65a`. Living-document-only
 validation [36714065919](https://github.com/centerionware/not-k8s/actions/runs/36714065919)
-also passed on SHA `91899c5b`. The updated focused diagnostic
+also passed on SHA `91899c5b`. The API-managed CoreDNS CNI-recovery diagnostic
 [36716154527](https://github.com/centerionware/not-k8s/actions/runs/36716154527)
-is in progress on SHA `4761372698dd661ddd95419fbd19cdb0707b5064`; its
-`notk8s` build is still running. PR validation
+failed after 19m27s on SHA `4761372698dd661ddd95419fbd19cdb0707b5064` (job
+`109889475497`); the `notk8s` build and setup passed. Baseline source-stage
+workloads and host-origin CoreDNS probes passed. After enabling Cilium
+`clean-cilium-state`, the expected host-origin probes failed. Deleting the old
+CoreDNS Pod through the Kubernetes API triggered a fresh CNI ADD and Cilium
+logged successful endpoint creation for replacement IP `10.42.0.83`, but the
+replacement remained unready for over five minutes: CoreDNS could not reach
+the Kubernetes API ClusterIP `10.43.0.1:443`, and Cilium's BPF service map
+listed that ClusterIP as non-routable. Its readiness log reported the
+Kubernetes plugin not ready. This is evidence of service-datapath state not
+being restored after clean-state, even when a new Pod endpoint is added; the
+exact mechanism remains to be confirmed. The run did not invoke nodemigrate.
+Full workflow log and artifact are saved at
+`/tmp/nodemigrate-36716154527-k3s-probe-job.log` and
+`/tmp/nodemigrate-36716154527-artifact/nodemigrate-k3s-cilium-restart.log`.
+PR validation
 [36716148475](https://github.com/centerionware/not-k8s/actions/runs/36716148475)
 passed on the same SHA. Migration, docker-preflight, and e2e jobs were skipped.
+
+The next no-migration probe will restart Cilium once more with
+`clean-cilium-state` restored, then test whether this repopulates the BPF
+service map and restores CoreDNS/API-Service traffic. This tests a recovery
+hypothesis only; it does not change nodemigrate. Do not dispatch migration
+while the post-clean-state Kubernetes ClusterIP datapath failure remains
+unresolved.
 
 ## Latest migration matrix
 

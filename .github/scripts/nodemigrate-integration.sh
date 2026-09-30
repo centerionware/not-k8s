@@ -732,7 +732,6 @@ recreate_coredns_pod_for_probe() {
             .items[]?
             | select(.metadata.uid != $old_uid and .metadata.deletionTimestamp == null)
             | select(.status.phase == "Running")
-            | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
             | select((.status.podIP // "") != "")
             | {name:.metadata.name, uid:.metadata.uid, ip:.status.podIP}
           ' <<<"$pods_json" | head -n 1)" || replacement_json=""
@@ -742,13 +741,56 @@ recreate_coredns_pod_for_probe() {
         sleep 1
     done
     [[ -n "$replacement_json" ]] || {
-        echo "CoreDNS did not become Ready with a new UID after API-managed Pod recreation" >&2
+        echo "CoreDNS did not become Running with a new UID and Pod IP after API-managed Pod recreation" >&2
         KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
             -l k8s-app=kube-dns -o wide >&2 || true
         return 1
     }
     replacement_pod_name="$(jq -er '.name' <<<"$replacement_json")" || return 1
-    echo "PASS CoreDNS received a fresh CNI sandbox after API recreation: pod=$replacement_pod_name uid=$(jq -r '.uid' <<<"$replacement_json") ip=$(jq -r '.ip' <<<"$replacement_json")"
+    echo "PASS CoreDNS received a new API-managed Pod sandbox: pod=$replacement_pod_name uid=$(jq -r '.uid' <<<"$replacement_json") ip=$(jq -r '.ip' <<<"$replacement_json")"
+}
+
+restart_cilium_agent_for_probe() {
+    local kubeconfig="${1:?missing probe kubeconfig}"
+    local pods_json old_pod_json old_pod_name old_pod_uid replacement_json replacement_pod_name attempt
+    pods_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+        -l k8s-app=cilium -o json)" || return 1
+    old_pod_json="$(jq -ce '
+        if (.items | length) == 1 then .items[0]
+        else error("expected one Cilium agent Pod in this single-node diagnostic") end
+      ' <<<"$pods_json")" || {
+        echo "expected one Cilium agent Pod for the single-node clean-state diagnostic" >&2
+        return 1
+    }
+    old_pod_name="$(jq -er '.metadata.name' <<<"$old_pod_json")" || return 1
+    old_pod_uid="$(jq -er '.metadata.uid' <<<"$old_pod_json")" || return 1
+    echo "Restarting Cilium agent $old_pod_name UID=$old_pod_uid with clean-cilium-state restored"
+    KUBECONFIG="$kubeconfig" kubectl delete pod "$old_pod_name" -n kube-system \
+        --wait=true --timeout=120s || return 1
+
+    replacement_json=""
+    for attempt in $(seq 1 300); do
+        pods_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+            -l k8s-app=cilium -o json 2>/dev/null)" || pods_json='{"items":[]}'
+        replacement_json="$(jq -c --arg old_uid "$old_pod_uid" '
+            .items[]?
+            | select(.metadata.uid != $old_uid and .metadata.deletionTimestamp == null)
+            | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+            | {name:.metadata.name, uid:.metadata.uid}
+          ' <<<"$pods_json" | head -n 1)" || replacement_json=""
+        if [[ -n "$replacement_json" ]]; then
+            break
+        fi
+        sleep 1
+    done
+    [[ -n "$replacement_json" ]] || {
+        echo "Cilium agent did not become Ready with a new UID after its second API-managed restart" >&2
+        KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+            -l k8s-app=cilium -o wide >&2 || true
+        return 1
+    }
+    replacement_pod_name="$(jq -er '.name' <<<"$replacement_json")" || return 1
+    echo "PASS Cilium agent restarted without clean-cilium-state: pod=$replacement_pod_name uid=$(jq -r '.uid' <<<"$replacement_json")"
 }
 
 restore_cilium_clean_state_for_probe() {
@@ -4528,10 +4570,19 @@ main() {
         echo "Cilium datapath immediately after clean-state, before a fresh CoreDNS CNI ADD"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
         recreate_coredns_pod_for_probe "$SOURCE_KUBECONFIG"
-        probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-after-cni-add
-        echo "Cilium datapath after API-managed CoreDNS CNI recreation"
+        probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-after-cni-add-before-agent-restart true
+        echo "Cilium datapath after API-managed CoreDNS Pod recreation and before second agent restart"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
-        echo "PASS focused Cilium clean-state host-path recovery diagnostic; nodemigrate remains disabled"
+        restart_cilium_agent_for_probe "$SOURCE_KUBECONFIG"
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl rollout status daemonset/cilium \
+            -n kube-system --timeout=5m
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl rollout status deployment/coredns \
+            -n kube-system --timeout=5m
+        probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" clean-state-agent-restarted
+        probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-agent-restarted
+        echo "Cilium datapath after second agent restart with clean-cilium-state restored"
+        capture_cilium_datapath "$SOURCE_KUBECONFIG"
+        echo "PASS focused Cilium clean-state datapath recovery diagnostic; nodemigrate remains disabled"
         return 0
         verify_stage cilium-agent-restarted "$SOURCE_KUBECONFIG"
         assert_migratable_api_objects_retained source cilium-agent-restarted

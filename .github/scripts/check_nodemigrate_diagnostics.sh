@@ -57,12 +57,24 @@ case "${KUBECTL_FIXTURE:-}" in
         case "$*" in
             *"get pods -n kube-system -l k8s-app=kube-dns -o json"*)
                 if [[ -f "${NODEMIGRATE_COREDNS_DELETE_MARKER:?}" ]]; then
-                    printf '%s\n' '{"items":[{"metadata":{"name":"coredns-new","uid":"new","deletionTimestamp":null},"status":{"phase":"Running","podIP":"10.42.0.23","conditions":[{"type":"Ready","status":"True"}]}}]}'
+                    printf '%s\n' '{"items":[{"metadata":{"name":"coredns-new","uid":"new","deletionTimestamp":null},"status":{"phase":"Running","podIP":"10.42.0.23","conditions":[{"type":"Ready","status":"False"}]}}]}'
                 else
                     printf '%s\n' '{"items":[{"metadata":{"name":"coredns-old","uid":"old","deletionTimestamp":null},"status":{"phase":"Running","podIP":"10.42.0.22","conditions":[{"type":"Ready","status":"True"}]}}]}'
                 fi
                 ;;
             *"delete pod coredns-old"*) touch "${NODEMIGRATE_COREDNS_DELETE_MARKER:?}" ;;
+        esac
+        ;;
+    cilium-restart)
+        case "$*" in
+            *"get pods -n kube-system -l k8s-app=cilium -o json"*)
+                if [[ -f "${NODEMIGRATE_CILIUM_DELETE_MARKER:?}" ]]; then
+                    printf '%s\n' '{"items":[{"metadata":{"name":"cilium-new","uid":"new","deletionTimestamp":null},"status":{"conditions":[{"type":"Ready","status":"True"}]}}]}'
+                else
+                    printf '%s\n' '{"items":[{"metadata":{"name":"cilium-old","uid":"old","deletionTimestamp":null},"status":{"conditions":[{"type":"Ready","status":"True"}]}}]}'
+                fi
+                ;;
+            *"delete pod cilium-old"*) touch "${NODEMIGRATE_CILIUM_DELETE_MARKER:?}" ;;
         esac
         ;;
     *)
@@ -316,16 +328,26 @@ output="$(recreate_coredns_pod_for_probe /tmp/test-kubeconfig 2>&1)" || {
     echo "API-managed CoreDNS recreation fixture failed: $output" >&2
     exit 1
 }
-grep -Fq 'PASS CoreDNS received a fresh CNI sandbox after API recreation: pod=coredns-new uid=new ip=10.42.0.23' <<< "$output" || {
+grep -Fq 'PASS CoreDNS received a new API-managed Pod sandbox: pod=coredns-new uid=new ip=10.42.0.23' <<< "$output" || {
     echo "CoreDNS recreation did not report the new Pod UID/IP: $output" >&2
+    exit 1
+}
+export KUBECTL_FIXTURE=cilium-restart
+export NODEMIGRATE_CILIUM_DELETE_MARKER="$TEST_DIR/cilium-agent-deleted"
+output="$(restart_cilium_agent_for_probe /tmp/test-kubeconfig 2>&1)" || {
+    echo "Cilium agent restart fixture failed: $output" >&2
+    exit 1
+}
+grep -Fq 'PASS Cilium agent restarted without clean-cilium-state: pod=cilium-new uid=new' <<< "$output" || {
+    echo "Cilium restart did not report the Ready replacement agent: $output" >&2
     exit 1
 }
 grep -Fq 'reset_cilium_state_for_probe "$SOURCE_KUBECONFIG"' "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
     echo "restart diagnostic does not exercise Cilium clean-state recovery" >&2
     exit 1
 }
-grep -Fq 'recreate_coredns_pod_for_probe "$SOURCE_KUBECONFIG"' "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
-    echo "restart diagnostic does not test a fresh CNI ADD after cleanup" >&2
+grep -Fq 'restart_cilium_agent_for_probe "$SOURCE_KUBECONFIG"' "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
+    echo "restart diagnostic does not test Cilium service recovery after cleanup" >&2
     exit 1
 }
 if grep -Fq 'recreate_non_host_pod_sandboxes_for_probe' "$ROOT/.github/scripts/nodemigrate-integration.sh"; then

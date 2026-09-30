@@ -2,6 +2,39 @@
 
 Last updated: 2026-09-30
 
+## Confirmed Cilium clean-state service-datapath failure
+
+Focused upstream K3s+Cilium 1.20.2 KPR diagnostic
+[36716154527](https://github.com/centerionware/not-k8s/actions/runs/36716154527)
+failed at SHA `4761372698dd661ddd95419fbd19cdb0707b5064` after 19m27s (job
+`109889475497`). This run did not invoke nodemigrate. The baseline fixture,
+including source host-origin CoreDNS probes, passed. Cilium's
+`clean-cilium-state` reset removed the ordinary workload endpoint; the
+expected reachability-loss probes timed out. The diagnostic then deleted the
+CoreDNS Pod through the API. K3s created a new Pod/IP, Cilium observed the CNI
+ADD and logged successful endpoint creation, but CoreDNS stayed unready for
+more than five minutes because its Kubernetes plugin could not reach
+`https://10.43.0.1:443`. CoreDNS readiness logs report the Kubernetes plugin
+not ready; Cilium's BPF service map marked the Kubernetes ClusterIP
+non-routable despite its service listing an active backend. This confirms
+that recreating a workload endpoint alone does not restore the Kubernetes
+Service datapath after this clean-state reset. Cilium documents
+`clean-cilium-state` as an invasive all-state cleanup whose BPF state must be
+reconstructed from Kubernetes; see [Cilium configuration](https://docs.cilium.io/en/stable/network/kubernetes/configuration/).
+The exact missing reconciliation/reinitialization mechanism remains
+unresolved. The next diagnostic now tests whether restarting the Cilium agent
+again with the clean-state flag restored repopulates the service map. This
+remains a no-migration diagnostic, not a product fix. Do not retry migration
+until the path is diagnosed and repaired or cleanup sequencing is safely
+corrected.
+
+Full logs are saved at
+`/tmp/nodemigrate-36716154527-k3s-probe-job.log` and
+`/tmp/nodemigrate-36716154527-artifact/nodemigrate-k3s-cilium-restart.log`.
+The run also emitted repeated K3s probe-manager "already exists" messages
+during the long unready interval; these are observed secondary symptoms, not
+yet established as an independent cause.
+
 ## Additional confirmed diagnostic fixture defect
 
 Restart-only run
@@ -57,7 +90,7 @@ Kubelet. The local diagnostic checker passes. PR validations
 and [36714065919](https://github.com/centerionware/not-k8s/actions/runs/36714065919)
 passed. API-managed CoreDNS CNI-recovery diagnostic
 [36716154527](https://github.com/centerionware/not-k8s/actions/runs/36716154527)
-is running on SHA `47613726`; PR validation
+failed on SHA `47613726`; PR validation
 [36716148475](https://github.com/centerionware/not-k8s/actions/runs/36716148475)
 passed on that commit.
 

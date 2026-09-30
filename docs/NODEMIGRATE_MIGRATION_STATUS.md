@@ -35,8 +35,16 @@ without a Cilium endpoint. The run did not manually remove CRI state or invoke
 nodemigrate. The next diagnostic will API-recreate CoreDNS to trigger CNI ADD
 and probe its new UID/IP. That diagnostic
 [36716154527](https://github.com/centerionware/not-k8s/actions/runs/36716154527)
-is now running at SHA `4761372698dd661ddd95419fbd19cdb0707b5064`; it does not
-invoke nodemigrate.
+failed after 19m27s at SHA `4761372698dd661ddd95419fbd19cdb0707b5064`; it did
+not invoke nodemigrate. Cilium logged successful endpoint creation for the
+new Pod IP, but the Pod remained unready because it could not reach the
+Kubernetes API ClusterIP. Cilium's BPF service map marked that ClusterIP
+non-routable after `clean-cilium-state`, despite its service listing showing
+an active backend. This confirms endpoint recreation alone does not recover
+the Cilium Service datapath. A no-migration diagnostic is being extended to
+restart the Cilium agent again with the cleanup flag restored, then verify
+whether the service map and workload probes recover. Diagnose and repair or
+safely adjust cleanup sequencing before another migration run.
 
 ## Latest migration matrix: 36700106403
 
