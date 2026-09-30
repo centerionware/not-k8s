@@ -28,6 +28,20 @@ fn resolves_a_simple_mount_to_its_volume_directory() {
 }
 
 #[test]
+fn empty_sub_path_keeps_a_host_file_mount_source_unchanged() {
+    let mut volumes = HashMap::new();
+    volumes.insert("host-file".to_string(), ResolvedVolume::HostPath(PathBuf::from("/var/lib/host-file")));
+    let mut mount = vm("host-file", "/var/lib/host-file");
+    mount.sub_path = Some(String::new());
+
+    let mounts = build_mounts(&[mount], &volumes, &[], false);
+
+    assert_eq!(mounts.len(), 1);
+    assert_eq!(mounts[0].container_path, "/var/lib/host-file");
+    assert_eq!(mounts[0].host_path, "/var/lib/host-file");
+}
+
+#[test]
 fn nested_volume_mounts_are_ordered_parent_before_child() {
     let mut volumes = HashMap::new();
     volumes.insert("envoy-sockets".to_string(), ResolvedVolume::HostPath(PathBuf::from("/var/run/cilium/envoy/sockets")));

@@ -5,7 +5,7 @@ Last updated: 2026-09-30
 ## Active fix batch (working tree, not yet CI-verified)
 
 Open PR #591 now includes commit
-`f8bfc0254bf8aa97ac6a630f75c6b93e7bb9e0e9` on
+`678a0bba0731c9d511070b5a8cf0b0a79933c1cd` on
 `feat/nodemigrate-migration`. Focused quick-check
 [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
 failed while compiling `nodemigrate`; Nodelet passed 390 non-CRI and 1216
@@ -13,9 +13,22 @@ CRI-enabled tests. The complete job log is
 `/tmp/nodemigrate-quick-check-36673247341.log`. Rust found a `String`/`str`
 comparison mismatch and the cleanup wrapper accepted an already-completed
 `Result` as a future, plus the test needed an explicit result type. These
-compile issues are fixed in the working tree but are not yet CI-verified. No
-migration runtime has been dispatched for this commit. The current batch
-addresses the failure mechanisms recorded below:
+compile issues were fixed in `678a0bba`; follow-up quick-check
+[36673743053](https://github.com/centerionware/not-k8s/actions/runs/36673743053)
+passed all `nodemigrate` tests. The Nodelet source is unchanged from `f8bfc025`,
+where both suites passed. Push-triggered PR validation
+[36673741337](https://github.com/centerionware/not-k8s/actions/runs/36673741337)
+passed shell syntax, jq snapshots, Helm-state, API-inventory, and diagnostic
+JSON checks; all live migration jobs were skipped. `nodemigrate checks`
+[36673741370](https://github.com/centerionware/not-k8s/actions/runs/36673741370)
+passed crate tests and packaging policy; release build/publish were skipped.
+Migration workflow
+[36674138076](https://github.com/centerionware/not-k8s/actions/runs/36674138076)
+completed at SHA `678a0bba` with `runtime_source=branch`, Cilium KPR, and the
+five-node lane enabled. K3s passed its round trip. Upstream safely rolled back
+after a Cilium readiness deadline, and the five-node fixture failed before
+nodemigrate ran. The current uncommitted batch addresses the two actionable
+findings below; the upstream CRI file-mount mechanism still needs confirmation.
 
 - Cilium cleanup now tracks the replacement Pod UID, cleanup-init exit code,
   and a continuous Ready interval for that same Pod. Each loop checks its
@@ -35,15 +48,22 @@ addresses the failure mechanisms recorded below:
   but remain unverified until CI runs.
 - The Docker five-node fixture pins the hostpath CSI plugin to the PV topology
   node before provisioning fixture claims, checks driver readiness on all
-  required nodes, and preserves existing StatefulSet `nodeSelector` entries.
-  Shell syntax and whitespace validation pass locally; a migration run has
-  not exercised the updated fixture.
+  required nodes, seeds its node-specific topology label before provisioning,
+  resolves PV topology values back to Nodes, and preserves existing StatefulSet
+  selectors. Shell syntax and whitespace validation have not yet been rerun on
+  this batch.
 
-Do not dispatch another migration run until focused checks pass for both
-`nodelet` and `nodemigrate` and the integration scripts are validated. The
-next runtime run must use the branch runtime and the existing K3s, upstream
-Kubernetes, and five-node lanes; no regular build gate or general e2e suite is
-part of this migration loop.
+Nodelet now treats an empty `subPath` as the volume root, adds the container
+name to CRI create/start errors, and logs Cilium agent mount source/target paths
+when container creation fails. Run 36674138076 repeatedly reported
+`failed to stat "/run/xtables.lock/": ... not a directory` while Cilium's
+replacement remained Pending. The official Cilium manifest declares
+`/run/xtables.lock` as a `FileOrCreate` hostPath with a `/run/xtables.lock`
+mount target and no `subPath`; therefore the saved run does not prove the new
+empty-subPath handling is the cause. The added failure-only mount diagnostics
+will show the exact input if this persists. The Nodelet change and focused test
+remain unverified until quick-check runs. No replacement migration has been
+dispatched.
 
 ## Findings from migration run 36664092690
 

@@ -19,6 +19,7 @@ case "${1:?use source, nodestore, or returned}" in
         install_hostpath_driver /var/lib/kubelet
         # Keep the node-local hostpath catalog on the same node that will own
         # the generated PV topology before provisioning any fixture claims.
+        ensure_hostpath_topology_label worker-1
         pin_hostpath_driver_to_node worker-1
         install_workloads
         pin_hostpath_driver_to_fixture_volumes

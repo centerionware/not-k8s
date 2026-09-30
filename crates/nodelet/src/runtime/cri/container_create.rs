@@ -319,6 +319,15 @@ impl CriRuntime {
         let userns_mapping = (!id.host_users).then(|| self.userns.assigned(&id.uid)).flatten();
         let handler_supports_recursive_ro = self.handler_supports_recursive_ro(runtime_handler);
         let mut mounts = build_mounts(container.volume_mounts.as_deref().unwrap_or(&[]), volumes, envs, handler_supports_recursive_ro);
+        let cilium_agent_mounts = (id.namespace == "kube-system"
+            && id.name.starts_with("cilium-")
+            && container.name == "cilium-agent")
+        .then(|| {
+            mounts
+                .iter()
+                .map(|mount| (mount.container_path.clone(), mount.host_path.clone()))
+                .collect::<Vec<_>>()
+        });
         // A container running as a non-root UID inside a pod user namespace
         // sees host-owned bind mounts through the mapped UID range. Make the
         // mount point writable by that effective container UID; otherwise a
@@ -708,7 +717,17 @@ impl CriRuntime {
                 if let (Some(memory_manager), Some(key)) = (&self.memory_manager, &memory_manager_key) {
                     memory_manager.release(key);
                 }
-                return Err(e).context("creating container");
+                if let Some(mounts) = &cilium_agent_mounts {
+                    warn!(
+                        pod = %format!("{}/{}", id.namespace, id.name),
+                        uid = %id.uid,
+                        container = %container.name,
+                        mounts = ?mounts,
+                        error = ?e,
+                        "Cilium agent CRI container creation failed with these host mount sources"
+                    );
+                }
+                return Err(e).with_context(|| format!("creating container {}", container.name));
             }
         };
         // Round 124 (temporary diagnostic): correlates with the
@@ -729,7 +748,7 @@ impl CriRuntime {
 
         if let Err(e) = rt.start_container(StartContainerRequest { container_id: created.container_id.clone() }).await {
             self.release_container_devices(sandbox_id, &container.name).await;
-            return Err(e).context("starting container");
+            return Err(e).with_context(|| format!("starting container {}", container.name));
         }
         info!(
             namespace = %id.namespace,

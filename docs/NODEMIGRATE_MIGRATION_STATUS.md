@@ -5,19 +5,31 @@ Last updated: 2026-09-30
 ## Active worktree candidate
 
 PR #591 remains open on `feat/nodemigrate-migration`, now at
-`f8bfc0254bf8aa97ac6a630f75c6b93e7bb9e0e9`. The pushed batch addresses the
+`678a0bba0731c9d511070b5a8cf0b0a79933c1cd`. The pushed batch addresses the
 Cilium cleanup wait, CSI registration wakeups and metadata
 retries, retry UID/cancellation safety, and hostpath fixture node placement.
 Focused quick-check [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
 passed both Nodelet test configurations (390 non-CRI, 1216 CRI) but failed
-compiling `nodemigrate`; the compile errors are corrected in the working tree.
-None of the changes has been exercised by migration runtime. Local shell
-syntax and `git diff --check` passed. The migration rerun remains gated on a
-green focused check; then run the authorized workflow with the branch
-runtime, Cilium KPR, and five-node migration enabled. No general e2e or
+compiling `nodemigrate`; the compile errors were fixed in `678a0bba`. Follow-up
+nodemigrate quick-check [36673743053](https://github.com/centerionware/not-k8s/actions/runs/36673743053)
+passed. Migration run
+[36674138076](https://github.com/centerionware/not-k8s/actions/runs/36674138076)
+then passed the K3s round trip in 25m18s. Upstream safely rolled back after
+its replacement Cilium Pod remained Pending; the Nodelet journal repeatedly
+reported a CRI container-create error on `/run/xtables.lock/`. The five-node
+lane failed in fixture preflight because worker-1 lacked
+`topology.hostpath.csi/node`, before nodemigrate ran. These findings and the
+uncommitted follow-up batch are detailed below. Push-triggered script checks passed in
+[36673741337](https://github.com/centerionware/not-k8s/actions/runs/36673741337),
+and migration-specific crate/packaging checks passed in
+[36673741370](https://github.com/centerionware/not-k8s/actions/runs/36673741370);
+its live migration jobs were skipped. The current uncommitted fix batch adds
+Nodelet empty-`subPath` handling and Cilium mount diagnostics, and labels the
+source five-node hostpath topology before provisioning. Focused CI for this
+batch is pending; no new migration run has been dispatched. No general e2e or
 regular build gate is requested.
 
-## Latest completed run: 36664092690
+## Previous completed run: 36664092690
 
 Run [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690)
 tested SHA `18520d8ddb360e01bf2aa665c65cce22390762fb` with branch-built

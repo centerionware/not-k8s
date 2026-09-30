@@ -1318,18 +1318,18 @@ ensure_csi_can_access_nodelet_root() {
 }
 
 pin_hostpath_driver_to_node() {
-    local node="${1:?missing hostpath CSI topology node}" plugin_json patch selector node_selector
-    kubectl get node "$node" -o json | jq -e '
-      (.metadata.labels // {}) | has("topology.hostpath.csi/node")
-    ' >/dev/null || {
+    local node="${1:?missing hostpath CSI topology node}" node_json topology_value plugin_json patch selector node_selector
+    node_json="$(kubectl get node "$node" -o json)"
+    topology_value="$(jq -r '.metadata.labels["topology.hostpath.csi/node"] // empty' <<<"$node_json")"
+    [[ -n "$topology_value" ]] || {
         echo "CSI topology node $node is not labeled topology.hostpath.csi/node" >&2
         return 1
     }
     plugin_json="$(kubectl get statefulset csi-hostpathplugin -n default -o json)"
     selector="$(jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")' <<<"$plugin_json")"
     node_selector="$(jq -c '.spec.template.spec.nodeSelector // {}' <<<"$plugin_json")"
-    patch="$(jq -cn --arg node "$node" --argjson current "$node_selector" \
-        '{spec:{template:{spec:{nodeSelector:($current + {"topology.hostpath.csi/node":$node})}}}}')"
+    patch="$(jq -cn --arg node "$node" --arg topology "$topology_value" --argjson current "$node_selector" \
+        '{spec:{template:{spec:{nodeSelector:($current + {"kubernetes.io/hostname":$node,"topology.hostpath.csi/node":$topology})}}}}')"
     patch_hostpath_statefulset merge "$patch"
     kubectl rollout status statefulset/csi-hostpathplugin -n default --timeout=5m
     kubectl get pods -n default -l "$selector" -o json | jq -e --arg node "$node" '
@@ -1343,8 +1343,19 @@ pin_hostpath_driver_to_node() {
     echo "PASS: hostpath CSI driver is Ready on topology node $node"
 }
 
+ensure_hostpath_topology_label() {
+    local node="${1:?missing hostpath CSI topology node}" node_json
+    node_json="$(kubectl get node "$node" -o json)"
+    if [[ -z "$(jq -r '.metadata.labels["topology.hostpath.csi/node"] // empty' <<<"$node_json")" ]]; then
+        # This isolated hostpath provider reports a node-specific topology
+        # value. Seed it before provisioning, when no PV exists from which to
+        # derive the provider's placement, and preserve it through migration.
+        kubectl label node "$node" "topology.hostpath.csi/node=$node" --overwrite
+    fi
+}
+
 pin_hostpath_driver_to_fixture_volumes() {
-    local claim pv_json topology_nodes node
+    local claim pv_json topology_nodes topology_value node
     local claims=(state-migration-stateful-0 migration-csi-pvc)
     local -a topology_values=()
     for claim in "${claims[@]}"; do
@@ -1369,7 +1380,15 @@ pin_hostpath_driver_to_fixture_volumes() {
         echo "fixture hostpath CSI volumes span multiple topology nodes: $topology_nodes" >&2
         return 1
     }
-    node="$topology_nodes"
+    topology_value="$topology_nodes"
+    node="$(kubectl get nodes -o json | jq -er --arg topology "$topology_value" '
+      [.items[]
+      | select(.metadata.labels["topology.hostpath.csi/node"] == $topology)
+      | .metadata.name][0] // empty
+    ')" || {
+        echo "no Node advertises hostpath CSI topology value $topology_value" >&2
+        return 1
+    }
     pin_hostpath_driver_to_node "$node"
     echo "PASS: hostpath CSI driver and fixture PVs use topology node $node"
 }

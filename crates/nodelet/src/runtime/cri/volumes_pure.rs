@@ -388,10 +388,14 @@ pub(crate) fn build_mounts(
     let mut mounts = volume_mounts
         .iter()
         .filter_map(|vm| {
+            // Kubernetes treats an empty subPath/subPathExpr as mounting
+            // the volume root. Joining it to a file HostPath would instead
+            // produce a trailing slash and make CRI treat the file as a dir.
             let sub_path = match &vm.sub_path_expr {
                 Some(expr) => Some(expand_sub_path_expr(expr, envs)?),
                 None => vm.sub_path.clone(),
-            };
+            }
+            .filter(|sub_path| !sub_path.is_empty());
             let propagation = mount_propagation_cri(vm.mount_propagation.as_deref());
             match volumes.get(&vm.name)? {
                 ResolvedVolume::HostPath(host_dir) => {

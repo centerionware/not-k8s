@@ -7,45 +7,66 @@ Last updated: 2026-09-30
 The selected checkout is `/workspace/not-k8s`, branch
 `feat/nodemigrate-migration`, with open [PR #591](https://github.com/centerionware/not-k8s/pull/591)
 against `main`. The pushed PR head is
-`f8bfc0254bf8aa97ac6a630f75c6b93e7bb9e0e9`; it covers Cilium replacement
+`678a0bba0731c9d511070b5a8cf0b0a79933c1cd`; it covers Cilium replacement
 readiness and diagnostics, Nodelet dynamic CSI reconciliation/retries, and
-five-node hostpath placement. Focused quick-check
+five-node hostpath placement. Latest completed migration workflow
+[36674138076](https://github.com/centerionware/not-k8s/actions/runs/36674138076)
+tested that SHA with branch runtime, Cilium KPR, and the five-node lane:
+K3s passed its round trip (job `109755318716`); upstream rolled back after
+the replacement Cilium Pod failed to become Ready (job `109755318717`); and
+five-node failed before migration when worker-1 lacked the
+`topology.hostpath.csi/node` label (job `109755318387`). The workflow logs and
+artifacts are saved under `/tmp/nodemigrate-36674138076*`. Focused quick-check
 [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
 failed compiling `nodemigrate`; its log is
 `/tmp/nodemigrate-quick-check-36673247341.log`. Nodelet passed both test
 configurations: 390 without CRI and 1216 with CRI. The compiler errors in the
-Cilium cleanup result wrapper and its test are corrected in the working tree
-and need another focused check. `bash -n` on the
-changed integration scripts and `git diff --check` pass. A package-wide
+Cilium cleanup result wrapper and its test were fixed in `678a0bba`; follow-up
+quick-check [36673743053](https://github.com/centerionware/not-k8s/actions/runs/36673743053)
+passed all `nodemigrate` tests. At `f8bfc025`, Nodelet passed 390 non-CRI and
+1216 CRI-enabled tests. Push-triggered PR validation
+[36673741337](https://github.com/centerionware/not-k8s/actions/runs/36673741337)
+passed script syntax and JSON/inventory checks; its live migration jobs were
+skipped. `nodemigrate checks`
+[36673741370](https://github.com/centerionware/not-k8s/actions/runs/36673741370)
+passed crate tests and packaging policy; release build and publish were
+skipped. `bash -n` on the changed integration scripts and `git diff --check`
+pass. A package-wide
 `cargo fmt --check` reports formatting differences across the existing
 `nodelet` and `nodemigrate` trees, so it is not a clean formatting signal for
-this patch and no repository-wide formatting churn was applied. Do not start
-another migration workflow until a focused quick-check passes and the
-push-triggered migration script validation finishes successfully. Do not run the regular build
-gate or general e2e suite for this task.
+this patch and no repository-wide formatting churn was applied. Migration
+The upstream failure diagnostics show Cilium's API init cleanup exited zero,
+but later `CreateContainer` attempts failed with
+`failed to stat "/run/xtables.lock/": not a directory`; the exact failing
+container and mount input were not captured. The five-node source fixture now
+seeds its hostpath topology label before PV provisioning. An uncommitted
+follow-up also adds empty-subPath handling and failure-only Cilium mount
+diagnostics; it has not been checked. Do not run the regular build gate or
+general e2e suite for this task.
 
 ## Current gate
 
-The latest migration run is [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690)
-at SHA `18520d8ddb360e01bf2aa665c65cce22390762fb`, with branch runtime,
+The latest migration run is [36674138076](https://github.com/centerionware/not-k8s/actions/runs/36674138076)
+at SHA `678a0bba0731c9d511070b5a8cf0b0a79933c1cd`, with branch runtime,
 Cilium KPR, and five-node migration enabled. K3s passed both migration
-directions and all checkpoints in 25m21s (job `109724942137`). Upstream
-Kubernetes job `109724942094` hit its configured 60-minute `Run migration`
-step timeout; neither the user nor an agent canceled it. Docker five-node job
-`109724941831` failed its StatefulSet rollout because hostpath CSI ran on
-worker-2 while both fixture PVs were pinned to worker-1. This proves a
-30-minute whole-job cap is too short for healthy K3s, while the upstream
-60-minute timeout was caused by an infinite loop in Cilium cleanup rather than
-a healthy migration needing more time.
+directions and checkpoints in 25m18s (job `109755318716`). Upstream
+Kubernetes job `109755318717` safely rolled back when the replacement Cilium
+Pod did not become Ready; its API cleanup init exited zero, and Nodelet journal
+repeated `CreateContainer` errors for `/run/xtables.lock/`, but the exact
+container and mount input were not captured. Five-node job `109755318387`
+failed before migration because worker-1 lacked the hostpath CSI topology
+label. This run does not establish the upstream root cause and is not a
+five-node migration result.
 
-The Cilium loop now checks its deadline on each iteration. The five-node
-fixture now pins hostpath CSI to the fixture PV topology node at source,
-nodestore, and returned stages. Full logs are saved at
-`/tmp/nodemigrate-36664092690-kubernetes.log` and
-`/tmp/nodemigrate-36664092690-docker.log`; downloaded artifacts are under
-`/tmp/nodemigrate-36664092690-artifacts/`. Script syntax and whitespace checks
-passed locally. Focused CI checks are pending; no general e2e or regular build
-gate ran. Do not start another migration run until focused checks pass.
+The branch Cilium loop fix passed nodemigrate quick-check
+[36673743053](https://github.com/centerionware/not-k8s/actions/runs/36673743053),
+but the migration still stalled at a later runtime boundary. The new fixture
+now seeds the source topology label before PV provisioning. The uncommitted
+follow-up adds empty-`subPath` handling and Cilium mount diagnostics, pending
+focused CI. Full logs are saved at `/tmp/nodemigrate-36674138076-{k3s,kubernetes,docker}.log`
+and artifacts under `/tmp/nodemigrate-36674138076-artifacts/`. No general e2e
+or regular build gate ran. Do not start another migration run until the whole
+fix batch passes focused checks.
 
 Earlier status:
 
