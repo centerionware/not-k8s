@@ -46,7 +46,11 @@ then failed because its lightweight checker still called the removed ordinary
 Cilium-restart helper. The checker now exercises the current Ready-CoreDNS
 probe and asserts the no-migration path does not remove CRI sandboxes under
 Kubelet. `bash .github/scripts/check_nodemigrate_diagnostics.sh` and shell
-syntax validation pass locally; the updated CI run is pending.
+syntax validation pass locally, and PR validation
+[36713670774](https://github.com/centerionware/not-k8s/actions/runs/36713670774)
+passed on SHA `efcddde9`. Corrected no-migration diagnostic
+[36713423587](https://github.com/centerionware/not-k8s/actions/runs/36713423587)
+remains in progress on SHA `542e0fb2`.
 
 ## Latest migration result: 36700106403
 

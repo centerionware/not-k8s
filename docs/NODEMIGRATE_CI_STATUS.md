@@ -45,8 +45,11 @@ also exposed a stale fixture in `check_nodemigrate_diagnostics.sh`: it called
 the removed ordinary Cilium restart helper after the diagnostic switched to
 the clean-state reset. The checker now tests filtering to the current Ready
 CoreDNS Pod IP and guards against direct CRI sandbox deletion under K3s's
-kubelet. The updated checker passes locally; the next PR validation and
-corrected no-migration diagnostic are still pending.
+kubelet. The updated checker passes locally and in PR validation
+[36713670774](https://github.com/centerionware/not-k8s/actions/runs/36713670774)
+on SHA `efcddde95ef7720d0974d5698b3dad2a73bac65a`. Corrected no-migration
+diagnostic [36713423587](https://github.com/centerionware/not-k8s/actions/runs/36713423587)
+is still running on SHA `542e0fb2f0437c13161f502974b2fbc757911149`.
 
 ## Latest migration matrix
 
