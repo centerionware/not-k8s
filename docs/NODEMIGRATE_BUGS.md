@@ -51,6 +51,17 @@ before changing the migration recovery procedure. Do not retry migration until
 this path is repaired or destination/rollback behavior is independently
 proven.
 
+Inspection of the exact upstream Cilium `v1.20.2` source confirms its
+`clean-cilium-state` init calls `cilium-dbg post-uninstall-cleanup --all-state`;
+that cleanup detaches Socket LB cgroup programs and unmounts the configured
+cgroup root before the agent starts ([cleanup implementation](https://github.com/cilium/cilium/blob/v1.20.2/cilium-dbg/cmd/post_uninstall_cleanup.go),
+[Socket LB cgroup attachment](https://github.com/cilium/cilium/blob/v1.20.2/pkg/socketlb/cgroup.go)).
+The running agent reports Socket LB enabled, but that status alone does not
+show which programs are attached to the cgroup root. The `to stack` trace makes
+the post-restart cgroup attachment a concrete next check, not yet a confirmed
+root cause. The next focused diagnostic captures the cgroup2 mount and
+`bpftool cgroup tree` immediately before the failing Pod-origin Service probe.
+
 Full logs are saved at
 `/tmp/nodemigrate-36716154527-k3s-probe-job.log` and
 `/tmp/nodemigrate-36716154527-artifact/nodemigrate-k3s-cilium-restart.log`.

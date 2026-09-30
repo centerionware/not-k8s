@@ -18,7 +18,12 @@ trace does not yet identify why the service lookup/translation is bypassed or
 fails. Migration, Docker preflight, and general validation were skipped. Logs:
 `/tmp/nodemigrate-36725184073-k3s-probe-job.log` and
 `/tmp/nodemigrate-36725184073-artifact/nodemigrate-k3s-cilium-restart.log`.
-Do not dispatch migration while this remains unresolved.
+Exact Cilium `v1.20.2` source inspection shows `clean-cilium-state` detaches
+Socket LB cgroup programs and unmounts the cgroup root as part of all-state
+cleanup. Because the agent later reports Socket LB enabled, the next focused
+run captures the cgroup2 mount and attached programs before probing. This is a
+testable hypothesis, not a confirmed cause. Do not dispatch migration while
+the datapath remains unresolved.
 
 Workflow [36706135439](https://github.com/centerionware/not-k8s/actions/runs/36706135439)
 completed at branch SHA `deadc5eb729e2af4d9de0fc96f7217db031abf8b`; job

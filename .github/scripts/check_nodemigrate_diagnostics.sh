@@ -368,6 +368,11 @@ grep -Fq 'probe_api_clusterip_with_cilium_monitor "$SOURCE_KUBECONFIG" clean-sta
     echo "restart diagnostic does not capture Cilium datapath events for the failed API ClusterIP route" >&2
     exit 1
 }
+grep -Fq 'capture_cilium_socket_lb_attachment "$kubeconfig"' \
+    "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
+    echo "restart diagnostic does not capture Cilium Socket LB cgroup attachments" >&2
+    exit 1
+}
 if grep -Fq 'recreate_non_host_pod_sandboxes_for_probe' "$ROOT/.github/scripts/nodemigrate-integration.sh"; then
     echo "K3s diagnostic must not delete CRI sandboxes under Kubelet" >&2
     exit 1

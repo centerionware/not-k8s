@@ -568,6 +568,32 @@ EOF
     return 1
 }
 
+capture_cilium_socket_lb_attachment() {
+    local kubeconfig="${1:?missing probe kubeconfig}"
+    local cilium_pod cgroup_root
+    cilium_pod="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+        -l k8s-app=cilium -o jsonpath='{.items[0].metadata.name}')" || return 1
+    [[ -n "$cilium_pod" ]] || {
+        echo "cannot inspect Cilium Socket LB attachment: no Cilium agent Pod was found" >&2
+        return 1
+    }
+    cgroup_root="$(KUBECONFIG="$kubeconfig" kubectl get configmap cilium-config \
+        -n kube-system -o go-template='{{index .data "cgroup-root"}}')" || return 1
+    cgroup_root="${cgroup_root:-/run/cilium/cgroupv2}"
+    echo "Cilium Socket LB cgroup attachment from pod/$cilium_pod (root=$cgroup_root):"
+    KUBECONFIG="$kubeconfig" kubectl -n kube-system exec "$cilium_pod" \
+        -c cilium-agent -- sh -c '
+            echo "cgroup2 mounts:";
+            grep " - cgroup2 " /proc/self/mountinfo || true;
+            echo "Socket LB programs attached to cgroup root:";
+            if command -v bpftool >/dev/null 2>&1; then
+                bpftool cgroup tree "$1" || true;
+            else
+                echo "bpftool is not present in the Cilium image";
+            fi
+        ' sh "$cgroup_root" 2>&1 || true
+}
+
 probe_api_clusterip_with_cilium_monitor() {
     local kubeconfig="${1:?missing probe kubeconfig}"
     local stage="${2:?missing probe stage}"
@@ -580,6 +606,7 @@ probe_api_clusterip_with_cilium_monitor() {
         return 1
     }
     mkdir -p "$(dirname "$log_file")"
+    capture_cilium_socket_lb_attachment "$kubeconfig" || return 1
     echo "Starting Cilium trace/drop monitor for Pod-origin API ClusterIP probe at stage=$stage"
     timeout --signal=INT 110s env KUBECONFIG="$kubeconfig" kubectl -n kube-system \
         exec "$cilium_pod" -c cilium-agent -- cilium-dbg monitor \
