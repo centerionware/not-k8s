@@ -388,7 +388,7 @@ async fn recreate_node_pod_sandboxes(
     let node_name = node_name.to_owned();
     let log_node_name = node_name.clone();
     let (sandbox_count, container_count) = tokio::task::spawn_blocking(move || {
-        crate::service::with_nodelet_paused(|| {
+        crate::service::with_local_pod_agents_paused(&runtime_endpoint, || {
             recreate_pod_sandboxes_for_uids(&runtime_endpoint, &node_name, &pod_uids)
         })
     })

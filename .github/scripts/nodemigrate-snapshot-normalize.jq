@@ -36,6 +36,15 @@ def migration_fixture_hostpath_csi_statefulset:
   .kind == "StatefulSet" and .metadata.namespace == "default" and
   (.metadata.name == "csi-hostpathplugin" or .metadata.name == "csi-hostpath-socat");
 
+def migration_fixture_nodelet_root_volume:
+  .name == "nodemigrate-nodelet-root" and
+  (.hostPath.path // "") == "/var/lib/nodelet";
+
+def migration_fixture_nodelet_root_mount:
+  .name == "nodemigrate-nodelet-root" and
+  .mountPath == "/var/lib/nodelet" and
+  .mountPropagation == "Bidirectional";
+
 def normalize_fixture_csi_runtime_string:
   if type == "string" then
     gsub("/var/lib/nodelet"; "/var/lib/kubelet") | gsub("nodelet"; "kubelet")
@@ -120,6 +129,7 @@ select(
     .metadata.annotations |= del(."kubectl.kubernetes.io/last-applied-configuration")
     | .spec.template.spec.volumes |= map(
         select(.name != "nodemigrate-source-csi-stage")
+        | select(migration_fixture_nodelet_root_volume | not)
         | walk(normalize_fixture_csi_runtime_string)
         | if ((.hostPath.path // "") | startswith("/var/lib/kubelet")) then
             .hostPath |= del(.type)
@@ -128,6 +138,7 @@ select(
     | .spec.template.spec.containers |= map(
         .volumeMounts |= map(
           select(.name != "nodemigrate-source-csi-stage")
+          | select(migration_fixture_nodelet_root_mount | not)
           | walk(normalize_fixture_csi_runtime_string)
         )
         | walk(normalize_fixture_csi_runtime_string)

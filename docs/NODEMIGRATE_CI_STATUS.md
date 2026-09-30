@@ -464,7 +464,7 @@ Full logs and artifacts:
 `/tmp/nodemigrate-36678250408-artifacts/`. Neither upstream nor five-node
 passed the full round-trip gate. No regular build or full e2e ran.
 
-## Current gate
+## Earlier gate summary (superseded by the 36754641851 run below)
 
 The latest migration run is [36674138076](https://github.com/centerionware/not-k8s/actions/runs/36674138076)
 at SHA `678a0bba0731c9d511070b5a8cf0b0a79933c1cd`, with branch runtime,
@@ -4332,3 +4332,46 @@ through agent readiness and link reattachment,
 but end-to-end workload recovery remains unverified because cleanup then failed
 at this race. Saved logs: `/tmp/nodemigrate-36749494255-*` and
 `/tmp/nodemigrate-36753849376-quick-check.log`.
+
+## 2026-09-30 migration run 36754641851
+
+Run [36754641851](https://github.com/centerionware/not-k8s/actions/runs/36754641851)
+tested SHA `61cdb7ad48362220f3affcaa689ff1842722826e` with branch-built
+runtime, Cilium KPR, and five-node migration enabled. Standalone nodemigrate
+builds passed in both single-node lanes; the combined `notk8s --features cri`
+build passed in the five-node lane. No general build or full e2e ran.
+
+K3s forward migration and target checks passed. Return migration restored the
+retained K3s API and Cilium agent, then failed removing a CRI container that
+K3s had restarted. Rollback restored nodestore, but its final
+`migration-job-check-nodestore` readiness check timed out (job
+`110021665486`). Upstream Kubernetes completed forward and return migration
+and passed the returned-stage checks through Gateway programming, then timed
+out waiting for `migration-standalone` to become Ready. The captured Pod was
+`ContainerStatusUnknown` while the Cilium agent was restarting; Cilium logged
+creation of the replacement Pod endpoint shortly after the wait ended (job
+`110021665844`).
+
+The five-node lane migrated to nodestore and passed stage workload checks,
+then strict source-object comparison found 31 changed objects: 28 ClusterRoles,
+two PriorityClass descriptions, and the hostpath CSI plugin StatefulSet. The
+StatefulSet change comes from the fixture's nodelet-root mount adaptation; the
+system RBAC differences remain unexplained and must not be waived or normalized
+without identifying their owner and semantics. Return migration was not
+attempted (job `110021665907`).
+
+Focused nodemigrate quick-check passed earlier at SHA `7f7e7572` in
+[36754232529](https://github.com/centerionware/not-k8s/actions/runs/36754232529).
+PR script validation passed at this tested head in
+[36754596635](https://github.com/centerionware/not-k8s/actions/runs/36754596635).
+The current worktree now contains a candidate coordinator that selects an
+active upstream kubelet only when its runtime endpoint matches the CRI endpoint
+being cleaned, falls back to the installed Nodelet service if no upstream
+installation exposes that runtime, and pauses only the verified K3s main
+process when using embedded containerd after confirming CRI remains available.
+A focused regression checks that unrelated K3s installations are not selected.
+Its quick-check and live runtime behavior are still unverified. Do not rerun the
+matrix until that candidate is checked and the 31-object comparison failure is
+resolved. Logs:
+`/tmp/nodemigrate-36754641851-{k3s,kubernetes,docker}-job.log` and artifacts
+under `/tmp/nodemigrate-36754641851-artifacts/`.

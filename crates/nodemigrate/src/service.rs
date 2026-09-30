@@ -1291,28 +1291,222 @@ fn restart_named(manager: ServiceManager, name: &str) -> Result<()> {
     }
 }
 
-/// Pause the local Nodelet reconciler while CRI sandboxes are removed. A live
-/// Nodelet can recreate a container between StopPodSandbox and RemoveContainer,
-/// making the cleanup race the same reconciler whose sandboxes it is resetting.
-/// Stop/start preserves each service manager's enabled state.
-pub(crate) fn with_nodelet_paused<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
-    let Some(manager) = crate::detect::nodelet_service_manager() else {
+/// Pause the local Kubernetes Pod reconcilers while CRI sandboxes are removed.
+/// A live kubelet/Nodelet can recreate a container between StopPodSandbox and
+/// RemoveContainer, racing the cleanup that is resetting its own sandboxes.
+/// K3s embeds kubelet and containerd in separate processes under one service:
+/// pause only the K3s main process so its API/kubelet stops reconciling while
+/// embedded containerd remains available for CRI cleanup.
+pub(crate) fn with_local_pod_agents_paused<T>(
+    runtime_endpoint: &str,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let controls = local_pod_agent_controls(runtime_endpoint)?;
+    with_pod_agent_controls_paused(&controls, 0, operation)
+}
+
+#[derive(Debug, Clone)]
+enum PodAgentControl {
+    Service {
+        manager: ServiceManager,
+        name: String,
+    },
+    K3sMainProcess {
+        pid: u32,
+        runtime_endpoint: String,
+    },
+}
+
+fn local_pod_agent_controls(runtime_endpoint: &str) -> Result<Vec<PodAgentControl>> {
+    let installations = crate::detect::inspect_all(&crate::detect::HostLayout::system())?;
+    let mut controls = Vec::new();
+    for installation in installations
+        .iter()
+        .filter(|installation| pod_agent_uses_runtime(installation, runtime_endpoint))
+    {
+        let Some(manager) = installation.service_manager else {
+            continue;
+        };
+        if !service_active(manager, &installation.service_name) {
+            continue;
+        }
+        let control = match installation.distribution {
+            Distribution::Kubernetes => PodAgentControl::Service {
+                manager,
+                name: installation.service_name.clone(),
+            },
+            Distribution::K3s => {
+                let endpoint = installation.runtime_endpoint.as_deref().unwrap_or_default();
+                if endpoint.contains("/run/k3s/containerd/containerd.sock") {
+                    let pid = k3s_main_pid(manager, &installation.service_name)?;
+                    PodAgentControl::K3sMainProcess {
+                        pid,
+                        runtime_endpoint: endpoint.to_string(),
+                    }
+                } else {
+                    PodAgentControl::Service {
+                        manager,
+                        name: installation.service_name.clone(),
+                    }
+                }
+            }
+            Distribution::Nodestore => continue,
+        };
+        controls.push(control);
+    }
+    if controls.is_empty() {
+        if let Some(manager) = crate::detect::nodelet_service_manager() {
+            if service_active(manager, "nodelet") {
+                controls.push(PodAgentControl::Service {
+                    manager,
+                    name: "nodelet".to_string(),
+                });
+            }
+        }
+    }
+    controls.sort_by(|left, right| pod_agent_control_name(left).cmp(pod_agent_control_name(right)));
+    controls.dedup_by(|left, right| pod_agent_control_name(left) == pod_agent_control_name(right));
+    Ok(controls)
+}
+
+fn pod_agent_uses_runtime(installation: &Installation, runtime_endpoint: &str) -> bool {
+    let Some(installed_endpoint) = installation.runtime_endpoint.as_deref().or_else(|| {
+        (installation.distribution == Distribution::Kubernetes)
+            .then_some("unix:///run/containerd/containerd.sock")
+    }) else {
+        return false;
+    };
+    matches!(
+        installation.distribution,
+        Distribution::K3s | Distribution::Kubernetes
+    ) && installed_endpoint == runtime_endpoint
+}
+
+fn pod_agent_control_name(control: &PodAgentControl) -> &str {
+    match control {
+        PodAgentControl::Service { name, .. } => name,
+        PodAgentControl::K3sMainProcess { .. } => "k3s",
+    }
+}
+
+fn k3s_main_pid(manager: ServiceManager, service: &str) -> Result<u32> {
+    ensure!(
+        manager == ServiceManager::Systemd,
+        "pausing the embedded K3s kubelet while retaining its CRI requires systemd"
+    );
+    let unit = format!("{service}.service");
+    let output = checked_output(
+        "systemctl",
+        &["show", "--property=MainPID", "--value", &unit],
+        "finding the K3s main process for CRI sandbox coordination",
+    )?;
+    let pid = String::from_utf8_lossy(&output)
+        .trim()
+        .parse::<u32>()
+        .context("parsing the K3s service main PID")?;
+    ensure!(pid > 1, "K3s service {unit} has no valid main PID");
+    let command_line = std::fs::read(format!("/proc/{pid}/cmdline"))
+        .with_context(|| format!("reading K3s main process {pid} command line"))?;
+    let executable = command_line
+        .split(|byte| *byte == 0)
+        .next()
+        .filter(|value| !value.is_empty())
+        .context("K3s main process has an empty command line")?;
+    let executable =
+        std::str::from_utf8(executable).context("K3s executable path is not valid UTF-8")?;
+    let executable = std::path::Path::new(executable);
+    ensure!(
+        executable.file_name().is_some_and(|name| name == "k3s"),
+        "systemd main process {} is not the K3s executable",
+        executable.display()
+    );
+    Ok(pid)
+}
+
+fn with_pod_agent_controls_paused<T>(
+    controls: &[PodAgentControl],
+    index: usize,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let Some(control) = controls.get(index) else {
         return operation();
     };
-    let should_pause = service_active(manager, "nodelet");
     with_service_paused(
-        should_pause,
+        true,
         || {
-            eprintln!("nodemigrate: pausing local nodelet service during CRI sandbox cleanup");
-            stop_named(manager, "nodelet")
-                .context("pausing local nodelet before CRI sandbox cleanup")
+            eprintln!(
+                "nodemigrate: pausing local {} while removing CRI Pod sandboxes",
+                pod_agent_control_name(control)
+            );
+            stop_pod_agent_control(control)
         },
-        operation,
-        || {
-            start_named(manager, "nodelet")
-                .context("restarting local nodelet after CRI sandbox cleanup")
-        },
+        || with_pod_agent_controls_paused(controls, index + 1, operation),
+        || start_pod_agent_control(control),
     )
+}
+
+fn stop_pod_agent_control(control: &PodAgentControl) -> Result<()> {
+    match control {
+        PodAgentControl::Service { manager, name } => stop_named(*manager, name)
+            .with_context(|| format!("pausing local {name} before CRI sandbox cleanup")),
+        PodAgentControl::K3sMainProcess {
+            pid,
+            runtime_endpoint,
+        } => {
+            crictl_info(runtime_endpoint)?;
+            signal_process(*pid, libc::SIGSTOP)
+                .with_context(|| format!("pausing K3s main process {pid}"))?;
+            if let Err(error) = crictl_info(runtime_endpoint) {
+                let resume = signal_process(*pid, libc::SIGCONT);
+                return match resume {
+                    Ok(()) => Err(error).context(
+                        "K3s embedded containerd did not remain available after pausing kubelet",
+                    ),
+                    Err(resume_error) => Err(error).context(format!(
+                        "K3s embedded containerd did not remain available and resuming K3s also failed: {resume_error:#}"
+                    )),
+                };
+            }
+            Ok(())
+        }
+    }
+}
+
+fn start_pod_agent_control(control: &PodAgentControl) -> Result<()> {
+    match control {
+        PodAgentControl::Service { manager, name } => start_named(*manager, name)
+            .with_context(|| format!("restarting local {name} after CRI sandbox cleanup")),
+        PodAgentControl::K3sMainProcess { pid, .. } => {
+            signal_process(*pid, libc::SIGCONT)
+                .with_context(|| format!("resuming K3s main process {pid}"))?;
+            eprintln!("nodemigrate: resumed local k3s kubelet after CRI sandbox cleanup");
+            Ok(())
+        }
+    }
+}
+
+fn signal_process(pid: u32, signal: i32) -> Result<()> {
+    let pid = libc::pid_t::try_from(pid).context("process PID exceeds pid_t range")?;
+    ensure!(
+        unsafe { libc::kill(pid, signal) } == 0,
+        "sending signal {signal} to process {pid} failed: {}",
+        std::io::Error::last_os_error()
+    );
+    Ok(())
+}
+
+fn crictl_info(runtime_endpoint: &str) -> Result<()> {
+    checked_output(
+        "crictl",
+        &[
+            "--timeout=5s",
+            "--runtime-endpoint",
+            runtime_endpoint,
+            "info",
+        ],
+        "checking CRI availability while coordinating Pod sandbox cleanup",
+    )?;
+    Ok(())
 }
 
 fn with_service_paused<T>(
@@ -1325,18 +1519,25 @@ fn with_service_paused<T>(
         return operation();
     }
     stop()?;
-    let operation_result = operation();
+    let operation_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
     let start_result = start();
     match (operation_result, start_result) {
-        (Ok(value), Ok(())) => {
-            eprintln!("nodemigrate: resumed local nodelet service after CRI sandbox cleanup");
+        (Ok(Ok(value)), Ok(())) => {
+            eprintln!("nodemigrate: resumed local Pod reconciliation after CRI sandbox cleanup");
             Ok(value)
         }
-        (Err(operation_error), Ok(())) => Err(operation_error),
-        (Ok(_), Err(start_error)) => Err(start_error),
-        (Err(operation_error), Err(start_error)) => Err(operation_error).context(format!(
-            "local nodelet restart also failed: {start_error:#}"
+        (Ok(Err(operation_error)), Ok(())) => Err(operation_error),
+        (Ok(Ok(_)), Err(start_error)) => Err(start_error),
+        (Ok(Err(operation_error)), Err(start_error)) => Err(operation_error).context(format!(
+            "resuming local Pod agent also failed: {start_error:#}"
         )),
+        (Err(payload), Ok(())) => std::panic::resume_unwind(payload),
+        (Err(payload), Err(start_error)) => {
+            eprintln!(
+                "nodemigrate: resuming Pod reconciliation after panic also failed: {start_error:#}"
+            );
+            std::panic::resume_unwind(payload)
+        }
     }
 }
 
@@ -1654,12 +1855,62 @@ fn command(program: &str, args: &[&str]) -> Result<Output> {
 mod tests {
     use super::{
         SourceCiliumIdentity, cilium_host_container_ids, cilium_source_sandbox_ids,
-        cri_cleanup_succeeded, nodelet_source_sandbox_ids, runtime_service_name,
-        static_pod_sandbox_ids, with_service_paused,
+        cri_cleanup_succeeded, nodelet_source_sandbox_ids, pod_agent_uses_runtime,
+        runtime_service_name, static_pod_sandbox_ids, with_service_paused,
     };
+    use crate::detect::{Installation, NodeRole, ServiceManager};
+    use crate::request::Distribution;
 
     const SOURCE_CONTAINER_ID: &str =
         "ef96e5cf937fed840c1bfcc03df0ef667927c7f666ba4963da35faaa9f80f39a";
+
+    #[test]
+    fn only_pauses_the_pod_agent_using_the_cleaned_runtime() {
+        let installation = |distribution, runtime_endpoint: Option<&str>| Installation {
+            distribution,
+            role: NodeRole::Worker,
+            runtime_endpoint: runtime_endpoint.map(str::to_string),
+            service_manager: Some(ServiceManager::Systemd),
+            service_name: "test-agent".to_string(),
+            service_file: None,
+            binary: None,
+            config_files: Vec::new(),
+            cluster: None,
+        };
+
+        assert!(pod_agent_uses_runtime(
+            &installation(
+                Distribution::K3s,
+                Some("unix:///run/k3s/containerd/containerd.sock")
+            ),
+            "unix:///run/k3s/containerd/containerd.sock"
+        ));
+        assert!(pod_agent_uses_runtime(
+            &installation(
+                Distribution::Kubernetes,
+                Some("unix:///run/containerd/containerd.sock")
+            ),
+            "unix:///run/containerd/containerd.sock"
+        ));
+        assert!(pod_agent_uses_runtime(
+            &installation(Distribution::Kubernetes, None),
+            "unix:///run/containerd/containerd.sock"
+        ));
+        assert!(!pod_agent_uses_runtime(
+            &installation(
+                Distribution::K3s,
+                Some("unix:///run/k3s/containerd/containerd.sock")
+            ),
+            "unix:///run/containerd/containerd.sock"
+        ));
+        assert!(!pod_agent_uses_runtime(
+            &installation(
+                Distribution::Nodestore,
+                Some("unix:///run/containerd/containerd.sock")
+            ),
+            "unix:///run/containerd/containerd.sock"
+        ));
+    }
 
     #[test]
     fn resumes_service_after_paused_operation_fails() {

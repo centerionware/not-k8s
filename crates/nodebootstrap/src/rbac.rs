@@ -741,12 +741,19 @@ pub fn run_with(cfg: &Config) -> Result<()> {
         return Ok(());
     }
     let kubeconfig = cfg.kubeconfig_dir().join("admin.kubeconfig");
-    if matches!(cfg.target, crate::config::Target::NodeApiserver) {
+    if should_apply_nodeapiserver_bootstrap(cfg.target, cfg.control_plane) {
         apply_nodeapiserver_bootstrap(&kubeconfig)?;
     }
     verify_bootstrap_rbac(&kubeconfig)?;
     apply_supplemental_grants(&kubeconfig)?;
     verify_supplemental_grants(&kubeconfig)
+}
+
+fn should_apply_nodeapiserver_bootstrap(
+    target: crate::config::Target,
+    joining_existing_cluster: bool,
+) -> bool {
+    target == crate::config::Target::NodeApiserver && !joining_existing_cluster
 }
 
 fn apply_nodeapiserver_bootstrap(kubeconfig: &std::path::Path) -> Result<()> {
@@ -858,5 +865,21 @@ mod tests {
         ] {
             assert!(manifest.contains(expected), "bootstrap manifest missing {expected:?}");
         }
+    }
+
+    #[test]
+    fn joining_an_existing_cluster_does_not_rewrite_cluster_bootstrap_policy() {
+        assert!(should_apply_nodeapiserver_bootstrap(
+            crate::config::Target::NodeApiserver,
+            false
+        ));
+        assert!(!should_apply_nodeapiserver_bootstrap(
+            crate::config::Target::NodeApiserver,
+            true
+        ));
+        assert!(!should_apply_nodeapiserver_bootstrap(
+            crate::config::Target::Upstream,
+            false
+        ));
     }
 }

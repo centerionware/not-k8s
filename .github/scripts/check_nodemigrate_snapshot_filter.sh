@@ -229,7 +229,14 @@ cilium_node_target="${cilium_node_target/192.0.2.10/192.0.2.11}"
 }
 
 hostpath_csi_source='{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"csi-hostpathplugin","namespace":"default","annotations":{"kubectl.kubernetes.io/last-applied-configuration":"source"}},"spec":{"template":{"spec":{"containers":[{"name":"hostpath","image":"hostpath:v1","args":["--kubelet-registration-path=/var/lib/kubelet/plugins/registry"],"volumeMounts":[{"name":"socket","mountPath":"/var/lib/kubelet/plugins"}]}],"volumes":[{"name":"socket","hostPath":{"path":"/var/lib/kubelet/plugins","type":"Directory"}},{"name":"csi-data","hostPath":{"path":"/var/lib/nodemigrate-csi-hostpath-data","type":"DirectoryOrCreate"}}]}}}}'
-hostpath_csi_target='{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"csi-hostpathplugin","namespace":"default","annotations":{"kubectl.kubernetes.io/last-applied-configuration":"target"}},"spec":{"template":{"spec":{"containers":[{"name":"hostpath","image":"hostpath:v1","args":["--kubelet-registration-path=/var/lib/nodelet/plugins/registry"],"volumeMounts":[{"name":"socket","mountPath":"/var/lib/nodelet/plugins"},{"name":"nodemigrate-source-csi-stage","mountPath":"/var/lib/kubelet/plugins/kubernetes.io/csi","mountPropagation":"Bidirectional"}]}],"volumes":[{"name":"socket","hostPath":{"path":"/var/lib/nodelet/plugins","type":"DirectoryOrCreate"}},{"name":"csi-data","hostPath":{"path":"/var/lib/nodemigrate-csi-hostpath-data","type":"DirectoryOrCreate"}},{"name":"nodemigrate-source-csi-stage","hostPath":{"path":"/var/lib/kubelet/plugins/kubernetes.io/csi","type":"DirectoryOrCreate"}}]}}}}'
+hostpath_csi_target='{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"csi-hostpathplugin","namespace":"default","annotations":{"kubectl.kubernetes.io/last-applied-configuration":"target"}},"spec":{"template":{"spec":{"containers":[{"name":"hostpath","image":"hostpath:v1","args":["--kubelet-registration-path=/var/lib/nodelet/plugins/registry"],"volumeMounts":[{"name":"socket","mountPath":"/var/lib/nodelet/plugins"},{"name":"nodemigrate-source-csi-stage","mountPath":"/var/lib/kubelet/plugins/kubernetes.io/csi","mountPropagation":"Bidirectional"},{"name":"nodemigrate-nodelet-root","mountPath":"/var/lib/nodelet","mountPropagation":"Bidirectional"}]}],"volumes":[{"name":"socket","hostPath":{"path":"/var/lib/nodelet/plugins","type":"DirectoryOrCreate"}},{"name":"csi-data","hostPath":{"path":"/var/lib/nodemigrate-csi-hostpath-data","type":"DirectoryOrCreate"}},{"name":"nodemigrate-source-csi-stage","hostPath":{"path":"/var/lib/kubelet/plugins/kubernetes.io/csi","type":"DirectoryOrCreate"}},{"name":"nodemigrate-nodelet-root","hostPath":{"path":"/var/lib/nodelet","type":"DirectoryOrCreate"}}]}}}}'
+jq -e '
+  any(.spec.template.spec.volumes[]; .name == "nodemigrate-nodelet-root" and .hostPath.path == "/var/lib/nodelet") and
+  any(.spec.template.spec.containers[].volumeMounts[]; .name == "nodemigrate-nodelet-root" and .mountPath == "/var/lib/nodelet" and .mountPropagation == "Bidirectional")
+' <<< "$hostpath_csi_target" >/dev/null || {
+    echo "fixture CSI StatefulSet omitted its asserted Nodelet root mount" >&2
+    exit 1
+}
 [[ "$(jq -cS -f "$FILTER" <<< "$hostpath_csi_source")" == "$(jq -cS -f "$FILTER" <<< "$hostpath_csi_target")" ]] || {
     echo "fixture CSI runtime root and verified source-stage mount were not normalized narrowly" >&2
     exit 1
@@ -242,6 +249,11 @@ hostpath_csi_changed="$(jq -c '.spec.template.spec.containers[0].image = "hostpa
 hostpath_csi_changed="$(jq -c '.spec.template.spec.volumes[1].hostPath.path = "/var/lib/changed-csi-data"' <<< "$hostpath_csi_target")"
 [[ "$(jq -cS -f "$FILTER" <<< "$hostpath_csi_source")" != "$(jq -cS -f "$FILTER" <<< "$hostpath_csi_changed")" ]] || {
     echo "fixture CSI catalog/data path changes were normalized away" >&2
+    exit 1
+}
+hostpath_csi_changed="$(jq -c '.spec.template.spec.volumes |= map(if .name == "nodemigrate-nodelet-root" then .hostPath.path = "/var/lib/changed-nodelet-root" else . end)' <<< "$hostpath_csi_target")"
+[[ "$(jq -cS -f "$FILTER" <<< "$hostpath_csi_source")" != "$(jq -cS -f "$FILTER" <<< "$hostpath_csi_changed")" ]] || {
+    echo "fixture CSI Nodelet root host path changes were normalized away" >&2
     exit 1
 }
 

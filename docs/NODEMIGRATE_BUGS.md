@@ -3349,3 +3349,56 @@ The branch changed APIService route resolution and group discovery to read APISe
   the migration matrix. The three original lanes rolled back and retained their
   protected exports; no general build or full e2e ran. Log:
   `/tmp/nodemigrate-36753849376-quick-check.log`.
+
+## 2026-09-30 migration run 36754641851
+
+- **Component:** `nodemigrate` CRI sandbox coordination with the active node
+  agent. In K3s return migration, Cilium host-state repair completed, but K3s
+  restarted container `85d623...` while nodemigrate was removing its sandbox;
+  `crictl rm` failed because that container was running. The prior helper
+  paused only a local Nodelet service, which is absent on the retained K3s
+  source. In the upstream return lane, a Pod status likewise remained
+  `ContainerStatusUnknown` during Cilium restart and the replacement endpoint
+  appeared only after the fixture's readiness wait ended. The worktree now
+  selects only an active K3s or upstream kubelet whose configured runtime
+  endpoint matches the CRI endpoint being cleaned; when no upstream installation
+  exposes that runtime, it falls back to the installed Nodelet service. For
+  embedded K3s containerd, it pauses only the verified K3s main process and
+  confirms CRI remains available before proceeding. A focused regression checks
+  that unrelated K3s installations are not selected. This candidate is not yet
+  checked by CI. Do not stop the K3s service before embedded-CRI cleanup. The
+  K3s rollback restored nodestore but its final job check timed out; that check
+  is downstream until distinguished from a separate readiness defect. Evidence:
+  [run 36754641851](https://github.com/centerionware/not-k8s/actions/runs/36754641851),
+  K3s job `110021665486`, Kubernetes job `110021665844`; logs in
+  `/tmp/nodemigrate-36754641851-artifacts/`.
+- **Component:** Kubernetes returned-stage Pod recovery after Cilium reset.
+  `migration-standalone` was `ContainerStatusUnknown` at the five-minute wait
+  deadline, while the Cilium agent was restarting; the Cilium log records its
+  new endpoint shortly afterward. The current candidate serializes cleanup
+  with the active kubelet only when its configured runtime matches the cleaned
+  CRI endpoint. This behavior is pending quick-check and live migration
+  verification; do not solve the readiness delay by lengthening the wait. Evidence:
+  Kubernetes job `110021665844`, run
+  [36754641851](https://github.com/centerionware/not-k8s/actions/runs/36754641851).
+- **Component:** migration parity and fixture adaptation. Five-node migration
+  reached the nodestore checkpoint and workload probes, but the strict source
+  API comparison found 31 changed objects: 28 ClusterRoles, two PriorityClass
+  descriptions, and `default/csi-hostpathplugin` StatefulSet. Its CSI
+  StatefulSet spec was changed by the fixture to mount `/var/lib/nodelet`; this
+  is a known test mutation that should be separated from migrated source state
+  while retaining real CSI behavior. The 28 ClusterRole rule changes and two
+  PriorityClass description changes are now traced to Nodebootstrap's control-
+  plane join path: each joining node reapplied cluster-wide NodeApiserver
+  bootstrap defaults over the API objects already imported from the source.
+  Bootstrap seeding is now limited to initial cluster creation, while joins
+  verify the existing policy and apply only the supplemental target-owned
+  grants. A focused `nodebootstrap` regression is added; CI validation is
+  pending. The snapshot normalizer now excludes only the exact fixture-added
+  `nodemigrate-nodelet-root` volume and bidirectional mount, whose presence and
+  host path remain directly asserted. All other StatefulSet fields and RBAC
+  data remain strict. Do not rerun the migration matrix until these changes
+  pass focused CI and the active-agent cleanup candidate is validated.
+  Evidence: five-node job `110021665907`, run
+  [36754641851](https://github.com/centerionware/not-k8s/actions/runs/36754641851);
+  artifact log `/tmp/nodemigrate-36754641851-artifacts/nodemigrate-docker-preflight-36754641851/nodemigrate-docker-preflight.log`.
