@@ -5,11 +5,25 @@ Last updated: 2026-09-30
 ## Clean-state Cilium diagnostic
 
 Updated no-migration probe [36731098394](https://github.com/centerionware/not-k8s/actions/runs/36731098394)
-is running at SHA `da6c3ee2f3044a0ae905596fb8b70afabea5f2ef` (job
-`109940616117`). It includes the expected-no-CoreDNS Pod handling and captures
-the cgroup2 mount/Socket LB programs immediately after clean-state. Migration,
-Docker preflight, and general validation were skipped. Do not dispatch a
-migration run until the service datapath diagnosis is complete.
+failed at SHA `da6c3ee2f3044a0ae905596fb8b70afabea5f2ef` after 15m22s (job
+`109940616117`). The `notk8s` build and fixture setup passed; migration,
+Docker preflight, and general validation were skipped. The prior transient
+CoreDNS absence no longer stopped the probe. Immediately after all-state
+cleanup, `/run/cilium/cgroupv2` was a cgroup2 mount rooted at `/` and
+`bpftool cgroup tree` showed Cilium's Socket LB programs attached at that
+root. After a second, ordinary Cilium agent restart, the mountinfo root changed
+to `/../../../..`; `bpftool cgroup tree` showed no `cil_sock*` programs at the
+configured root. The restarted agent logged `Updated link` for its pinned
+`cil_sock*` programs. The API Service map still listed active backend
+`10.1.0.95:6443`, the direct-backend Pod probe passed, and the ClusterIP probe
+failed. Cilium's monitor showed the fresh Pod's SYN to `10.43.0.1:443` going
+`to stack`. These observations strongly implicate effective Socket LB
+reattachment after the second restart, but the next run will probe the API
+ClusterIP between the initial clean-state restart and the second agent restart
+to establish whether the break first appears there or only after the second
+restart. Logs: `/tmp/nodemigrate-36731098394-k3s-probe-job.log` and
+`/tmp/nodemigrate-36731098394-artifact/nodemigrate-k3s-cilium-restart.log`.
+Do not dispatch migration until this is resolved.
 
 Focused follow-up [36728443584](https://github.com/centerionware/not-k8s/actions/runs/36728443584)
 failed at SHA `6796db9e743d6d12a267d42a7ebed8399a0b3e89` after 15m37s (job

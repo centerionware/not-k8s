@@ -585,9 +585,9 @@ capture_cilium_socket_lb_attachment() {
         -c cilium-agent -- sh -c '
             echo "cgroup2 mounts:";
             grep " - cgroup2 " /proc/self/mountinfo || true;
-            echo "Socket LB programs attached to cgroup root:";
+            echo "Programs attached directly to the cgroup root:";
             if command -v bpftool >/dev/null 2>&1; then
-                bpftool cgroup tree "$1" || true;
+                bpftool cgroup show "$1" || true;
             else
                 echo "bpftool is not present in the Cilium image";
             fi
@@ -4621,6 +4621,7 @@ main() {
     capture_source_csi_device_volume
 
     if [[ "${NODEMIGRATE_K3S_CILIUM_RESTART_PROBE:-false}" == true ]]; then
+        local post_clean_state_api_ok=true post_restart_api_ok=true post_restart_backend_ok=true api_backend_ip
         MIGRATION_STARTED_AT="$(date -u --iso-8601=seconds)"
         probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" source
         probe_host_coredns "$SOURCE_KUBECONFIG" source
@@ -4634,6 +4635,8 @@ main() {
         probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-before-cni-add true
         echo "Cilium datapath immediately after clean-state, before a fresh CoreDNS CNI ADD"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
+        probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" clean-state-before-second-agent-restart \
+            || post_clean_state_api_ok=false
         recreate_coredns_pod_for_probe "$SOURCE_KUBECONFIG"
         probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-after-cni-add-before-agent-restart true
         echo "Cilium datapath after API-managed CoreDNS Pod recreation and before second agent restart"
@@ -4643,7 +4646,6 @@ main() {
             -n kube-system --timeout=5m
         echo "Cilium datapath after second agent restart with clean-cilium-state restored"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
-        local post_restart_api_ok=true post_restart_backend_ok=true api_backend_ip
         probe_api_clusterip_with_cilium_monitor "$SOURCE_KUBECONFIG" clean-state-agent-restarted \
             || post_restart_api_ok=false
         api_backend_ip="$(KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get endpoints kubernetes \
@@ -4655,8 +4657,9 @@ main() {
             echo "Kubernetes API Service has no valid endpoint address after Cilium restart: $api_backend_ip" >&2
             post_restart_backend_ok=false
         fi
-        if [[ "$post_restart_api_ok" != true || "$post_restart_backend_ok" != true ]]; then
-            echo "FAIL post-reset Pod-origin Kubernetes API probes: clusterIP=$post_restart_api_ok backend=$post_restart_backend_ok" >&2
+        if [[ "$post_clean_state_api_ok" != true || "$post_restart_api_ok" != true \
+            || "$post_restart_backend_ok" != true ]]; then
+            echo "FAIL post-reset Pod-origin Kubernetes API probes: before_second_restart=$post_clean_state_api_ok after_second_restart=$post_restart_api_ok backend=$post_restart_backend_ok" >&2
             capture_cilium_datapath "$SOURCE_KUBECONFIG"
             return 1
         fi

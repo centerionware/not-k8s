@@ -72,10 +72,20 @@ failure. The run diagnostics show the replacement CoreDNS Pod was created at
 This is a confirmed fixture timing defect, not evidence about Socket LB or
 ClusterIP behavior. The expected-unreachable probe now accepts that transient
 absence, and the cgroup attachment capture runs before probing CoreDNS.
-Focused local shell/checker validation passes. The updated focused diagnostic
-is running at
-[36731098394](https://github.com/centerionware/not-k8s/actions/runs/36731098394),
-SHA `da6c3ee2f3044a0ae905596fb8b70afabea5f2ef`; migration is skipped.
+Focused local shell/checker validation passed, and follow-up
+[36731098394](https://github.com/centerionware/not-k8s/actions/runs/36731098394)
+at SHA `da6c3ee2f3044a0ae905596fb8b70afabea5f2ef` got past that fixture race.
+It found the Socket LB programs attached at the cgroup root immediately after
+all-state cleanup, but absent from the configured root after a second Cilium
+agent restart. The second restart's mountinfo root was `/../../../..`, while
+the first was `/`; the agent logged `Updated link` for pinned `cil_sock*`
+programs despite the cgroup tree showing none at the root. A fresh Pod's API
+ClusterIP SYN went `to stack`; the active API backend and direct-backend probe
+still worked. This strongly implicates Socket LB reattachment on the second
+restart, but the break point is not yet isolated. The next diagnostic tests
+Pod-origin ClusterIP immediately after the first clean-state restart, then
+again after the second restart, and reports only programs attached directly
+to the cgroup root to keep the artifact concise.
 
 Full logs are saved at
 `/tmp/nodemigrate-36716154527-k3s-probe-job.log` and

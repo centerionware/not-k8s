@@ -394,6 +394,11 @@ grep -Fq 'capture_cilium_socket_lb_attachment "$SOURCE_KUBECONFIG"' \
     echo "restart diagnostic does not capture Socket LB attachment immediately after clean-state" >&2
     exit 1
 }
+grep -Fq 'probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" clean-state-before-second-agent-restart' \
+    "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
+    echo "restart diagnostic does not test ClusterIP between the clean-state and second-agent restart" >&2
+    exit 1
+}
 if grep -Fq 'recreate_non_host_pod_sandboxes_for_probe' "$ROOT/.github/scripts/nodemigrate-integration.sh"; then
     echo "K3s diagnostic must not delete CRI sandboxes under Kubelet" >&2
     exit 1
