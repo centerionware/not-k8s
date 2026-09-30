@@ -17,6 +17,12 @@ migration-specific run. Details are in [CI status](NODEMIGRATE_CI_STATUS.md)
 and the [bug tracker](NODEMIGRATE_BUGS.md). No general e2e or regular build
 gate ran.
 
+The first focused quick-check [36654928410](https://github.com/centerionware/not-k8s/actions/runs/36654928410)
+found an ownership mismatch in the new Nodelet resource snapshot helper after
+388 non-CRI tests passed. The branch now stores the recognized container name
+as an owned `String`. `nodeapiserver` tests were not reached in that run; the
+replacement focused quick-check must pass before another migration run.
+
 ## Latest run: 36627336634
 
 K3s passed the branch-runtime round trip. Upstream Kubernetes migrated forward

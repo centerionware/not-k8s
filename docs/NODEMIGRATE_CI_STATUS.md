@@ -11,7 +11,11 @@ migration when the CSI Pod could not schedule amid repeated Pod binding HTTP
 409s. Docker five-node failed on the returned-source standalone Pod because
 containerd still had its kubelet-created container name reserved. The current
 branch fixes the internal Pod binding CAS retry and Nodelet's legacy kubelet
-CRI label lookup; both need focused quick-check before another migration run.
+CRI label lookup. Initial quick-check [36654928410](https://github.com/centerionware/not-k8s/actions/runs/36654928410)
+passed 388 non-CRI nodelet tests but failed compiling the CRI resource snapshot
+because it needs an owned container name; that conversion is fixed in the
+current branch. The run stopped before checking `nodeapiserver`; both crates
+need another focused quick-check before another migration run.
 The single-node matrix job and invocation are capped at 30 minutes. Each
 individual five-node migration is also capped at 30 minutes, while the full
 five-node sequence keeps its aggregate window. No general e2e or regular build

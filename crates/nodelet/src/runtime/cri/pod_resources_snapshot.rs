@@ -24,7 +24,7 @@ impl CriRuntime {
                     .unwrap_or_default();
                 let memory = self.memory_manager.as_ref().and_then(|m| m.assigned(&key)).map(|entry| vec![entry]).unwrap_or_default();
                 let devices = self.device_allocations.lock().unwrap().get(&key).cloned().unwrap_or_default();
-                entries.push(crate::runtime::ContainerResourcesEntry { name: container_name.clone(), cpu_ids, devices, memory });
+                entries.push(crate::runtime::ContainerResourcesEntry { name: container_name.to_string(), cpu_ids, devices, memory });
             }
             out.push(crate::runtime::PodResourcesEntry { namespace, name, containers: entries });
         }

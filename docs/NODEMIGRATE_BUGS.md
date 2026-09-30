@@ -38,6 +38,14 @@ under `/tmp/nodemigrate-36650426292-{kubernetes,k3s,docker}.log`.
   cap. No migration retry is queued until both component fixes pass focused
   quick-check.
 
+The first focused quick-check for the fixes, [36654928410](https://github.com/centerionware/not-k8s/actions/runs/36654928410)
+at SHA `36ec70fab426b160a057cdfef78322ea94dad5ce`, passed the non-CRI nodelet
+tests (388 tests) but stopped compiling the CRI-enabled nodelet because the
+new label helper returns `&str` while the resource snapshot owns its name.
+The snapshot now converts that borrowed name to an owned `String`. The job
+stopped before running `nodeapiserver`; a new focused quick-check must validate
+both crates before a migration retry.
+
 ## Findings from migration run 36644181073
 
 Run [36644181073](https://github.com/centerionware/not-k8s/actions/runs/36644181073)
