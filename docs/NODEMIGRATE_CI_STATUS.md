@@ -26,6 +26,20 @@ Logs are saved at `/tmp/nodemigrate-36707412491-k3s-probe-workflow.log` and
 No migration retry is authorized while the local CoreDNS probe path remains
 unresolved.
 
+Enhanced no-migration clean-state diagnostic
+[36710560344](https://github.com/centerionware/not-k8s/actions/runs/36710560344)
+failed at SHA `72ddff65` in `Run restart probe` (job `109871069034`). The Cilium
+clean-state init completed and the replacement agent stayed Ready. However,
+Cilium's operator replaced CoreDNS, while the probe kept using the previous
+CoreDNS Pod IP. The script then removed 17 CRI sandboxes underneath K3s's
+kubelet; Kubelet retained stale probe state and CoreDNS did not recover within
+five minutes. This is a diagnostic-harness defect and does not establish a
+Nodelet failure. The script now waits for the CoreDNS rollout and probes the
+current Ready Pod IP; it no longer removes CRI sandboxes under K3s. This
+correction is not yet pushed or checked in CI. Artifact and workflow logs are
+saved under `/tmp/nodemigrate-36710560344-artifact/` and
+`/tmp/nodemigrate-36710560344-k3s-probe-workflow.log`.
+
 ## Latest migration matrix
 
 Run [36700106403](https://github.com/centerionware/not-k8s/actions/runs/36700106403)

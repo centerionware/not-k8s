@@ -655,9 +655,20 @@ capture_cni_host_diagnostics() {
 probe_host_coredns() {
     local kubeconfig="${1:?missing probe kubeconfig}"
     local stage="${2:?missing probe stage}"
-    local pod_json pod_ip pod_name port path result output
+    local pod_json pod_ip pod_name port path result output ready_pods failed=false
     pod_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
         -l k8s-app=kube-dns -o json)" || return 1
+    ready_pods="$(jq -r '
+        .items[]?
+        | select(.status.phase == "Running")
+        | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+        | select((.status.podIP // "") != "")
+        | [.metadata.name, (.status.podIP // "")] | @tsv
+      ' <<<"$pod_json")" || return 1
+    [[ -n "$ready_pods" ]] || {
+        echo "no Ready CoreDNS Pod has a Pod IP at probe stage $stage" >&2
+        return 1
+    }
     while IFS=$'\t' read -r pod_name pod_ip; do
         [[ -n "$pod_name" && -n "$pod_ip" ]] || continue
         echo "Host-origin CoreDNS probe stage=$stage pod=$pod_name ip=$pod_ip"
@@ -672,9 +683,11 @@ probe_host_coredns() {
             else
                 result=$?
                 echo "FAIL host-origin CoreDNS HTTP probe stage=$stage pod=$pod_name endpoint=${pod_ip}:${port}${path} exit=$result detail=$output"
+                failed=true
             fi
         done
-    done < <(jq -r '.items[]? | [.metadata.name, (.status.podIP // "")] | @tsv' <<<"$pod_json")
+    done <<<"$ready_pods"
+    [[ "$failed" == false ]] || return 1
 }
 
 restore_cilium_clean_state_for_probe() {
@@ -765,46 +778,6 @@ reset_cilium_state_for_probe() {
         return 1
     }
     echo "PASS Cilium clean-cilium-state completed and the replacement agent remained Ready"
-}
-
-recreate_non_host_pod_sandboxes_for_probe() {
-    local kubeconfig="${1:?missing probe kubeconfig}"
-    local endpoint="${NODEMIGRATE_CRI_ENDPOINT:-unix:///run/k3s/containerd/containerd.sock}"
-    local node_name pod_uids_json sandboxes_json sandbox_ids sandbox_id containers_json container_ids container_id
-    local removed_sandboxes=0 removed_containers=0
-    node_name="$(KUBECONFIG="$kubeconfig" kubectl get nodes -o json \
-        | jq -er 'if (.items | length) == 1 then .items[0].metadata.name else empty end')" || return 1
-    pod_uids_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -A \
-        --field-selector="spec.nodeName=$node_name" -o json \
-        | jq -c '[.items[]? | select(.metadata.deletionTimestamp == null)
-            | select(.spec.hostNetwork != true) | .metadata.uid]')" || return 1
-    sandboxes_json="$(crictl --runtime-endpoint "$endpoint" pods -o json)" || return 1
-    sandbox_ids="$(jq -r --argjson uids "$pod_uids_json" '
-        .items[]?
-        | select((.metadata.uid // "") as $uid | ($uids | index($uid)) != null)
-        | .id // empty
-      ' <<<"$sandboxes_json")" || return 1
-    [[ -n "$sandbox_ids" ]] || {
-        echo "no non-host-network Pod sandboxes were found on $node_name after Cilium cleanup" >&2
-        return 1
-    }
-    echo "Recreating non-host-network CRI Pod sandboxes on $node_name after Cilium cleanup"
-    while IFS= read -r sandbox_id; do
-        [[ -n "$sandbox_id" ]] || continue
-        crictl --runtime-endpoint "$endpoint" stopp "$sandbox_id" || return 1
-        containers_json="$(crictl --runtime-endpoint "$endpoint" ps -a -o json)" || return 1
-        container_ids="$(jq -r --arg sandbox "$sandbox_id" '
-            .containers[]? | select(.podSandboxId == $sandbox) | .id // empty
-          ' <<<"$containers_json")" || return 1
-        while IFS= read -r container_id; do
-            [[ -n "$container_id" ]] || continue
-            crictl --runtime-endpoint "$endpoint" rm "$container_id" || return 1
-            removed_containers=$((removed_containers + 1))
-        done <<<"$container_ids"
-        crictl --runtime-endpoint "$endpoint" rmp "$sandbox_id" || return 1
-        removed_sandboxes=$((removed_sandboxes + 1))
-    done <<<"$sandbox_ids"
-    echo "PASS removed $removed_sandboxes non-host-network Pod sandboxes and $removed_containers container records for Kubelet CNI recreation"
 }
 
 watch_cilium_mount_cgroup_logs() {
@@ -4490,11 +4463,9 @@ main() {
         reset_cilium_state_for_probe "$SOURCE_KUBECONFIG"
         KUBECONFIG="$SOURCE_KUBECONFIG" kubectl wait \
             --for=condition=Ready node --all --timeout=5m
-        probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-rebuilt
-        recreate_non_host_pod_sandboxes_for_probe "$SOURCE_KUBECONFIG"
         KUBECONFIG="$SOURCE_KUBECONFIG" kubectl rollout status \
             deployment/coredns -n kube-system --timeout=5m
-        probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-sandboxes-recreated
+        probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-rebuilt
         verify_stage cilium-agent-restarted "$SOURCE_KUBECONFIG"
         assert_migratable_api_objects_retained source cilium-agent-restarted
         probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" cilium-agent-restarted

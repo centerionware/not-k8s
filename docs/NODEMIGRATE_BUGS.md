@@ -20,9 +20,26 @@ restart, same-name Node replacement, API resource, CoreDNS, API ClusterIP,
 CSI, StatefulSet, Job, RBAC, and workload checks. It did not enable
 `clean-cilium-state` and used K3s's kubelet. This narrows the remaining probe
 failure to the migration cleanup and/or Nodelet path, but does not identify
-which one. Next, run a non-migration diagnostic that performs the same
-temporary Cilium cleanup and records host-to-local-Pod probes before and after
-cleanup plus CNI sandbox recreation.
+which one. The no-migration diagnostic
+[36710560344](https://github.com/centerionware/not-k8s/actions/runs/36710560344)
+completed with a harness defect. Cilium's operator replaced CoreDNS, but the
+probe used the old Pod IP; the script then manually deleted CRI sandboxes under
+K3s's kubelet, which retained stale probe state and failed to recover CoreDNS.
+The worktree now waits for the CoreDNS rollout and probes the current Ready Pod
+IP without removing CRI state under Kubelet. This correction still needs CI.
+
+## Confirmed no-migration diagnostic harness defect
+
+Run [36710560344](https://github.com/centerionware/not-k8s/actions/runs/36710560344)
+completed at SHA `72ddff65`. The `clean-cilium-state` init exited successfully
+and Cilium remained Ready. The first post-cleanup host probe targeted the old
+CoreDNS Pod IP after the operator had replaced that Pod. The diagnostic then
+removed 17 non-host-network Pod sandboxes and 24 container records directly
+through CRI while K3s's kubelet still owned the API Pods. Kubelet logged stale
+probe-manager entries, and CoreDNS did not recover within five minutes. This
+result does not diagnose Nodelet's CRI cleanup or migration behavior. The
+diagnostic is being corrected to wait for a Ready replacement CoreDNS Pod and
+probe its current IP, without deleting CRI state under Kubelet.
 
 ## Latest migration result: 36700106403
 
