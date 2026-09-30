@@ -250,6 +250,8 @@ async fn check_http(host: &str, port: u16, path: &str, headers: &[(String, Strin
     }
     let host = host.to_string();
     let path = path.to_string();
+    let timeout_host = host.clone();
+    let timeout_path = path.clone();
     let result = tokio::time::timeout(timeout, async move {
         let mut stream = TcpStream::connect((host.as_str(), port))
             .await
@@ -296,7 +298,7 @@ async fn check_http(host: &str, port: u16, path: &str, headers: &[(String, Strin
     .await;
     match result {
         Ok(result) => result,
-        Err(_) => Err(format!("HTTP probe {host}:{port}{path} timed out after {timeout:?}")),
+        Err(_) => Err(format!("HTTP probe {timeout_host}:{port}{timeout_path} timed out after {timeout:?}")),
     }
 }
 
