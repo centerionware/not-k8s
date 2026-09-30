@@ -46,6 +46,16 @@ the awaited requests; the corrected quick-check passed as recorded above.
 The migration-specific retest is now eligible. The regular build and general
 e2e jobs remain excluded from this migration task.
 
+## 2026-09-30 migration retest 36650426292
+
+Run [36650426292](https://github.com/centerionware/not-k8s/actions/runs/36650426292)
+was dispatched against SHA `a8c791328a91976f76557d80701cea4a115d3bd1` with
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+It is currently running. This run tests the per-invocation 30-minute limits,
+the bounded Cilium cleanup requests, the K3s Cilium reset ordering, and the
+five-node migration sequence. No general e2e or regular build gate was
+dispatched.
+
 ## 2026-09-29 migration rerun 36633722194
 
 Run [36633722194](https://github.com/centerionware/not-k8s/actions/runs/36633722194)
