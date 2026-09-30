@@ -5,7 +5,7 @@ Last updated: 2026-09-30
 ## Active worktree candidate
 
 PR #591 remains open on `feat/nodemigrate-migration`, now at
-`5da7ade07343e93fe783502f5e4c6ed09c8b361d`. The pushed batch includes
+`60ab55a5508f028c529c1acea18e76e02259272a`. The pushed batch includes
 local non-host-network sandbox recreation after Cilium datapath cleanup and
 the five-node fixture image/probe fixes. PR script validation passed at this
 SHA in [36683529226](https://github.com/centerionware/not-k8s/actions/runs/36683529226);
@@ -35,8 +35,11 @@ defect. The nodemigrate cleanup now removes child containers before old
 sandboxes to release CRI name reservations. Focused quick-check for
 `nodeapiserver,nodemigrate` passed at `5da7ade0` in
 [36689888324](https://github.com/centerionware/not-k8s/actions/runs/36689888324).
-Only migration runtime evidence can verify recovery; no migration rerun has
-been dispatched. Logs and artifacts are saved under
+Migration runtime verification is now running at this branch head in
+[36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745)
+with branch-built runtime, Cilium KPR, and five-node migration enabled. Logs
+and artifacts will be saved by the workflow. No regular build or general e2e
+gate ran.
 `/tmp/nodemigrate-36684339965-*`. No regular build or general e2e gate ran.
 
 Earlier focused quick-check [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)

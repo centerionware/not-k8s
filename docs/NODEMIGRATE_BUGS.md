@@ -5,7 +5,7 @@ Last updated: 2026-09-30
 ## Active fix batch (migration defects under repair)
 
 Open PR #591 now includes commit
-`5da7ade07343e93fe783502f5e4c6ed09c8b361d` on
+`60ab55a5508f028c529c1acea18e76e02259272a` on
 `feat/nodemigrate-migration`. Focused quick-check
 [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
 failed while compiling `nodemigrate`; Nodelet passed 390 non-CRI and 1216
@@ -51,7 +51,10 @@ now stops each selected sandbox, removes its child CRI containers, then removes
 the sandbox so the runtime can release its generated name. Focused quick-check
 for `nodeapiserver,nodemigrate` passed at `5da7ade0` in
 [36689888324](https://github.com/centerionware/not-k8s/actions/runs/36689888324).
-No migration rerun has been dispatched. Artifacts are in
+The follow-up migration run is now active as
+[36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745)
+with branch-built runtime, Cilium KPR, and five-node migration enabled.
+Artifacts from the previous run remain in
 `/tmp/nodemigrate-36684339965-artifacts/`.
 
 - Cilium cleanup now tracks the replacement Pod UID, cleanup-init exit code,
