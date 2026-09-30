@@ -53,6 +53,13 @@ case "${KUBECTL_FIXTURE:-}" in
                 ;;
         esac
         ;;
+    coredns-not-running)
+        case "$*" in
+            *"get pods -n kube-system -l k8s-app=kube-dns -o json"*)
+                printf '%s\n' '{"items":[{"metadata":{"name":"coredns-restarting"},"status":{"phase":"Pending","podIP":""}}]}'
+                ;;
+        esac
+        ;;
     coredns-recreate)
         case "$*" in
             *"get pods -n kube-system -l k8s-app=kube-dns -o json"*)
@@ -334,6 +341,15 @@ grep -Fq 'PASS host-origin CoreDNS probe failed as expected at stage=clean-state
     echo "expected post-cleanup probe failure was not recorded: $output" >&2
     exit 1
 }
+export KUBECTL_FIXTURE=coredns-not-running
+output="$(probe_host_coredns /tmp/test-kubeconfig clean-state-before-cni-add true 2>&1)" || {
+    echo "expected CoreDNS-unavailable fixture failed: $output" >&2
+    exit 1
+}
+grep -Fq 'PASS host-origin CoreDNS probe unavailable as expected at stage=clean-state-before-cni-add' <<< "$output" || {
+    echo "expected absence of a Running CoreDNS Pod after cleanup was not recorded: $output" >&2
+    exit 1
+}
 unset CURL_FIXTURE
 export KUBECTL_FIXTURE=coredns-recreate
 export NODEMIGRATE_COREDNS_DELETE_MARKER="$TEST_DIR/coredns-pod-deleted"
@@ -371,6 +387,11 @@ grep -Fq 'probe_api_clusterip_with_cilium_monitor "$SOURCE_KUBECONFIG" clean-sta
 grep -Fq 'capture_cilium_socket_lb_attachment "$kubeconfig"' \
     "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
     echo "restart diagnostic does not capture Cilium Socket LB cgroup attachments" >&2
+    exit 1
+}
+grep -Fq 'capture_cilium_socket_lb_attachment "$SOURCE_KUBECONFIG"' \
+    "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
+    echo "restart diagnostic does not capture Socket LB attachment immediately after clean-state" >&2
     exit 1
 }
 if grep -Fq 'recreate_non_host_pod_sandboxes_for_probe' "$ROOT/.github/scripts/nodemigrate-integration.sh"; then

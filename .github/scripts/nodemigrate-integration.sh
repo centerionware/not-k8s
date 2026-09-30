@@ -728,14 +728,15 @@ probe_host_coredns() {
         | select((.status.podIP // "") != "")
         | select($expect_unreachable or any(.status.conditions[]?; .type == "Ready" and .status == "True"))
         | [.metadata.name, (.status.podIP // "")] | @tsv
-      ' <<<"$pod_json")" || return 1
+    ' <<<"$pod_json")" || return 1
     [[ -n "$ready_pods" ]] || {
         if [[ "$expect_unreachable" == true ]]; then
-            echo "no Running CoreDNS Pod has a Pod IP at probe stage $stage" >&2
+            echo "PASS host-origin CoreDNS probe unavailable as expected at stage=$stage: no Running Pod with an IP after Cilium cleanup"
+            return 0
         else
             echo "no Ready CoreDNS Pod has a Pod IP at probe stage $stage" >&2
+            return 1
         fi
-        return 1
     }
     while IFS=$'\t' read -r pod_name pod_ip; do
         [[ -n "$pod_name" && -n "$pod_ip" ]] || continue
@@ -4629,6 +4630,7 @@ main() {
         reset_cilium_state_for_probe "$SOURCE_KUBECONFIG"
         KUBECONFIG="$SOURCE_KUBECONFIG" kubectl wait \
             --for=condition=Ready node --all --timeout=5m
+        capture_cilium_socket_lb_attachment "$SOURCE_KUBECONFIG"
         probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-before-cni-add true
         echo "Cilium datapath immediately after clean-state, before a fresh CoreDNS CNI ADD"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"

@@ -5,10 +5,19 @@ Last updated: 2026-09-30
 ## Clean-state Cilium diagnostic
 
 Focused follow-up [36728443584](https://github.com/centerionware/not-k8s/actions/runs/36728443584)
-is queued at SHA `6796db9e743d6d12a267d42a7ebed8399a0b3e89` (job
-`109931339199`). It will capture the Cilium cgroup2 mount and attached
-Socket LB programs before repeating only the no-migration K3s+Cilium probe.
-The migration and general validation jobs are skipped.
+failed at SHA `6796db9e743d6d12a267d42a7ebed8399a0b3e89` after 15m37s (job
+`109931339199`). The `notk8s` build and CSI setup passed; migration and general
+validation were skipped. Cilium clean-state completed and the replacement
+agent and Node became Ready. The diagnostic then failed before the cgroup
+capture because no CoreDNS Pod was Running yet. The failure diagnostics show
+the replacement CoreDNS Pod started at 14:37:38 and became Running at 14:37:44,
+after the probe exited at 14:37:42. This is a diagnostic timing defect; the
+run did not reach the Socket LB attachment check and adds no new ClusterIP
+datapath result. The harness now accepts the expected no-running-Pod window
+after cleanup and captures the cgroup mount/programs immediately after the
+Cilium reset. Local shell/checker validation passed; focused CI is pending.
+Logs: `/tmp/nodemigrate-36728443584-k3s-probe-job.log` and
+`/tmp/nodemigrate-36728443584-artifact/nodemigrate-k3s-cilium-restart.log`.
 
 Focused Cilium packet diagnostic [36725184073](https://github.com/centerionware/not-k8s/actions/runs/36725184073)
 failed at SHA `03deefc8da64cb635a5ef87616b0788958e21e63` after 15m43s (job

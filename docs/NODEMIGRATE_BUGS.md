@@ -61,9 +61,18 @@ show which programs are attached to the cgroup root. The `to stack` trace makes
 the post-restart cgroup attachment a concrete next check, not yet a confirmed
 root cause. The next focused diagnostic captures the cgroup2 mount and
 `bpftool cgroup tree` immediately before the failing Pod-origin Service probe.
-That no-migration follow-up is queued as
+That no-migration follow-up ran as
 [36728443584](https://github.com/centerionware/not-k8s/actions/runs/36728443584)
 at branch SHA `6796db9e743d6d12a267d42a7ebed8399a0b3e89`.
+
+Run 36728443584 did not reach the cgroup capture: immediately after Cilium
+clean-state, the probe treated a temporary lack of a Running CoreDNS Pod as a
+failure. The run diagnostics show the replacement CoreDNS Pod was created at
+14:37:38 and became Running at 14:37:44, two seconds after the probe exited.
+This is a confirmed fixture timing defect, not evidence about Socket LB or
+ClusterIP behavior. The expected-unreachable probe now accepts that transient
+absence, and the cgroup attachment capture runs before probing CoreDNS.
+Focused local shell/checker validation passes; CI verification is pending.
 
 Full logs are saved at
 `/tmp/nodemigrate-36716154527-k3s-probe-job.log` and
