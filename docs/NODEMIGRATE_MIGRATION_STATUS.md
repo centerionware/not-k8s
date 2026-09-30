@@ -5,7 +5,7 @@ Last updated: 2026-09-30
 ## Active worktree candidate
 
 PR #591 remains open on `feat/nodemigrate-migration`, now at
-`a98e08ecba46908c8383980e7f9fc731efcbe60e`. The pushed batch includes
+`5da7ade07343e93fe783502f5e4c6ed09c8b361d`. The pushed batch includes
 local non-host-network sandbox recreation after Cilium datapath cleanup and
 the five-node fixture image/probe fixes. PR script validation passed at this
 SHA in [36683529226](https://github.com/centerionware/not-k8s/actions/runs/36683529226);
@@ -25,15 +25,18 @@ failed at this SHA in K3s job `109786622039`, upstream job `109786622052`,
 and Docker job `109786621877`. The two single-node lanes reached nodestore and
 failed their CoreDNS readiness checks; captured scheduler events show repeated
 binding conflicts with an empty requested resourceVersion. The local
-nodeapiserver change now interprets empty Binding resourceVersion as omitted,
-with focused CI pending. Docker completed migration to nodestore and began the
-return path, but the returned-cluster hostpath CSI StatefulSet did not roll
-out; its final diagnostic snapshot showed widespread Unknown Pod status despite
-Ready Nodes. Logs also prove the post-Cilium sandbox recreation attempts hit
-containerd name reservations held by earlier sandbox IDs. The worktree now
-stops and removes child containers before removing each old sandbox; focused
-CI is pending. The Docker CSI/Pod-status failure remains unresolved; no
-migration rerun has been dispatched. Logs and artifacts are saved under
+nodeapiserver fix interprets empty Binding resourceVersion as omitted. Docker
+completed migration to nodestore and began the return path, but its returned
+hostpath CSI StatefulSet did not roll out; the final snapshot showed widespread
+Unknown Pod status despite Ready Nodes. Its diagnostics also report the same
+empty-version Binding conflicts on CoreDNS and Cilium DNS Service backends in
+`maintenance`, making the CSI/Pod status failure consistent with the binding
+defect. The nodemigrate cleanup now removes child containers before old
+sandboxes to release CRI name reservations. Focused quick-check for
+`nodeapiserver,nodemigrate` passed at `5da7ade0` in
+[36689888324](https://github.com/centerionware/not-k8s/actions/runs/36689888324).
+Only migration runtime evidence can verify recovery; no migration rerun has
+been dispatched. Logs and artifacts are saved under
 `/tmp/nodemigrate-36684339965-*`. No regular build or general e2e gate ran.
 
 Earlier focused quick-check [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)

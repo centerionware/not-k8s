@@ -5,7 +5,7 @@ Last updated: 2026-09-30
 ## Active fix batch (migration defects under repair)
 
 Open PR #591 now includes commit
-`a98e08ecba46908c8383980e7f9fc731efcbe60e` on
+`5da7ade07343e93fe783502f5e4c6ed09c8b361d` on
 `feat/nodemigrate-migration`. Focused quick-check
 [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
 failed while compiling `nodemigrate`; Nodelet passed 390 non-CRI and 1216
@@ -35,19 +35,24 @@ Migration run
 failed in all lanes. K3s and upstream reached nodestore, then their CoreDNS
 Pods failed readiness. Scheduler events report binding conflicts with an
 empty requested resourceVersion. The nodeapiserver binding path treated an
-explicitly empty value as a stale precondition; the current unverified fix
-treats it as omitted and adds focused tests. The upstream artifact also shows
+explicitly empty value as a stale precondition; the fix now treats it as
+omitted and adds focused tests. The upstream artifact also shows
 nodelet sandbox recreation rejected by CRI name reservations held by earlier
 sandbox IDs, despite nodemigrate reporting its sandbox-removal pass. Docker
 completed the forward nodestore checks and reverse migrations, but its
 returned-cluster CSI rollout timed out. The final snapshot showed CSI and
 workload Pods Unknown while Nodes were Ready. Earlier `cni plugin not
 initialized` reports on cp-2 preceded Cilium readiness and are not confirmed as
-the final Docker cause. The CSI/Pod status and CRI name-reservation failures
-remain unresolved. The worktree cleanup now stops each selected sandbox,
-removes its child CRI containers, then removes the sandbox so the runtime can
-release its generated name; focused CI is pending. No migration rerun has been
-dispatched. Artifacts are in `/tmp/nodemigrate-36684339965-artifacts/`.
+the final Docker cause. The Docker artifact also records the same empty-version
+Binding conflicts on CoreDNS and Cilium DNS Service backends in `maintenance`
+state. Its CSI/Pod-status symptom is consistent with that Binding failure, but
+restoration remains unverified until a migration rerun. The worktree cleanup
+now stops each selected sandbox, removes its child CRI containers, then removes
+the sandbox so the runtime can release its generated name. Focused quick-check
+for `nodeapiserver,nodemigrate` passed at `5da7ade0` in
+[36689888324](https://github.com/centerionware/not-k8s/actions/runs/36689888324).
+No migration rerun has been dispatched. Artifacts are in
+`/tmp/nodemigrate-36684339965-artifacts/`.
 
 - Cilium cleanup now tracks the replacement Pod UID, cleanup-init exit code,
   and a continuous Ready interval for that same Pod. Each loop checks its

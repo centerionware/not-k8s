@@ -7,7 +7,10 @@ Last updated: 2026-09-30
 The selected checkout is `/workspace/not-k8s`, branch
 `feat/nodemigrate-migration`, with open [PR #591](https://github.com/centerionware/not-k8s/pull/591)
 against `main`. The pushed PR head is
-`a98e08ecba46908c8383980e7f9fc731efcbe60e`. On prior SHA
+`5da7ade07343e93fe783502f5e4c6ed09c8b361d`. Focused quick-check for
+`nodeapiserver,nodemigrate` passed at this SHA in
+[36689888324](https://github.com/centerionware/not-k8s/actions/runs/36689888324)
+(job `109804326954`). On prior SHA
 `6c8ce932d509e8a4744f4ce3c6b7723a372da77a`, PR script validation passed in
 [36683529226](https://github.com/centerionware/not-k8s/actions/runs/36683529226),
 but targeted crate check [36683529231](https://github.com/centerionware/not-k8s/actions/runs/36683529231)
@@ -33,10 +36,13 @@ confirmed as the final Docker cause. Artifacts and complete job logs are in
 nodeapiserver change now treats an empty Binding `resourceVersion` as absent;
 the nodemigrate Cilium reset now removes stopped sandbox child containers
 before removing each sandbox, addressing containerd's observed lingering-name
-reservation. Focused quick-check for `nodeapiserver,nodemigrate` is pending.
-The regular build gate and general e2e remain skipped. Do not dispatch another
-migration run until the Docker CSI/status failure is understood and the whole
-fix batch passes focused CI.
+reservation. Both changed crates passed focused quick-check at `5da7ade0`.
+The regular build gate and general e2e remain skipped. Docker's returned CSI
+and Pod status failure is consistent with the same empty-resourceVersion
+Binding errors seen in CoreDNS; no independent CSI mechanism is confirmed.
+The whole fix batch now passes focused CI, so the next migration-specific run
+should verify that both the CoreDNS and Docker workload recovery symptoms are
+resolved before any further change or rerun.
 
 Earlier migration history: the pushed PR head was
 `f514e61af89451771dc4616aa88b98977f4a69c2`; it covered Cilium replacement
