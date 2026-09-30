@@ -880,8 +880,8 @@ impl KubeApi {
             let schedule_deadline =
                 tokio::time::Instant::now() + std::time::Duration::from_secs(300);
             let pod = loop {
-                let current_pods = pods
-                    .list(&ListParams::default().labels("k8s-app=cilium"));
+                let list_params = ListParams::default().labels("k8s-app=cilium");
+                let current_pods = pods.list(&list_params);
                 let current_pods = cilium_api_request("listing Cilium agent Pods", current_pods)
                     .await
                     .context("listing Cilium agent Pods")?;
@@ -958,11 +958,9 @@ impl KubeApi {
                     // times out waiting for its response; always attempt to
                     // restore the original cluster-wide flag on that path.
                     cleanup_flag_changed = true;
-                    let patch_request = config.patch(
-                        "cilium-config",
-                        &PatchParams::default(),
-                        &Patch::Merge(&patch),
-                    );
+                    let patch_params = PatchParams::default();
+                    let patch = Patch::Merge(&patch);
+                    let patch_request = config.patch("cilium-config", &patch_params, &patch);
                     cilium_api_request(
                         "enabling Cilium's per-node state cleanup",
                         patch_request,
@@ -971,17 +969,15 @@ impl KubeApi {
                     .context("temporarily enabling Cilium's per-node state cleanup")?;
                 }
 
-                let delete_request = pods.delete(
-                    &name,
-                    &DeleteParams {
-                        grace_period_seconds: Some(0),
-                        preconditions: Some(Preconditions {
-                            uid: Some(uid.clone()),
-                            resource_version: None,
-                        }),
-                        ..Default::default()
-                    },
-                );
+                let delete_params = DeleteParams {
+                    grace_period_seconds: Some(0),
+                    preconditions: Some(Preconditions {
+                        uid: Some(uid.clone()),
+                        resource_version: None,
+                    }),
+                    ..Default::default()
+                };
+                let delete_request = pods.delete(&name, &delete_params);
                 cilium_api_request(
                     "recreating Cilium agent Pod for state cleanup",
                     delete_request,
@@ -1001,8 +997,8 @@ impl KubeApi {
                 let mut cleanup_init_failure_details = None;
                 let mut replacement_pod_logged = false;
                 loop {
-                    let current_pods = pods
-                        .list(&ListParams::default().labels("k8s-app=cilium"));
+                    let list_params = ListParams::default().labels("k8s-app=cilium");
+                    let current_pods = pods.list(&list_params);
                     let current_pods = cilium_api_request(
                         "listing replacement Cilium agent Pods",
                         current_pods,
@@ -1702,11 +1698,9 @@ async fn restore_cilium_clean_state_flag(
         "metadata": {"resourceVersion": resource_version},
         "data": {"clean-cilium-state": value}
     });
-    let patch_request = api.patch(
-        "cilium-config",
-        &PatchParams::default(),
-        &Patch::Merge(&patch),
-    );
+    let patch_params = PatchParams::default();
+    let patch = Patch::Merge(&patch);
+    let patch_request = api.patch("cilium-config", &patch_params, &patch);
     cilium_api_request("restoring Cilium clean-state flag", patch_request)
         .await
         .context("restoring original Cilium clean-state flag")?;

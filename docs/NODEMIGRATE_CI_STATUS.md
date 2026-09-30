@@ -36,6 +36,11 @@ keeping the existing five-minute Pod scheduling and cleanup deadlines. This
 closes the unbounded API wait path in Cilium cleanup; a focused quick-check and
 migration recheck are pending.
 
+Focused quick-check [36649877749](https://github.com/centerionware/not-k8s/actions/runs/36649877749)
+failed to compile because the new bounded request futures borrowed temporary
+Kubernetes parameters. The parameters and patch values are now bound through
+the awaited requests; the corrected quick-check is pending.
+
 ## 2026-09-29 migration rerun 36633722194
 
 Run [36633722194](https://github.com/centerionware/not-k8s/actions/runs/36633722194)

@@ -18,6 +18,10 @@ logs are saved once under `/tmp/nodemigrate-36644181073-*.log`.
   each Cilium API request to 30 seconds so an unanswered API call cannot
   overrun the cleanup retry deadline. The suspected cleanup stall is not
   confirmed yet; the migration lane must verify success or bounded failure.
+  The first quick-check for the request bounds failed to compile because the
+  async requests borrowed temporary Kubernetes parameter objects. Those
+  parameters now live through each awaited request; corrected quick-check is
+  pending.
 - **Component: returned K3s Cilium/CSI path.** Forward and return migration
   completed, Cilium's replacement agent remained Ready, and the returned K3s
   audit and preserved CSI volume assertion passed. Reinstalling the upstream
