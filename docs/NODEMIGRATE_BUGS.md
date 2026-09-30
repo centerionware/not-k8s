@@ -30,12 +30,11 @@ Cilium KPR, and the five-node migration path. Full lane logs are saved under
   with `signal: killed`. Nodelet logged a 30-second reconcile timeout. At the
   same time, the replacement Cilium Pod's `clean-cilium-state` init container
   exited unsuccessfully, was retried, and its `cilium-agent` container started
-  after the failed CNI ADD. This ordering supports a Cilium-agent readiness
-  race, but the captured logs do not reveal why `clean-cilium-state` failed or
-  whether the CNI process received a cancellation or host signal. Do not treat
-  Node Ready or stale DaemonSet availability as proof that each local Cilium
-  CNI endpoint can serve a new sandbox; migration completion and fixture
-  checks need to establish readiness on the returning node.
+  after the failed CNI ADD. The final diagnostic snapshot shows the Pod
+  `1/1 Running`, so this CNI failure recovered and was not the terminal lane
+  failure. Logs do not reveal why the init container failed or whether the CNI
+  process received a cancellation or host signal. Continue checking CNI
+  readiness on each returning node.
 - **Component: K3s return fixture timing.** K3s completed forward and return
   migration and most returned-stage checks, but the overall GitHub job hit its
   30-minute timeout while Traefik reported 0/1 available. The job ran from
@@ -46,6 +45,15 @@ Cilium KPR, and the five-node migration path. Full lane logs are saved under
   timeout was raised to 60 minutes in commit `ab4d1778` and is now 90 minutes;
   the migration step is now capped at 60 minutes. This lane remains incomplete
   and must be rerun after the actionable runtime issues are resolved.
+
+- **Component: five-node CSI fixture patch race.** The Docker lane failed while
+  adding the Nodelet target-root mount to the imported `csi-hostpathplugin`
+  StatefulSet. Its controller wrote status between the fixture's GET and
+  PATCH; nodeapiserver returned HTTP 409 for this optimistic-concurrency race.
+  The script now retries this exact conflict by invoking `kubectl patch` again,
+  which rereads the current StatefulSet. Other errors still fail immediately;
+  eight repeated conflicts fail the step. Shell validation and runtime
+  verification are pending.
 
 The run's job IDs were Docker 109700594144, K3s 109700594250, and upstream
 Kubernetes 109700594260. Its five-node build/preflight succeeded before the

@@ -12,13 +12,14 @@ repeated caller-visible conflicts. The K3s lane completed return migration
 and most returned-fixture assertions, then hit the overall 30-minute job
 timeout while Traefik showed 0/1 available. The job cap stopped the migration
 step after about 19 minutes, before its own 30-minute timeout. The Docker
-five-node lane failed a post-migration CNI ADD on
-worker-2 with `signal: killed` while the replacement Cilium agent was still
-initializing. Details and remaining root causes are in
+five-node lane reached post-migration workload checks. A worker-2 Cilium CNI
+ADD failed transiently but the final diagnostic snapshot showed the Pod
+`1/1 Running`; the terminal lane failure was an HTTP 409 while updating the
+imported HostPath CSI StatefulSet. Details and remaining root causes are in
 [NODEMIGRATE_BUGS.md](NODEMIGRATE_BUGS.md); logs are saved under
 `/tmp/nodemigrate-36656072014-{kubernetes,k3s,docker}.log`.
 
-The current branch now includes reason-specific Pod binding Conflict status
+The current branch includes reason-specific Pod binding Conflict status
 messages, so a follow-up can identify whether UID, resourceVersion, deletion,
 already-bound state, or storage retries are producing the 409s. PR head
 `c9ced284` capped both the single-node job and its migration step at 30
@@ -35,6 +36,17 @@ passed `nodeapiserver` at SHA `ab4d1778ebed1f948e17614140b9a771543e3813`.
 It includes the reason-specific Pod Binding Conflict responses and regression
 test. Earlier quick-check [36655430632](https://github.com/centerionware/not-k8s/actions/runs/36655430632)
 passed `nodeapiserver,nodelet` at `f6e7e4d6`, including CRI-enabled Nodelet.
+
+The latest run's five-node Docker failure was an HTTP 409 while the fixture
+patched the imported HostPath CSI StatefulSet during a concurrent controller
+status update. A retry that rereads the StatefulSet is now in the script; shell
+validation is pending. Its worker-2 Cilium CNI ADD failure recovered by the
+final diagnostic snapshot (`migration-daemon` was `1/1 Running`). The upstream
+Binding 409 cause remains unknown: the run predates reason-specific responses,
+and storage retry exhaustion was absent. A focused protobuf Binding test now
+checks that the scheduler's UID survives request decoding. Do not start a
+migration rerun until the CI evidence and remaining runtime diagnosis support
+the whole fix batch.
 
 ## 2026-09-30 migration run 36656072014
 

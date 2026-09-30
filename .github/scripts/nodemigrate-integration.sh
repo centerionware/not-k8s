@@ -1066,6 +1066,36 @@ install_cilium() {
     echo "Cilium kube-proxy replacement=$kube_proxy_replacement"
 }
 
+patch_hostpath_statefulset() {
+    local patch_type="${1:?missing StatefulSet patch type}"
+    local patch="${2:?missing StatefulSet patch body}"
+    local output attempt
+    # The StatefulSet controller writes status while the fixture changes the
+    # CSI Pod template. kubectl patch uses a GET/PATCH sequence, so a status
+    # write between those requests can legitimately make the patch stale. Each
+    # retry invokes kubectl again, which reads the latest object; only retry
+    # the API's optimistic-concurrency conflict and surface every other error.
+    for attempt in {1..8}; do
+        if output="$(kubectl patch statefulset csi-hostpathplugin -n default \
+            --type="$patch_type" -p "$patch" 2>&1)"; then
+            printf '%s\n' "$output"
+            return 0
+        fi
+        if [[ "$output" != *"the object has been modified"* ]]; then
+            printf '%s\n' "$output" >&2
+            return 1
+        fi
+        if (( attempt == 8 )); then
+            printf 'hostpath CSI StatefulSet kept changing during patch (%s attempts): %s\n' \
+                "$attempt" "$output" >&2
+            return 1
+        fi
+        printf 'hostpath CSI StatefulSet changed during patch; retrying with a fresh read (%s/8)\n' \
+            "$attempt" >&2
+        sleep "0.$attempt"
+    done
+}
+
 install_hostpath_driver() {
     local kubelet_data_dir="${1:?missing kubelet data directory}"
     local skip_snapshot_crds="${2:-false}"
@@ -1163,7 +1193,7 @@ install_hostpath_driver() {
         --argjson index "$state_volume_index" \
         --arg name "$state_volume" \
         '[{op:"replace",path:("/spec/template/spec/volumes/" + ($index|tostring)),value:{name:$name,hostPath:{path:"/var/lib/nodemigrate-csi-hostpath-data",type:"DirectoryOrCreate"}}}]')"
-    kubectl patch statefulset csi-hostpathplugin -n default --type=json -p "$state_patch"
+    patch_hostpath_statefulset json "$state_patch"
     kubectl rollout status statefulset/csi-hostpathplugin -n default --timeout=5m
     kubectl get statefulset csi-hostpathplugin -n default -o json | jq -e \
         --arg name "$state_volume" \
@@ -1193,7 +1223,7 @@ install_hostpath_driver() {
               {op:"add",path:"/spec/template/spec/volumes/-",value:{name:$name,hostPath:{path:"/var/lib/kubelet/plugins/kubernetes.io/csi",type:"DirectoryOrCreate"}}},
               {op:"add",path:("/spec/template/spec/containers/" + ($container|tostring) + "/volumeMounts/-"),value:{name:$name,mountPath:"/var/lib/kubelet/plugins/kubernetes.io/csi",mountPropagation:"Bidirectional"}}
             ]')"
-        kubectl patch statefulset csi-hostpathplugin -n default --type=json -p "$stage_patch"
+        patch_hostpath_statefulset json "$stage_patch"
         kubectl rollout status statefulset/csi-hostpathplugin -n default --timeout=5m
         kubectl get statefulset csi-hostpathplugin -n default -o json | jq -e \
             --arg name "$stage_volume" \
@@ -1223,7 +1253,7 @@ install_hostpath_driver() {
         ' <<<"$plugin_json")"
         if ! jq -e --arg name "$nodelet_root_volume" \
             'any(.spec.template.spec.volumes[]?; .name == $name)' <<<"$plugin_json" >/dev/null; then
-            kubectl patch statefulset csi-hostpathplugin -n default --type=json -p \
+            patch_hostpath_statefulset json \
                 "$(jq -cn --arg name "$nodelet_root_volume" \
                     '[{op:"add",path:"/spec/template/spec/volumes/-",value:{name:$name,hostPath:{path:"/var/lib/nodelet",type:"DirectoryOrCreate"}}}]')"
             plugin_json="$(kubectl get statefulset csi-hostpathplugin -n default -o json)"
@@ -1231,7 +1261,7 @@ install_hostpath_driver() {
         if ! jq -e --arg name "$nodelet_root_volume" \
             '.spec.template.spec.containers[] | select(.name == "hostpath")
              | any(.volumeMounts[]?; .name == $name)' <<<"$plugin_json" >/dev/null; then
-            kubectl patch statefulset csi-hostpathplugin -n default --type=json -p \
+            patch_hostpath_statefulset json \
                 "$(jq -cn --arg name "$nodelet_root_volume" --argjson container "$stage_container_index" '
                     [{op:"add",path:("/spec/template/spec/containers/" + ($container|tostring) + "/volumeMounts/-"),value:{name:$name,mountPath:"/var/lib/nodelet",mountPropagation:"Bidirectional"}}]')"
         fi
@@ -1262,7 +1292,7 @@ ensure_csi_can_access_nodelet_root() {
     }
     if ! jq -e --arg name "$root_volume" \
         'any(.spec.template.spec.volumes[]?; .name == $name)' <<<"$plugin_json" >/dev/null; then
-        kubectl patch statefulset csi-hostpathplugin -n default --type=json -p \
+        patch_hostpath_statefulset json \
             "$(jq -cn --arg name "$root_volume" \
                 '[{op:"add",path:"/spec/template/spec/volumes/-",value:{name:$name,hostPath:{path:"/var/lib/nodelet",type:"DirectoryOrCreate"}}}]')"
         plugin_json="$(kubectl get statefulset csi-hostpathplugin -n default -o json)"
@@ -1270,7 +1300,7 @@ ensure_csi_can_access_nodelet_root() {
     if ! jq -e --arg name "$root_volume" \
         '.spec.template.spec.containers[] | select(.name == "hostpath")
          | any(.volumeMounts[]?; .name == $name)' <<<"$plugin_json" >/dev/null; then
-        kubectl patch statefulset csi-hostpathplugin -n default --type=json -p \
+        patch_hostpath_statefulset json \
             "$(jq -cn --arg name "$root_volume" --argjson container "$container_index" '
                 [{op:"add",path:("/spec/template/spec/containers/" + ($container|tostring) + "/volumeMounts/-"),value:{name:$name,mountPath:"/var/lib/nodelet",mountPropagation:"Bidirectional"}}]')"
     fi
@@ -1324,7 +1354,7 @@ pin_hostpath_driver_to_fixture_volumes() {
     patch="$(jq -cn --arg node "$node" '
       {spec:{template:{spec:{nodeSelector:{"topology.hostpath.csi/node":$node}}}}}
     ')"
-    kubectl patch statefulset csi-hostpathplugin -n default --type=merge -p "$patch"
+    patch_hostpath_statefulset merge "$patch"
     kubectl rollout status statefulset/csi-hostpathplugin -n default --timeout=5m
     kubectl get pods -n default -l "$(jq -r '
       .spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")
