@@ -21,7 +21,10 @@ The first focused quick-check [36654928410](https://github.com/centerionware/not
 found an ownership mismatch in the new Nodelet resource snapshot helper after
 388 non-CRI tests passed. The branch now stores the recognized container name
 as an owned `String`. `nodeapiserver` tests were not reached in that run; the
-replacement focused quick-check must pass before another migration run.
+replacement focused `nodeapiserver,nodelet` quick-check passed at SHA
+`f6e7e4d6` in
+[run 36655430632](https://github.com/centerionware/not-k8s/actions/runs/36655430632).
+The migration-specific rerun can now test the binding and CRI handoff fixes.
 
 ## Latest run: 36627336634
 

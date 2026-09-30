@@ -14,12 +14,13 @@ branch fixes the internal Pod binding CAS retry and Nodelet's legacy kubelet
 CRI label lookup. Initial quick-check [36654928410](https://github.com/centerionware/not-k8s/actions/runs/36654928410)
 passed 388 non-CRI nodelet tests but failed compiling the CRI resource snapshot
 because it needs an owned container name; that conversion is fixed in the
-current branch. The run stopped before checking `nodeapiserver`; both crates
-need another focused quick-check before another migration run.
+current branch. The run stopped before checking `nodeapiserver`. Replacement
+quick-check passed for both crates at SHA `f6e7e4d6` in
+[run 36655430632](https://github.com/centerionware/not-k8s/actions/runs/36655430632).
 The single-node matrix job and invocation are capped at 30 minutes. Each
 individual five-node migration is also capped at 30 minutes, while the full
 five-node sequence keeps its aggregate window. No general e2e or regular build
-gate ran.
+gate ran. The migration-specific rerun is eligible.
 
 ## 2026-09-30 migration run 36644181073
 

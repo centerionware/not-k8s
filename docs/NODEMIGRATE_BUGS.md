@@ -20,8 +20,10 @@ under `/tmp/nodemigrate-36650426292-{kubernetes,k3s,docker}.log`.
   is still valid. This is the likely cause based on the repeated 409s and the
   handler path, not explicit conflict telemetry. The branch now retries only
   that internal storage conflict by re-reading and recomputing the binding;
-  caller precondition conflicts still return immediately. `nodeapiserver`
-  quick-check and a migration rerun are pending.
+  caller precondition conflicts still return immediately. Focused
+  `nodeapiserver,nodelet` quick-check passed at SHA `f6e7e4d6` in
+  [run 36655430632](https://github.com/centerionware/not-k8s/actions/runs/36655430632);
+  migration runtime verification is pending.
 - **Component: Nodelet CRI handoff from kubelet-owned containers.** The
   five-node lane passed its preflight and nodestore checkpoint, then the
   returned `migration-standalone` Pod remained Unknown. Containerd reported
@@ -30,21 +32,24 @@ under `/tmp/nodemigrate-36650426292-{kubernetes,k3s,docker}.log`.
   paths now recognize standard `io.kubernetes.container.name` and
   `io.kubernetes.container.type` labels alongside Nodelet's labels, so it can
   find existing kubelet attempts rather than creating a duplicate. Focused
-  `nodelet` quick-check and a five-node migration rerun are pending.
+  `nodelet` quick-check passed in run 36655430632; a five-node migration rerun
+  is pending.
 - **Timeout scope.** The Docker step is an aggregate five-node scenario with
   multiple migrations. Each individual nodemigrate process is capped at 30
   minutes; the aggregate step retains a larger window to finish all node and
   return checkpoints. Single-node migration jobs have a 30-minute job and step
-  cap. No migration retry is queued until both component fixes pass focused
-  quick-check.
+  cap. Focused `nodeapiserver,nodelet` quick-check passed at SHA `f6e7e4d6`
+  in [run 36655430632](https://github.com/centerionware/not-k8s/actions/runs/36655430632).
+  The migration-specific rerun can now validate both runtime fixes.
 
 The first focused quick-check for the fixes, [36654928410](https://github.com/centerionware/not-k8s/actions/runs/36654928410)
 at SHA `36ec70fab426b160a057cdfef78322ea94dad5ce`, passed the non-CRI nodelet
 tests (388 tests) but stopped compiling the CRI-enabled nodelet because the
 new label helper returns `&str` while the resource snapshot owns its name.
 The snapshot now converts that borrowed name to an owned `String`. The job
-stopped before running `nodeapiserver`; a new focused quick-check must validate
-both crates before a migration retry.
+stopped before running `nodeapiserver`; replacement focused quick-check passed
+for both crates at SHA `f6e7e4d6` in
+[run 36655430632](https://github.com/centerionware/not-k8s/actions/runs/36655430632).
 
 ## Findings from migration run 36644181073
 
