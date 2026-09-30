@@ -31,6 +31,11 @@ quick-check passed in
 [run 36649148406](https://github.com/centerionware/not-k8s/actions/runs/36649148406),
 and PR validation passed. The migration lanes have not been rerun.
 
+The current follow-up bounds each Cilium API request to 30 seconds while
+keeping the existing five-minute Pod scheduling and cleanup deadlines. This
+closes the unbounded API wait path in Cilium cleanup; a focused quick-check and
+migration recheck are pending.
+
 ## 2026-09-29 migration rerun 36633722194
 
 Run [36633722194](https://github.com/centerionware/not-k8s/actions/runs/36633722194)

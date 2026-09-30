@@ -5,9 +5,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
+    future::Future,
     path::{Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{bail, ensure, Context, Result};
@@ -48,6 +49,8 @@ const SKIP_KINDS: &[&str] = &[
     "PodMetrics",
     "VolumeAttachment",
 ];
+
+const CILIUM_API_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SkipReason {
@@ -878,7 +881,8 @@ impl KubeApi {
                 tokio::time::Instant::now() + std::time::Duration::from_secs(300);
             let pod = loop {
                 let current_pods = pods
-                    .list(&ListParams::default().labels("k8s-app=cilium"))
+                    .list(&ListParams::default().labels("k8s-app=cilium"));
+                let current_pods = cilium_api_request("listing Cilium agent Pods", current_pods)
                     .await
                     .context("listing Cilium agent Pods")?;
                 if let Some(pod) = current_pods.items.into_iter().find(|pod| {
@@ -925,10 +929,13 @@ impl KubeApi {
                 "Cilium agent Pod {name} has no clean-cilium-state init container; refusing a cross-cluster handoff with shared host datapath state"
             );
 
-            let original_config = config
-                .get("cilium-config")
-                .await
-                .context("reading kube-system/cilium-config before host-state reset")?;
+            let original_config = config.get("cilium-config");
+            let original_config = cilium_api_request(
+                "reading kube-system/cilium-config before host-state reset",
+                original_config,
+            )
+            .await
+            .context("reading kube-system/cilium-config before host-state reset")?;
             let original_clean_state = original_config
                 .data
                 .as_ref()
@@ -947,18 +954,24 @@ impl KubeApi {
                         "metadata": {"resourceVersion": resource_version},
                         "data": {"clean-cilium-state": "true"}
                     });
-                    config
-                        .patch(
-                            "cilium-config",
-                            &PatchParams::default(),
-                            &Patch::Merge(&patch),
-                        )
-                        .await
-                        .context("temporarily enabling Cilium's per-node state cleanup")?;
+                    // The API server can accept a patch even if the client
+                    // times out waiting for its response; always attempt to
+                    // restore the original cluster-wide flag on that path.
                     cleanup_flag_changed = true;
+                    let patch_request = config.patch(
+                        "cilium-config",
+                        &PatchParams::default(),
+                        &Patch::Merge(&patch),
+                    );
+                    cilium_api_request(
+                        "enabling Cilium's per-node state cleanup",
+                        patch_request,
+                    )
+                    .await
+                    .context("temporarily enabling Cilium's per-node state cleanup")?;
                 }
 
-                pods.delete(
+                let delete_request = pods.delete(
                     &name,
                     &DeleteParams {
                         grace_period_seconds: Some(0),
@@ -968,6 +981,10 @@ impl KubeApi {
                         }),
                         ..Default::default()
                     },
+                );
+                cilium_api_request(
+                    "recreating Cilium agent Pod for state cleanup",
+                    delete_request,
                 )
                 .await
                 .with_context(|| format!("recreating Cilium agent Pod {name} for state cleanup"))?;
@@ -985,9 +1002,15 @@ impl KubeApi {
                 let mut replacement_pod_logged = false;
                 loop {
                     let current_pods = pods
-                        .list(&ListParams::default().labels("k8s-app=cilium"))
-                        .await
-                        .with_context(|| format!("waiting for replacement Cilium agent on {node_name}"))?;
+                        .list(&ListParams::default().labels("k8s-app=cilium"));
+                    let current_pods = cilium_api_request(
+                        "listing replacement Cilium agent Pods",
+                        current_pods,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!("waiting for replacement Cilium agent on {node_name}")
+                    })?;
                     let replacement = current_pods.items.into_iter().find(|pod| {
                         pod.spec
                             .as_ref()
@@ -1063,8 +1086,11 @@ impl KubeApi {
                                 state.running.is_some() || state.terminated.is_some()
                             });
                             if init_started && !cleanup_flag_restored {
-                                restore_cilium_clean_state_flag(&config, original_clean_state.as_deref())
-                                    .await?;
+                                restore_cilium_clean_state_flag(
+                                    &config,
+                                    original_clean_state.as_deref(),
+                                )
+                                .await?;
                                 cleanup_flag_restored = true;
                                 cleanup_flag_changed = false;
                             }
@@ -1646,10 +1672,12 @@ async fn restore_cilium_clean_state_flag(
     api: &Api<ConfigMap>,
     original: Option<&str>,
 ) -> Result<()> {
-    let current = api
-        .get("cilium-config")
-        .await
-        .context("reading Cilium ConfigMap while restoring clean-state flag")?;
+    let current = cilium_api_request(
+        "reading Cilium ConfigMap while restoring clean-state flag",
+        api.get("cilium-config"),
+    )
+    .await
+    .context("reading Cilium ConfigMap while restoring clean-state flag")?;
     let current_value = current
         .data
         .as_ref()
@@ -1674,14 +1702,31 @@ async fn restore_cilium_clean_state_flag(
         "metadata": {"resourceVersion": resource_version},
         "data": {"clean-cilium-state": value}
     });
-    api.patch(
+    let patch_request = api.patch(
         "cilium-config",
         &PatchParams::default(),
         &Patch::Merge(&patch),
-    )
-    .await
-    .context("restoring original Cilium clean-state flag")?;
+    );
+    cilium_api_request("restoring Cilium clean-state flag", patch_request)
+        .await
+        .context("restoring original Cilium clean-state flag")?;
     Ok(())
+}
+
+async fn cilium_api_request<T, E, F>(description: &str, request: F) -> Result<T>
+where
+    E: std::error::Error + Send + Sync + 'static,
+    F: Future<Output = std::result::Result<T, E>>,
+{
+    tokio::time::timeout(CILIUM_API_REQUEST_TIMEOUT, request)
+        .await
+        .with_context(|| {
+            format!(
+                "Cilium API request {description} exceeded {} seconds",
+                CILIUM_API_REQUEST_TIMEOUT.as_secs()
+            )
+        })?
+        .with_context(|| format!("Cilium API request {description} failed"))
 }
 
 fn parse_cilium_kube_proxy_replacement(value: Option<&str>) -> Result<bool> {
