@@ -4,6 +4,16 @@ Last updated: 2026-09-30
 
 ## Current branch status
 
+Full migration matrix
+[36700106403](https://github.com/centerionware/not-k8s/actions/runs/36700106403)
+is active on SHA `c77dc6fdc08bd67568f74091945ee4b5a544ccd9` with
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+Jobs `109837299287` (upstream Kubernetes), `109837299550` (K3s), and
+`109837299640` (five-node lane) were running at last inspection. The
+diagnostic Nodelet code is in this SHA and its focused quick-check passed at
+`b4647a9c`. Wait for the complete run and fix all new confirmed issues as one
+batch before dispatching another migration run.
+
 The run previously listed below as active, migration workflow
 [36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745),
 is terminal with all three jobs failed. K3s job `109807711150` and upstream

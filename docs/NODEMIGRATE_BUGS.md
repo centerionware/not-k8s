@@ -4,6 +4,17 @@ Last updated: 2026-09-30
 
 ## Active fix batch (confirmed fixes passed; CoreDNS probe cause unresolved)
 
+Diagnostic full-matrix run
+[36700106403](https://github.com/centerionware/not-k8s/actions/runs/36700106403)
+is now active on tested branch SHA `c77dc6fd` with branch-built runtime,
+Cilium KPR, K3s, upstream Kubernetes, and five-node migration enabled. Jobs
+`109837299287` (Kubernetes), `109837299550` (K3s), and `109837299640`
+(five-node preflight/migration) were running at last inspection. Do not start
+a duplicate run. After all three lanes finish, group their failures and fix
+the full batch before another migration dispatch. This run is intended to
+capture the new failure-only Nodelet probe result where run 36690929745 lacked
+it.
+
 Migration run
 [36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745)
 has completed with all three lanes failed. **Component: nodemigrate CRI

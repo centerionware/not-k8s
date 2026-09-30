@@ -4,6 +4,15 @@ Last updated: 2026-09-30
 
 ## Active branch candidate
 
+The next complete migration matrix is active as run
+[36700106403](https://github.com/centerionware/not-k8s/actions/runs/36700106403)
+at SHA `c77dc6fdc08bd67568f74091945ee4b5a544ccd9` with branch runtime,
+Cilium KPR, and both single-node lanes plus five-node migration enabled. K3s
+job `109837299550`, upstream Kubernetes job `109837299287`, and five-node job
+`109837299640` were in progress at last inspection. This captures probe
+diagnostics that were absent in the previous run. Wait for every lane to
+finish, then repair all confirmed failures together before a subsequent run.
+
 Migration run
 [36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745)
 is terminal and failed all lanes. Upstream and K3s both safely rolled back
