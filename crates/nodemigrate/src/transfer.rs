@@ -335,6 +335,25 @@ fn node_is_ready(node: &DynamicObject) -> bool {
         })
 }
 
+fn node_readiness_summary(node: &DynamicObject) -> String {
+    let uid = node.metadata.uid.as_deref().unwrap_or("<missing>");
+    let conditions = node
+        .data
+        .pointer("/status/conditions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|condition| {
+            let type_ = condition.get("type").and_then(Value::as_str).unwrap_or("?");
+            let status = condition.get("status").and_then(Value::as_str).unwrap_or("?");
+            let reason = condition.get("reason").and_then(Value::as_str).unwrap_or("");
+            let message = condition.get("message").and_then(Value::as_str).unwrap_or("");
+            format!("{type_}={status} reason={reason:?} message={message:?}")
+        })
+        .collect::<Vec<_>>();
+    format!("uid={uid}; conditions=[{}]", conditions.join(", "))
+}
+
 fn node_is_ready_replacement(node: &DynamicObject, previous_uid: &str) -> bool {
     node.metadata
         .uid
@@ -986,6 +1005,26 @@ impl KubeApi {
                 return Ok(false);
             };
             Ok(node_is_ready(&node))
+        })
+    }
+
+    pub fn node_readiness_summary(&self, name: &str) -> Result<Option<String>> {
+        let (runtime, client) = self.connected()?;
+        runtime.block_on(async {
+            let discovery = wait_for_discovery(&client).await?;
+            let (resource, capabilities) = find_resource(&discovery, "Node", "v1")
+                .context("Kubernetes API does not expose Node")?;
+            ensure!(
+                capabilities.supports_operation(verbs::GET),
+                "Kubernetes API cannot read nodes"
+            );
+            let api: Api<DynamicObject> = Api::all_with(client, &resource);
+            Ok(api
+                .get_opt(name)
+                .await
+                .with_context(|| format!("reading readiness details for node {name}"))?
+                .as_ref()
+                .map(node_readiness_summary))
         })
     }
 
@@ -6669,6 +6708,26 @@ current-context: test
         assert!(node_uid_has_been_replaced(Some(&new_not_ready), "old-node-uid"));
         assert!(!node_is_ready_replacement(&new_not_ready, "old-node-uid"));
         assert!(node_is_ready_replacement(&new_ready, "old-node-uid"));
+    }
+
+    #[test]
+    fn node_readiness_summary_includes_uid_and_condition_diagnostics() {
+        let node: DynamicObject = serde_json::from_value(serde_json::json!({
+            "metadata": {"uid": "cp-1-uid"},
+            "status": {"conditions": [{
+                "type": "Ready",
+                "status": "False",
+                "reason": "KubeletNotReady",
+                "message": "container runtime is down"
+            }]}
+        }))
+        .unwrap();
+
+        let summary = node_readiness_summary(&node);
+        assert!(summary.contains("uid=cp-1-uid"));
+        assert!(summary.contains("Ready=False"));
+        assert!(summary.contains("KubeletNotReady"));
+        assert!(summary.contains("container runtime is down"));
     }
 
     #[test]

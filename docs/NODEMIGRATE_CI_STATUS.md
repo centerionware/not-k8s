@@ -2,6 +2,40 @@
 
 Last updated: 2026-09-30
 
+## Branch migration matrix 36778028681
+
+[Run 36778028681](https://github.com/centerionware/not-k8s/actions/runs/36778028681)
+tested SHA `8eb91e326c534b4fa04461e12b690112d07c5566` with
+`runtime_source=branch`, `cilium_kpr=true`, and
+`five_node_migration=true`. The Kubernetes single-node round trip passed in
+25m46s, including Cilium Envoy replacement, local workload sandbox recreation,
+and recovery of the running ownerless `restartPolicy: Never` Pod. The K3s
+forward leg passed; return migration rolled back after `StopPodSandbox` for
+sandbox `d348aace...` exhausted two 60-second CRI attempts with
+`DeadlineExceeded` / `RST_STREAM ... CANCEL` while recreating sandboxes after
+Cilium cleanup. The Docker five-node lane passed the forward migration and
+staged all three kubeadm control planes, but the protected API import failed
+after five minutes waiting for staged Node `cp-1` to become Ready. The
+available log does not include its Node conditions or kubelet/Cilium state,
+so the cause is not yet established.
+
+K3s rollback restored the nodestore services, but the subsequent workload
+checkpoint showed no-route-to-host errors for the Kubernetes API ClusterIP
+and local Pod IPs. Cilium's API Service map and BPF LB backend were active, so
+the failing host/Pod datapath path is not identified. The saved run logs are:
+
+- `/tmp/nodemigrate-36778028681-job-110100782824-kubernetes.log`
+- `/tmp/nodemigrate-36778028681-job-110100783277-k3s.log`
+- `/tmp/nodemigrate-36778028681-job-110100783391-docker.log`
+
+No general build or full e2e ran. The exact K3s sandbox teardown failure and
+rollback datapath recovery, plus the staged `cp-1` readiness failure, need a
+combined fix/diagnostic pass before another migration matrix. The current
+worktree preserves existing staged control-plane Node identities instead of
+deleting them before the API import, and includes UID/condition details in a
+Node-readiness timeout; targeted `nodemigrate` quick-check is pending. This
+candidate does not resolve the K3s teardown and rollback datapath failures.
+
 ## Branch migration matrix 36770365252
 
 Migration matrix

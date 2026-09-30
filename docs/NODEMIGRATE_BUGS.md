@@ -2,6 +2,34 @@
 
 Last updated: 2026-09-30
 
+## Migration matrix 36778028681 failures
+
+Branch-built matrix
+[36778028681](https://github.com/centerionware/not-k8s/actions/runs/36778028681)
+passed the upstream Kubernetes round trip and failed its K3s and Docker
+five-node lanes. Logs are saved in `/tmp/nodemigrate-36778028681-job-*.log`.
+
+- **Component: `nodemigrate` K3s CRI/Cilium recovery.** Return migration
+  exhausted two 60-second `StopPodSandbox` attempts for a local workload
+  sandbox after rebuilding Cilium state. The CRI returned `DeadlineExceeded`
+  and `RST_STREAM ... CANCEL`. Rollback restored nodestore services, but the
+  subsequent checkpoint observed no-route-to-host errors for the API
+  ClusterIP and local Pods despite active Cilium service/BPF backend entries.
+  The teardown and rollback datapath causes are unresolved; do not treat the
+  passing Cilium map entries as proof that packet forwarding works.
+- **Component: `nodemigrate` staged kubeadm control-plane return.** The
+  five-node run staged all three retained control planes, then protected API
+  import failed waiting for `cp-1` to become Ready. The captured log lacks its
+  Node conditions and kubelet/Cilium diagnostics. The current worktree keeps
+  the staged Node UID instead of deleting/re-registering it before import and
+  includes condition details in readiness timeout errors. Verify this change
+  with focused CI; the K3s teardown and rollback issues still need a fix before
+  another migration matrix.
+- **Component: `nodemigrate` upstream recovery.** The Kubernetes single-node
+  migration round trip passed with the recent bounded CRI retries, Cilium
+  Envoy restart, and standalone Pod recreation changes. This validates that
+  lane only; it does not close the K3s or multi-control-plane failures.
+
 ## Migration matrix 36770365252 failures
 
 Branch-built matrix

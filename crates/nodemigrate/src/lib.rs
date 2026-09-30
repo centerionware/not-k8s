@@ -1386,7 +1386,6 @@ fn resume_export_import(
         "protected export has no control-plane Node scheduling metadata; export retained at {}",
         export.dir.display()
     );
-    let replace_existing_node = replace_existing_node_requested()?;
     for name in &control_plane_nodes {
         let scheduling_state = export
             .node_state(name)
@@ -1395,8 +1394,15 @@ fn resume_export_import(
             })?
             .clone();
         if target_api.node_exists(name)? {
-            remove_replaced_node(&target_api, name, replace_existing_node)
-                .with_context(|| format!("re-registering staged control-plane Node {name}"))?;
+            // This import resumes a return migration into the original
+            // control plane after stage-target has started its own kubelet.
+            // The same node is already registered in the retained API. Deleting
+            // it here can strand the staged control-plane quorum when the
+            // replacement cannot become Ready before imported cluster state is
+            // restored; preserve its existing UID and let kubelet refresh it.
+            eprintln!(
+                "nodemigrate: preserving existing staged control-plane Node {name} while resuming API import"
+            );
         }
         wait_for_node(&target_api, name)
             .with_context(|| format!("waiting for staged control-plane Node {name}"))?;
@@ -1702,8 +1708,14 @@ fn wait_for_node(target: &transfer::KubeApi, name: &str) -> Result<()> {
         }
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("node {name} did not become Ready")))
-        .context("waiting for the replacement node")
+    let summary = target
+        .node_readiness_summary(name)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "Node is absent or readiness details are unavailable".to_owned());
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("node {name} did not become Ready"))).context(
+        format!("waiting for a Ready Node; last observed state: {summary}"),
+    )
 }
 
 fn wait_for_replacement_node(

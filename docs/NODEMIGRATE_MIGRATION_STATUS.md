@@ -2,6 +2,29 @@
 
 Last updated: 2026-09-30
 
+## Latest branch migration matrix: 36778028681
+
+[Run 36778028681](https://github.com/centerionware/not-k8s/actions/runs/36778028681)
+tested SHA `8eb91e326c534b4fa04461e12b690112d07c5566`. The upstream Kubernetes
+single-node round trip passed, including clean Cilium Envoy recovery and
+standalone workload Pod recreation. K3s forward migration passed, but reverse
+migration failed while stopping CRI sandbox `d348aace...`: two 60-second
+`StopPodSandbox` calls returned `DeadlineExceeded` with a gRPC
+`RST_STREAM ... CANCEL`. Migration safely restored nodestore, but the following
+checkpoint found no-route-to-host failures to `10.43.0.1:443` and local Pod
+IPs. Cilium listed the API ClusterIP backend active in its service and BPF LB
+maps, so the actual packet-path failure remains unconfirmed.
+
+The Docker kubeadm lane migrated the three-control-plane/two-worker cluster to
+nodestore and staged all three kubeadm control planes on return. The final
+protected API import stopped at `waiting for staged control-plane Node cp-1`;
+the Node was not Ready after five minutes. The captured output does not include
+Node conditions or kubelet/Cilium diagnostics for `cp-1`, so no root cause is
+confirmed. Avoid another migration attempt until the K3s teardown/rollback path
+and multi-control-plane readiness failure are addressed together. Logs are in
+`/tmp/nodemigrate-36778028681-job-{110100782824-kubernetes,110100783277-k3s,110100783391-docker}.log`.
+No standard build or full e2e ran.
+
 ## Latest branch migration matrix: 36770365252
 
 [Run 36770365252](https://github.com/centerionware/not-k8s/actions/runs/36770365252)
