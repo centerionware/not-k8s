@@ -286,10 +286,7 @@ async fn bind_pod_once(
             )));
         }
     }
-    if let Some(resource_version) = body
-        .pointer("/metadata/resourceVersion")
-        .and_then(Value::as_str)
-    {
+    if let Some(resource_version) = binding_resource_version(body) {
         if resource_version.parse::<i64>().ok() != Some(existing_kv.mod_revision) {
             return Ok(BindPodAttempt::Complete(BindOutcome::Conflict(
                 BindConflict::ResourceVersionMismatch {
@@ -445,6 +442,38 @@ async fn bind_pod_once(
                 "binding could not be persisted".to_string(),
             ])))
         }
+    }
+}
+
+/// An empty resourceVersion on a Binding carries no optimistic-concurrency
+/// precondition. Schedulers commonly omit it; accepting an explicitly empty
+/// value preserves the same meaning while still enforcing non-empty versions.
+fn binding_resource_version(body: &Value) -> Option<&str> {
+    body.pointer("/metadata/resourceVersion")
+        .and_then(Value::as_str)
+        .filter(|resource_version| !resource_version.is_empty())
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::binding_resource_version;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn empty_or_absent_binding_resource_version_is_not_a_precondition() {
+        for body in [
+            json!({"metadata": {}}),
+            json!({"metadata": {"resourceVersion": ""}}),
+            json!({"metadata": {"resourceVersion": null}}),
+        ] {
+            assert_eq!(binding_resource_version(&body), None);
+        }
+    }
+
+    #[test]
+    fn non_empty_binding_resource_version_remains_a_precondition() {
+        let body: Value = json!({"metadata": {"resourceVersion": "42"}});
+        assert_eq!(binding_resource_version(&body), Some("42"));
     }
 }
 

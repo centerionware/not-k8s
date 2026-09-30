@@ -387,13 +387,13 @@ async fn recreate_node_pod_sandboxes(
     let runtime_endpoint = runtime_endpoint.to_owned();
     let node_name = node_name.to_owned();
     let log_node_name = node_name.clone();
-    let count = tokio::task::spawn_blocking(move || {
+    let (sandbox_count, container_count) = tokio::task::spawn_blocking(move || {
         recreate_pod_sandboxes_for_uids(&runtime_endpoint, &node_name, &pod_uids)
     })
     .await
     .context("joining CRI Pod sandbox recreation task")??;
     eprintln!(
-        "nodemigrate: removed {count} non-host-network Pod sandbox(es) on node {log_node_name} so the runtime can rerun CNI setup against the cleaned Cilium datapath"
+        "nodemigrate: removed {sandbox_count} non-host-network Pod sandbox(es) and {container_count} container record(s) on node {log_node_name} so the runtime can rerun CNI setup against the cleaned Cilium datapath"
     );
     Ok(())
 }
@@ -402,7 +402,7 @@ fn recreate_pod_sandboxes_for_uids(
     runtime_endpoint: &str,
     node_name: &str,
     pod_uids: &BTreeSet<String>,
-) -> Result<usize> {
+) -> Result<(usize, usize)> {
     let output = Command::new("crictl")
         .args(["--runtime-endpoint", runtime_endpoint, "pods", "-o", "json"])
         .output()
@@ -416,27 +416,85 @@ fn recreate_pod_sandboxes_for_uids(
         .context("parsing local CRI Pod sandboxes after Cilium datapath cleanup")?;
     let ids = pod_sandbox_ids_for_uids(&sandboxes, pod_uids);
 
+    let mut removed_containers = 0;
     for id in &ids {
-        for operation in ["stopp", "rmp"] {
-            let operation_name = match operation {
-                "stopp" => "stopping",
-                "rmp" => "removing",
-                _ => operation,
-            };
-            let output = Command::new("crictl")
-                .args(["--runtime-endpoint", runtime_endpoint, operation, id])
+        let stop = Command::new("crictl")
+            .args(["--runtime-endpoint", runtime_endpoint, "stopp", id])
+            .output()
+            .with_context(|| format!("stopping Pod sandbox {id} on node {node_name}"))?;
+        ensure!(
+            stop.status.success(),
+            "crictl stopp failed for Pod sandbox {id} on node {node_name}: {}",
+            String::from_utf8_lossy(&stop.stderr).trim()
+        );
+
+        // CRI implementations may keep the sandbox name reserved until its
+        // containers have been removed. StopPodSandbox does not remove those
+        // container records, so remove them explicitly before RemovePodSandbox
+        // allows nodelet to create a fresh sandbox with the same Pod UID/name.
+        let containers_output = Command::new("crictl")
+            .args([
+                "--runtime-endpoint",
+                runtime_endpoint,
+                "ps",
+                "-a",
+                "-o",
+                "json",
+            ])
+            .output()
+            .with_context(|| format!("listing containers in Pod sandbox {id}"))?;
+        ensure!(
+            containers_output.status.success(),
+            "crictl could not list containers in Pod sandbox {id} on node {node_name}: {}",
+            String::from_utf8_lossy(&containers_output.stderr).trim()
+        );
+        let containers: Value = serde_json::from_slice(&containers_output.stdout)
+            .context("parsing local CRI containers after stopping a Pod sandbox")?;
+        for container_id in container_ids_for_sandbox(&containers, id) {
+            let remove = Command::new("crictl")
+                .args(["--runtime-endpoint", runtime_endpoint, "rm", &container_id])
                 .output()
                 .with_context(|| {
-                    format!("{operation_name} Pod sandbox {id} on node {node_name}")
+                    format!("removing container {container_id} from Pod sandbox {id}")
                 })?;
             ensure!(
-                output.status.success(),
-                "crictl {operation} failed for Pod sandbox {id} on node {node_name}: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
+                remove.status.success(),
+                "crictl rm failed for container {container_id} in Pod sandbox {id} on node {node_name}: {}",
+                String::from_utf8_lossy(&remove.stderr).trim()
             );
+            removed_containers += 1;
         }
+
+        let remove = Command::new("crictl")
+            .args(["--runtime-endpoint", runtime_endpoint, "rmp", id])
+            .output()
+            .with_context(|| format!("removing Pod sandbox {id} on node {node_name}"))?;
+        ensure!(
+            remove.status.success(),
+            "crictl rmp failed for Pod sandbox {id} on node {node_name}: {}",
+            String::from_utf8_lossy(&remove.stderr).trim()
+        );
     }
-    Ok(ids.len())
+    Ok((ids.len(), removed_containers))
+}
+
+fn container_ids_for_sandbox(containers: &Value, sandbox_id: &str) -> Vec<String> {
+    containers
+        .get("containers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|container| {
+            container.get("podSandboxId").and_then(Value::as_str) == Some(sandbox_id)
+        })
+        .filter_map(|container| {
+            container
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        })
+        .collect()
 }
 
 fn node_pod_uids_requiring_cni(pods: &[Pod], node_name: &str) -> BTreeSet<String> {
@@ -4157,7 +4215,7 @@ mod tests {
         can_preserve_existing_crd, crd_metadata_merge_patch, crd_schema_matches,
         custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
         namespace_ca_bundle_matches, node_is_ready_replacement, node_scheduling_patch, object_rank,
-        node_pod_uids_requiring_cni, pod_sandbox_ids_for_uids,
+        container_ids_for_sandbox, node_pod_uids_requiring_cni, pod_sandbox_ids_for_uids,
         node_uid_has_been_replaced, object_skip_reason, object_type_label,
         owner_reference_repair_patch, parse_cilium_kube_proxy_replacement,
         persistent_host_paths, pod_status_is_terminal_or_exited, prepare_initial_import_object,
@@ -5402,6 +5460,22 @@ current-context: test
             pod_sandbox_ids_for_uids(&sandboxes, &pod_uids),
             vec!["web-sandbox".to_owned()]
         );
+    }
+
+    #[test]
+    fn cilium_reset_removes_containers_before_releasing_sandbox_names() {
+        let containers = serde_json::json!({"containers": [
+            {"id": "container-a", "podSandboxId": "sandbox-a"},
+            {"id": "container-b", "podSandboxId": "sandbox-a"},
+            {"id": "container-other", "podSandboxId": "sandbox-b"},
+            {"podSandboxId": "sandbox-a"}
+        ]});
+
+        assert_eq!(
+            container_ids_for_sandbox(&containers, "sandbox-a"),
+            vec!["container-a".to_owned(), "container-b".to_owned()]
+        );
+        assert!(container_ids_for_sandbox(&containers, "missing").is_empty());
     }
 
     #[test]

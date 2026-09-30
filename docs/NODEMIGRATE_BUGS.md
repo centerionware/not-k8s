@@ -2,10 +2,10 @@
 
 Last updated: 2026-09-30
 
-## Active fix batch (focused CI passed; migration defects under repair)
+## Active fix batch (migration defects under repair)
 
 Open PR #591 now includes commit
-`f514e61af89451771dc4616aa88b98977f4a69c2` on
+`a98e08ecba46908c8383980e7f9fc731efcbe60e` on
 `feat/nodemigrate-migration`. Focused quick-check
 [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
 failed while compiling `nodemigrate`; Nodelet passed 390 non-CRI and 1216
@@ -29,6 +29,25 @@ five-node lane enabled. K3s passed its round trip. Upstream safely rolled back
 after a Cilium readiness deadline, and the five-node fixture failed before
 nodemigrate ran. Commit `f514e61a` addresses the fixture failure and adds
 Nodelet diagnostics for the still-unconfirmed upstream CRI file-mount error.
+
+Migration run
+[36684339965](https://github.com/centerionware/not-k8s/actions/runs/36684339965)
+failed in all lanes. K3s and upstream reached nodestore, then their CoreDNS
+Pods failed readiness. Scheduler events report binding conflicts with an
+empty requested resourceVersion. The nodeapiserver binding path treated an
+explicitly empty value as a stale precondition; the current unverified fix
+treats it as omitted and adds focused tests. The upstream artifact also shows
+nodelet sandbox recreation rejected by CRI name reservations held by earlier
+sandbox IDs, despite nodemigrate reporting its sandbox-removal pass. Docker
+completed the forward nodestore checks and reverse migrations, but its
+returned-cluster CSI rollout timed out. The final snapshot showed CSI and
+workload Pods Unknown while Nodes were Ready. Earlier `cni plugin not
+initialized` reports on cp-2 preceded Cilium readiness and are not confirmed as
+the final Docker cause. The CSI/Pod status and CRI name-reservation failures
+remain unresolved. The worktree cleanup now stops each selected sandbox,
+removes its child CRI containers, then removes the sandbox so the runtime can
+release its generated name; focused CI is pending. No migration rerun has been
+dispatched. Artifacts are in `/tmp/nodemigrate-36684339965-artifacts/`.
 
 - Cilium cleanup now tracks the replacement Pod UID, cleanup-init exit code,
   and a continuous Ready interval for that same Pod. Each loop checks its

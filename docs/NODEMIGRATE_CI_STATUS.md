@@ -7,17 +7,36 @@ Last updated: 2026-09-30
 The selected checkout is `/workspace/not-k8s`, branch
 `feat/nodemigrate-migration`, with open [PR #591](https://github.com/centerionware/not-k8s/pull/591)
 against `main`. The pushed PR head is
-`6c8ce932d509e8a4744f4ce3c6b7723a372da77a`. At this SHA, PR-triggered
-nodemigrate script validation passed in [36683529226](https://github.com/centerionware/not-k8s/actions/runs/36683529226);
-the migration matrix was skipped because it runs only on explicit dispatch.
-The first targeted crate check, [36683529231](https://github.com/centerionware/not-k8s/actions/runs/36683529231),
-failed on three destination Cilium calls referencing an out-of-scope `target`
-and a moved `node_name` in the sandbox recreation task. The working tree now
-uses the destination CRI default/override for those forward migrations and
-keeps a separate node-name copy for logging. Changes are not yet rechecked;
-do not start another migration until the targeted compile/tests pass. The
-push-triggered validation passed shell syntax and snapshot/Helm/API/diagnostic
-checks; regular build and general e2e were not run.
+`a98e08ecba46908c8383980e7f9fc731efcbe60e`. On prior SHA
+`6c8ce932d509e8a4744f4ce3c6b7723a372da77a`, PR script validation passed in
+[36683529226](https://github.com/centerionware/not-k8s/actions/runs/36683529226),
+but targeted crate check [36683529231](https://github.com/centerionware/not-k8s/actions/runs/36683529231)
+found three out-of-scope destination runtime endpoint references and a moved
+`node_name`. Those were fixed on the current SHA. Targeted `nodemigrate` crate
+tests passed in [36684065687](https://github.com/centerionware/not-k8s/actions/runs/36684065687)
+(job `109785810056`); script validation passed in
+[36684065519](https://github.com/centerionware/not-k8s/actions/runs/36684065519)
+(job `109785762345`). Migration run
+[36684339965](https://github.com/centerionware/not-k8s/actions/runs/36684339965)
+failed all three migration lanes at that SHA with `runtime_source=branch`,
+Cilium KPR, and five-node migration enabled. K3s job `109786622039` and
+upstream job `109786622052` timed out waiting for CoreDNS at the nodestore
+stage; both captured repeated Pod binding failures reporting an empty requested
+resourceVersion against a non-empty current version. Docker job
+`109786621877` reached the returned-cluster CSI reinstall, then timed out
+waiting for the hostpath plugin StatefulSet; the diagnostic snapshot showed
+Pods Unknown while Nodes were Ready. Initial kubelet CNI-not-initialized
+messages on cp-2 later gave way to Ready Cilium agents, so they are not yet
+confirmed as the final Docker cause. Artifacts and complete job logs are in
+`/tmp/nodemigrate-36684339965-artifacts/` and
+`/tmp/nodemigrate-36684339965-{k3s,kubernetes,docker}.log`. A focused
+nodeapiserver change now treats an empty Binding `resourceVersion` as absent;
+the nodemigrate Cilium reset now removes stopped sandbox child containers
+before removing each sandbox, addressing containerd's observed lingering-name
+reservation. Focused quick-check for `nodeapiserver,nodemigrate` is pending.
+The regular build gate and general e2e remain skipped. Do not dispatch another
+migration run until the Docker CSI/status failure is understood and the whole
+fix batch passes focused CI.
 
 Earlier migration history: the pushed PR head was
 `f514e61af89451771dc4616aa88b98977f4a69c2`; it covered Cilium replacement

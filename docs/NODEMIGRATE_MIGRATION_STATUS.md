@@ -5,18 +5,36 @@ Last updated: 2026-09-30
 ## Active worktree candidate
 
 PR #591 remains open on `feat/nodemigrate-migration`, now at
-`6c8ce932d509e8a4744f4ce3c6b7723a372da77a`. The pushed batch includes
+`a98e08ecba46908c8383980e7f9fc731efcbe60e`. The pushed batch includes
 local non-host-network sandbox recreation after Cilium datapath cleanup and
 the five-node fixture image/probe fixes. PR script validation passed at this
 SHA in [36683529226](https://github.com/centerionware/not-k8s/actions/runs/36683529226);
 the actual migration jobs were skipped by the PR event. Targeted crate tests
 in [36683529231](https://github.com/centerionware/not-k8s/actions/runs/36683529231)
 found three out-of-scope runtime endpoint references and a moved node-name
-value. The working-tree fixes are pending checks: forward destination Cilium
-reset uses the configured/default destination CRI endpoint, and the sandbox
-task retains a separate node name for logging. The CI warning about an
-unnecessary completion flag was also removed. Re-run targeted checks before
-dispatching another migration matrix. No regular build or general e2e gate ran.
+value. These were fixed in `a98e08ecba46908c8383980e7f9fc731efcbe60e`;
+forward destination Cilium reset uses the configured/default destination CRI
+endpoint, the sandbox task retains a separate node name for logging, and the
+warning about an unnecessary completion flag was removed. Targeted crate tests
+passed in [36684065687](https://github.com/centerionware/not-k8s/actions/runs/36684065687)
+(job `109785810056`); script validation passed in
+[36684065519](https://github.com/centerionware/not-k8s/actions/runs/36684065519)
+(job `109785762345`). Migration run
+[36684339965](https://github.com/centerionware/not-k8s/actions/runs/36684339965)
+failed at this SHA in K3s job `109786622039`, upstream job `109786622052`,
+and Docker job `109786621877`. The two single-node lanes reached nodestore and
+failed their CoreDNS readiness checks; captured scheduler events show repeated
+binding conflicts with an empty requested resourceVersion. The local
+nodeapiserver change now interprets empty Binding resourceVersion as omitted,
+with focused CI pending. Docker completed migration to nodestore and began the
+return path, but the returned-cluster hostpath CSI StatefulSet did not roll
+out; its final diagnostic snapshot showed widespread Unknown Pod status despite
+Ready Nodes. Logs also prove the post-Cilium sandbox recreation attempts hit
+containerd name reservations held by earlier sandbox IDs. The worktree now
+stops and removes child containers before removing each old sandbox; focused
+CI is pending. The Docker CSI/Pod-status failure remains unresolved; no
+migration rerun has been dispatched. Logs and artifacts are saved under
+`/tmp/nodemigrate-36684339965-*`. No regular build or general e2e gate ran.
 
 Earlier focused quick-check [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
 passed both Nodelet test configurations (390 non-CRI, 1216 CRI) but failed
