@@ -4324,8 +4324,11 @@ state, including when cleanup fails. Quick-check
 [36753849376](https://github.com/centerionware/not-k8s/actions/runs/36753849376)
 failed compiling the new tests because two generic `Result` values needed
 explicit `()` result types; those annotations are now added and a focused retry
-is pending. Do not retry migration until quick-check passes. Cilium Socket LB
-recovery has runtime evidence through agent readiness and link reattachment,
+passed at SHA `7f7e7572` in
+[36754232529](https://github.com/centerionware/not-k8s/actions/runs/36754232529),
+including the new pause/resume failure-path tests. The migration matrix can now
+verify the fix at runtime. Cilium Socket LB recovery has runtime evidence
+through agent readiness and link reattachment,
 but end-to-end workload recovery remains unverified because cleanup then failed
 at this race. Saved logs: `/tmp/nodemigrate-36749494255-*` and
 `/tmp/nodemigrate-36753849376-quick-check.log`.
