@@ -1231,11 +1231,14 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, sweep: &mut RelistSweep
             let key = pod_key(&pod);
             sweep.observe(&key);
             let previous = mirror.pods.insert(key.clone(), pod.clone());
-            if let Some(old) = previous.as_ref().filter(|old| old.uid != pod.uid) {
+            if let Some(old) = previous
+                .as_ref()
+                .filter(|old| old.metadata.uid != pod.metadata.uid)
+            {
                 tracing::info!(
                     pod = %key,
-                    old_uid = ?old.uid,
-                    new_uid = ?pod.uid,
+                    old_uid = ?old.metadata.uid,
+                    new_uid = ?pod.metadata.uid,
                     "replacing same-name pod with a new UID"
                 );
                 // A same-name replacement is a new scheduling identity. Clear
@@ -1356,7 +1359,7 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, sweep: &mut RelistSweep
             let stale_delete = mirror
                 .pods
                 .get(&key)
-                .is_some_and(|current| current.uid != pod.uid);
+                .is_some_and(|current| current.metadata.uid != pod.metadata.uid);
             if !stale_delete {
                 sweep.forget(&key);
                 mirror.pods.remove(&key);
@@ -1859,7 +1862,7 @@ mod tests {
             mirror
                 .pods
                 .get("default/stable")
-                .and_then(|pod| pod.uid.as_deref()),
+                .and_then(|pod| pod.metadata.uid.as_deref()),
             Some("new-uid"),
             "a delayed delete for the old UID must not remove the replacement from the mirror"
         );

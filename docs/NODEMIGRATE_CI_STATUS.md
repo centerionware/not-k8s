@@ -49,8 +49,12 @@ does not explain this run; its test-only UID edit has been reverted. A likely
 producer-side defect is now covered in `nodescheduler`: same-name/new-UID Pod
 replacement could leave the old UID queued, and a delayed Delete could evict
 the replacement from the mirror. A focused replacement regression and
-`nodescheduler` quick-check are pending. Do not start another migration run
-until the known issue batch has actionable fixes and focused checks pass.
+`nodescheduler` quick-check are pending. Its first run, [36663572463](https://github.com/centerionware/not-k8s/actions/runs/36663572463),
+found that the implementation used a nonexistent top-level Pod UID field;
+all reported compiler errors had that same cause. The code now reads
+`metadata.uid`; the corrected focused check is pending. Do not start another
+migration run until the known issue batch has actionable fixes and focused
+checks pass.
 
 ## 2026-09-30 migration run 36656072014
 
