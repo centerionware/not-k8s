@@ -37,8 +37,9 @@ under `/tmp/nodemigrate-36650426292-{kubernetes,k3s,docker}.log`.
 - **Timeout scope.** The Docker step is an aggregate five-node scenario with
   multiple migrations. Each individual nodemigrate process is capped at 30
   minutes; the aggregate step retains a larger window to finish all node and
-  return checkpoints. Single-node migration jobs have a 30-minute job and step
-  cap. Focused `nodeapiserver,nodelet` quick-check passed at SHA `f6e7e4d6`
+  return checkpoints. Single-node migration jobs cap the migration step at 30
+  minutes and the full job at 60 minutes to allow setup/build time. Focused
+  `nodeapiserver,nodelet` quick-check passed at SHA `f6e7e4d6`
   in [run 36655430632](https://github.com/centerionware/not-k8s/actions/runs/36655430632).
   The migration-specific rerun can now validate both runtime fixes.
 
