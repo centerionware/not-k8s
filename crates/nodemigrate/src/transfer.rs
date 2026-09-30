@@ -1118,14 +1118,16 @@ impl KubeApi {
                     } else {
                         ready_since = None;
                     }
+                    if tokio::time::Instant::now() >= deadline {
+                        bail!(
+                            "Cilium clean-cilium-state did not complete and the replacement agent did not remain Ready on node {node_name}; last failed init: {}",
+                            cleanup_init_failure_details
+                                .as_deref()
+                                .unwrap_or("no failed init attempt was reported")
+                        );
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
-                if tokio::time::Instant::now() >= deadline {
-                    bail!(
-                        "Cilium clean-cilium-state did not complete and the replacement agent did not remain Ready on node {node_name}; last failed init: {}",
-                        cleanup_init_failure_details.as_deref().unwrap_or("no failed init attempt was reported")
-                    );
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
             .await;
 

@@ -2,6 +2,41 @@
 
 Last updated: 2026-09-30
 
+## Findings from migration run 36664092690
+
+Run [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690)
+tested SHA `18520d8ddb360e01bf2aa665c65cce22390762fb` with branch-built
+components, Cilium KPR, and the five-node path. The K3s forward/return round
+trip passed in 25m21s. Full logs are saved under
+`/tmp/nodemigrate-36664092690-{kubernetes,docker}.log` and downloaded
+artifacts under `/tmp/nodemigrate-36664092690-artifacts/`.
+
+- **Component: nodemigrate Cilium cleanup wait.** The upstream job ended when
+  its 60-minute migration step timeout fired, not because GitHub or the user
+  canceled it. The log stopped after the replacement Cilium Pod appeared.
+  Inspection found the five-minute deadline check and sleep after an
+  unconditional `loop`, making both unreachable; the Rust compiler emitted an
+  `unreachable statement` warning. The loop now checks the deadline and sleeps
+  on each unsuccessful iteration. Focused nodemigrate checks are pending.
+- **Component: five-node hostpath CSI placement.** Docker preflight reached
+  workload checks, but `migration-stateful-0` stayed Pending: both fixture PVs
+  were topologically pinned to `worker-1` while the imported
+  `csi-hostpathplugin-0` ran on `worker-2`. Nodelet on worker-1 consequently
+  could not find a local hostpath CSI driver. The five-node fixture now pins
+  the CSI StatefulSet to the fixture PV topology node at source, nodestore, and
+  returned checkpoints. The source setting is captured for migration and
+  reasserted after fixture reinstall. Shell validation and migration-specific
+  verification are pending.
+- **Timeout interpretation.** The earlier 30-minute whole-job limit was
+  insufficient: the healthy K3s round trip alone took 25m21s, before setup,
+  builds, and final checks. The current single-node job allows 90 minutes and
+  the migration step 60 minutes. The upstream lane hit the 60-minute step cap
+  because of the confirmed infinite loop above; timeout increases alone would
+  only conceal that defect.
+
+No general e2e or regular build gate ran. Do not retry the migration matrix
+until the focused fixes pass.
+
 ## Findings from migration run 36656072014
 
 Run [36656072014](https://github.com/centerionware/not-k8s/actions/runs/36656072014)

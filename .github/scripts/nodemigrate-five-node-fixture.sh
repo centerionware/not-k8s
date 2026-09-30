@@ -18,6 +18,7 @@ case "${1:?use source, nodestore, or returned}" in
     source)
         install_hostpath_driver /var/lib/kubelet
         install_workloads
+        pin_hostpath_driver_to_fixture_volumes
         verify_stage source "$SOURCE_KUBECONFIG"
         capture_source_csi_device_volume
         ;;
@@ -27,6 +28,7 @@ case "${1:?use source, nodestore, or returned}" in
         export KUBECONFIG="$local_target_kubeconfig"
         assert_csi_device_volume_matches_source "$local_target_kubeconfig" after-forward-migration
         install_hostpath_driver /var/lib/nodelet true
+        pin_hostpath_driver_to_fixture_volumes
         restore_csi_device_volume_after_fixture_reinstall "$local_target_kubeconfig" nodestore
         verify_stage nodestore "$local_target_kubeconfig"
         assert_migratable_api_objects_retained source nodestore
@@ -36,6 +38,7 @@ case "${1:?use source, nodestore, or returned}" in
         export KUBECONFIG="$SOURCE_KUBECONFIG"
         assert_csi_device_volume_matches_source "$SOURCE_KUBECONFIG" after-return-migration
         install_hostpath_driver /var/lib/kubelet true
+        pin_hostpath_driver_to_fixture_volumes
         restore_csi_device_volume_after_fixture_reinstall "$SOURCE_KUBECONFIG" returned
         verify_stage returned "$SOURCE_KUBECONFIG"
         assert_round_trip_unchanged

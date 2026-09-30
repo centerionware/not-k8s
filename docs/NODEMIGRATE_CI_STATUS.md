@@ -4,7 +4,30 @@ Last updated: 2026-09-30
 
 ## Current gate
 
-The latest migration run is [36656072014](https://github.com/centerionware/not-k8s/actions/runs/36656072014)
+The latest migration run is [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690)
+at SHA `18520d8ddb360e01bf2aa665c65cce22390762fb`, with branch runtime,
+Cilium KPR, and five-node migration enabled. K3s passed both migration
+directions and all checkpoints in 25m21s (job `109724942137`). Upstream
+Kubernetes job `109724942094` hit its configured 60-minute `Run migration`
+step timeout; neither the user nor an agent canceled it. Docker five-node job
+`109724941831` failed its StatefulSet rollout because hostpath CSI ran on
+worker-2 while both fixture PVs were pinned to worker-1. This proves a
+30-minute whole-job cap is too short for healthy K3s, while the upstream
+60-minute timeout was caused by an infinite loop in Cilium cleanup rather than
+a healthy migration needing more time.
+
+The Cilium loop now checks its deadline on each iteration. The five-node
+fixture now pins hostpath CSI to the fixture PV topology node at source,
+nodestore, and returned stages. Full logs are saved at
+`/tmp/nodemigrate-36664092690-kubernetes.log` and
+`/tmp/nodemigrate-36664092690-docker.log`; downloaded artifacts are under
+`/tmp/nodemigrate-36664092690-artifacts/`. Script syntax and whitespace checks
+passed locally. Focused CI checks are pending; no general e2e or regular build
+gate ran. Do not start another migration run until focused checks pass.
+
+Earlier status:
+
+Run [36656072014](https://github.com/centerionware/not-k8s/actions/runs/36656072014)
 at SHA `346fb0f7d16267f97c772ce0d872cb8de05522c9`. Upstream Kubernetes failed
 its nodestore workload checkpoint after 233 Pod binding HTTP 409 responses
 across 24 Pods; the internal storage-conflict retry did not remove the
@@ -59,13 +82,10 @@ found that the implementation used a nonexistent top-level Pod UID field;
 all reported compiler errors had that same cause and were fixed by reading
 `metadata.uid`.
 
-Migration validation [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690)
-is now running at that SHA with `runtime_source=branch`, Cilium KPR, and the
-five-node migration enabled. The single-node job allows 90 minutes with a
-60-minute migration step; the five-node job allows 360 minutes with a
-180-minute probe step. No full general e2e or regular build gate was run.
-The K3s lane passed its complete forward/return migration in 25m21s (job
-`109724942137`). Upstream and Docker remain active.
+At that time, migration validation [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690)
+was active at SHA `18520d8ddb360e01bf2aa665c65cce22390762fb` with
+`runtime_source=branch`, Cilium KPR, and five-node migration enabled. Its
+completed results are recorded at the top of this document.
 
 ## 2026-09-30 migration run 36656072014
 

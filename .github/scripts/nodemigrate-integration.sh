@@ -1340,7 +1340,7 @@ pin_hostpath_driver_to_fixture_volumes() {
         return 1
     }
     [[ "$(wc -l <<<"$topology_nodes")" -eq 1 ]] || {
-        echo "single-node hostpath CSI fixture volumes span multiple nodes: $topology_nodes" >&2
+        echo "fixture hostpath CSI volumes span multiple topology nodes: $topology_nodes" >&2
         return 1
     }
     node="$topology_nodes"
@@ -1368,7 +1368,7 @@ pin_hostpath_driver_to_fixture_volumes() {
         ' <<<"$plugin_json")" -o wide >&2 || true
         return 1
     }
-    echo "PASS: single-node hostpath CSI fixture and PVC volumes share topology node $node"
+    echo "PASS: hostpath CSI driver and fixture PVs use topology node $node"
 }
 
 apply_fixture_manifest_with_conflict_retry() {

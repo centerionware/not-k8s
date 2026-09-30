@@ -2,7 +2,27 @@
 
 Last updated: 2026-09-30
 
-## Latest completed run: 36656072014
+## Latest completed run: 36664092690
+
+Run [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690)
+tested SHA `18520d8ddb360e01bf2aa665c65cce22390762fb` with branch-built
+components, Cilium KPR, and the five-node migration path. K3s passed its full
+forward/return migration and checkpoints in 25m21s. Upstream Kubernetes hit
+the 60-minute migration-step timeout because Cilium cleanup contained an
+unreachable deadline check after an infinite loop; this is corrected in the
+working tree and needs focused checks. Docker five-node failed because
+hostpath CSI ran on worker-2 while both fixture PVs were pinned to worker-1;
+the fixture now aligns driver placement with PV topology at each stage. Logs
+are saved under `/tmp/nodemigrate-36664092690-{kubernetes,docker}.log`, with
+downloaded artifacts under `/tmp/nodemigrate-36664092690-artifacts/`.
+
+The prior 30-minute whole-job cap proved too short for K3s: migration alone
+took 25m21s, before setup, builds, and checks. The current allowance is 90
+minutes per single-node job and 60 minutes for its migration step. Focused
+checks are pending. No general e2e or regular build gate ran, and a migration
+rerun waits for those checks.
+
+## Earlier completed run: 36656072014
 
 At tested SHA `346fb0f7d16267f97c772ce0d872cb8de05522c9`, the upstream lane
 failed after 233 Pod binding HTTP 409s across 24 Pods; the internal-CAS retry
