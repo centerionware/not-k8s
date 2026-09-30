@@ -307,6 +307,9 @@ fn migrate_to_nodestore(
     if !request.skip_api_import {
         eprintln!("nodemigrate: importing protected Kubernetes API export into destination");
         if let Err(error) = target_api.import(&export) {
+            eprintln!(
+                "nodemigrate: protected Kubernetes API import failed; starting source rollback: {error:#}"
+            );
             return Err(rollback(error.context(
                 "destination bootstrap succeeded but Kubernetes object import failed",
             )));
@@ -503,13 +506,16 @@ fn rollback_forward_migration(
     cause: anyhow::Error,
 ) -> anyhow::Error {
     let recovery = export.dir.display();
+    eprintln!("nodemigrate: stopping the partial destination before source rollback");
     if let Err(stop_error) = service::stop_nodestore_for_rollback(source) {
         return cause.context(format!(
             "stopping the partial nodestore stack failed ({stop_error:#}); source remains disabled; protected export retained at {recovery}"
         ));
     }
+    eprintln!("nodemigrate: partial destination services stopped; restoring snapshotted paths");
     let host_path_error = export.restore_host_paths().err();
     let cni_path_error = export.restore_k3s_cni_paths().err();
+    eprintln!("nodemigrate: restoring the original source service");
     if let Err(restore_error) = service::restore(source, previous_service) {
         return cause.context(format!(
             "source service restoration failed ({restore_error:#}); source remains disabled; partial nodestore services were stopped; PV restore error={host_path_error:#?}; CNI restore error={cni_path_error:#?}; protected export retained at {recovery}"
@@ -520,6 +526,7 @@ fn rollback_forward_migration(
             "partial nodestore services were stopped and the source service was restored, but PV restore error={host_path_error:#?}; CNI restore error={cni_path_error:#?}; protected export retained at {recovery}"
         ));
     }
+    eprintln!("nodemigrate: original source service restored after migration failure");
     cause.context(format!(
         "source service was restored after rollback; partial nodestore services were stopped; source PV and CNI data were restored; protected export retained at {recovery}"
     ))

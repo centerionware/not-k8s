@@ -14,9 +14,9 @@ logs are saved once under `/tmp/nodemigrate-36644181073-*.log`.
   runtime shutdown returned immediately. The lane then made no visible
   progress before the 30-minute migration cap. In forward migration, the next
   operation after import is Cilium host-state cleanup. The current branch adds
-  boundary logs around that operation and node rollback so the next focused
-  run identifies the exact stage. The suspected Cilium cleanup stall is not
-  confirmed yet.
+  boundaries around import, Cilium cleanup, and source rollback so the next
+  focused run identifies the exact stage. The suspected Cilium cleanup stall
+  is not confirmed yet.
 - **Component: returned K3s Cilium/CSI path.** Forward and return migration
   completed, Cilium's replacement agent remained Ready, and the returned K3s
   audit and preserved CSI volume assertion passed. Reinstalling the upstream
