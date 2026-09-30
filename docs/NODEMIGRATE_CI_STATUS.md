@@ -39,22 +39,31 @@ passed `nodeapiserver,nodelet` at `f6e7e4d6`, including CRI-enabled Nodelet.
 
 The latest run's five-node Docker failure was an HTTP 409 while the fixture
 patched the imported HostPath CSI StatefulSet during a concurrent controller
-status update. A retry that rereads the StatefulSet is now in the script; shell
-validation is pending. Its worker-2 Cilium CNI ADD failure recovered by the
-final diagnostic snapshot (`migration-daemon` was `1/1 Running`). The upstream
+status update. A retry that rereads the StatefulSet is now in the script;
+workflow validation passed in
+[run 36663804059](https://github.com/centerionware/not-k8s/actions/runs/36663804059).
+Its worker-2 Cilium CNI ADD failure recovered by the final diagnostic snapshot
+(`migration-daemon` was `1/1 Running`). The upstream
 The exact 409 cause remains unverified because the run predates the
 reason-specific responses. Inspection confirms the active `nodescheduler`
 Binding client sends JSON with the Pod UID, so the protobuf-decoding hypothesis
 does not explain this run; its test-only UID edit has been reverted. A likely
 producer-side defect is now covered in `nodescheduler`: same-name/new-UID Pod
 replacement could leave the old UID queued, and a delayed Delete could evict
-the replacement from the mirror. A focused replacement regression and
-`nodescheduler` quick-check are pending. Its first run, [36663572463](https://github.com/centerionware/not-k8s/actions/runs/36663572463),
+the replacement from the mirror. The replacement/relist regression and
+`nodescheduler` quick-check passed at SHA
+`18520d8ddb360e01bf2aa665c65cce22390762fb` in
+[run 36663804244](https://github.com/centerionware/not-k8s/actions/runs/36663804244).
+The first quick-check, [36663572463](https://github.com/centerionware/not-k8s/actions/runs/36663572463),
 found that the implementation used a nonexistent top-level Pod UID field;
-all reported compiler errors had that same cause. The code now reads
-`metadata.uid`; the corrected focused check is pending. Do not start another
-migration run until the known issue batch has actionable fixes and focused
-checks pass.
+all reported compiler errors had that same cause and were fixed by reading
+`metadata.uid`.
+
+Migration validation [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690)
+is now running at that SHA with `runtime_source=branch`, Cilium KPR, and the
+five-node migration enabled. The single-node job allows 90 minutes with a
+60-minute migration step; the five-node job allows 360 minutes with a
+180-minute probe step. No full general e2e or regular build gate was run.
 
 ## 2026-09-30 migration run 36656072014
 

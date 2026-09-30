@@ -25,8 +25,12 @@ Cilium KPR, and the five-node migration path. Full lane logs are saved under
   scheduler-side cause is same-name Pod replacement leaving the old UID in
   the scheduling queue. The watch path now removes all old-UID state before
   routing a replacement and ignores stale Deletes when updating the mirror.
-  A deterministic regression covers replacement and delayed Delete ordering;
-  targeted `nodescheduler` CI and migration runtime confirmation are pending.
+  The deterministic replacement/relist regression and `nodescheduler`
+  quick-check passed at SHA `18520d8ddb360e01bf2aa665c65cce22390762fb` in
+  [run 36663804244](https://github.com/centerionware/not-k8s/actions/runs/36663804244).
+  Migration run [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690)
+  is testing whether this mechanism accounts for the observed 409s; it is
+  plausible but is not yet tied to every conflict in the prior run.
   Focused `nodeapiserver` quick-check passed at SHA
   `ab4d1778ebed1f948e17614140b9a771543e3813` in
   [run 36661272533](https://github.com/centerionware/not-k8s/actions/runs/36661272533).

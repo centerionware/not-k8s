@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-30
 
-## Latest run: 36656072014
+## Latest completed run: 36656072014
 
 At tested SHA `346fb0f7d16267f97c772ce0d872cb8de05522c9`, the upstream lane
 failed after 233 Pod binding HTTP 409s across 24 Pods; the internal-CAS retry
@@ -21,15 +21,22 @@ The focused quick-check [36661272533](https://github.com/centerionware/not-k8s/a
 passed `nodeapiserver` at `ab4d1778`, including the binding-conflict
 diagnostic change. The active Rust scheduler sends JSON Bindings with the Pod
 UID, so the protobuf theory was inapplicable and its test-only UID edit has
-been reverted. A likely scheduler-side same-name/new-UID stale-queue cause is
-now fixed with a regression; its focused quick-check is pending. The CSI
-StatefulSet patch retry is also pending shell validation. The worker-2 Cilium
-CNI error recovered in the final snapshot; the five-node lane's terminal
-failure was the CSI StatefulSet patch conflict. No general e2e or regular
-build gate ran. Further migration testing waits until the encountered runtime
-failures have actionable fixes and focused checks pass. See
-[CI status](NODEMIGRATE_CI_STATUS.md) and the
-[bug tracker](NODEMIGRATE_BUGS.md).
+been reverted. The scheduler same-name/new-UID fix and regression passed
+focused quick-check at `18520d8d` in
+[run 36663804244](https://github.com/centerionware/not-k8s/actions/runs/36663804244).
+The CSI fixture retry, nodemigrate crate tests, and packaging validation also
+passed at that SHA in runs [36663804059](https://github.com/centerionware/not-k8s/actions/runs/36663804059),
+[36663804174](https://github.com/centerionware/not-k8s/actions/runs/36663804174),
+and [36663804224](https://github.com/centerionware/not-k8s/actions/runs/36663804224).
+
+Migration validation [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690)
+is running against the branch-built runtime with Cilium KPR and the five-node
+path enabled. It includes K3s and upstream single-node round trips plus the
+three-control-plane/two-worker path. The workflow allows 90 minutes per
+single-node job (60 minutes for its migration step), and 360 minutes for the
+five-node job (180 minutes for its probe step). No general e2e or regular
+build gate ran. See [CI status](NODEMIGRATE_CI_STATUS.md) and the
+[bug tracker](NODEMIGRATE_BUGS.md) for results as they arrive.
 
 The first focused quick-check [36654928410](https://github.com/centerionware/not-k8s/actions/runs/36654928410)
 found an ownership mismatch in the new Nodelet resource snapshot helper after
