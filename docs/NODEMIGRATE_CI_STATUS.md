@@ -2,6 +2,21 @@
 
 Last updated: 2026-09-30
 
+## Cilium stale-link recovery fix
+
+The controlled diagnostic [36744527476](https://github.com/centerionware/not-k8s/actions/runs/36744527476)
+passed at SHA `9c77010cb992e6f051b4868ba4c3635bd34d1128` (job
+`109987219369`). With migration disabled, it removed only the pinned Cilium
+Socket LB links under `/sys/fs/bpf/cilium/socketlb/links/cgroup`, restarted
+the agent, and observed replacement links targeting cgroup ID `1`; the API
+ClusterIP probe recovered. The run explicitly skipped migration, Docker
+preflight, and general validation. `nodemigrate::reset_cilium_agent_state`
+now applies this same targeted unpin-and-agent-reattach recovery after
+`clean-cilium-state`, then recreates the local non-host-network Pod sandboxes.
+Focused nodemigrate quick-check is pending before any migration retry. Logs:
+`/tmp/nodemigrate-36744527476-k3s-probe-job.log` and
+`/tmp/nodemigrate-36744527476-artifact/nodemigrate-k3s-cilium-restart-36744527476/nodemigrate-k3s-cilium-restart.log`.
+
 ## Clean-state Cilium diagnostic
 
 Mapped-link experiment [36741671607](https://github.com/centerionware/not-k8s/actions/runs/36741671607)

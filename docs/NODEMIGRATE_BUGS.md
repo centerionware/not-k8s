@@ -43,13 +43,13 @@ SYN to `10.43.0.1:443` was observed `to stack`; the service map still listed
 active backend `10.1.0.160:6443`, and the direct-backend probe passed. Cilium
 also dropped replies addressed to old CoreDNS IP `10.42.0.139` as `Stale or
 unroutable IP`; this stale traffic is separate from the diagnostic Pod's
-`.162` flow and is not established as its cause. Thus the failing ClusterIP
-flow is now observed at the endpoint-to-stack handoff, but why Cilium skips or
-fails ClusterIP translation remains unresolved. The run did not invoke
-nodemigrate. Inspect Cilium's service lookup and socket-LB configuration/path
-before changing the migration recovery procedure. Do not retry migration until
-this path is repaired or destination/rollback behavior is independently
-proven.
+`.162` flow and is not established as its cause. The failing ClusterIP flow
+was observed at the endpoint-to-stack handoff. Later mapped-link inspection
+found that the pinned Socket LB links survived Cilium's cleanup/restart with
+targets pointing at the old cgroup hierarchy; the controlled unpin-and-agent
+reattach recovery is recorded below. These diagnostics did not invoke
+nodemigrate; its implementation still requires focused CI before migration is
+retried.
 
 Inspection of the exact upstream Cilium `v1.20.2` source confirms its
 `clean-cilium-state` init calls `cilium-dbg post-uninstall-cleanup --all-state`;
@@ -60,6 +60,17 @@ The first attachment inspection showed Socket LB programs on the cgroup root
 immediately after cleanup, so their absence alone does not explain the initial
 route failure. The later ordinary Cilium restart did leave the configured
 cgroup root mounted at `/../../../..` with no Socket LB programs attached there.
+
+The controlled recovery experiment
+[36744527476](https://github.com/centerionware/not-k8s/actions/runs/36744527476)
+removed only the pinned `cil_sock*` Socket LB links and restarted the Cilium
+agent. The replacement links targeted the active cgroup root (ID `1`) and the
+API ClusterIP probe passed. This verifies the recovery operation in the
+no-migration K3s+Cilium fixture. `nodemigrate` now performs the same targeted
+link unpin, starts a replacement agent with `clean-cilium-state` temporarily
+disabled, restores the original ConfigMap value after its init starts, waits
+for stable readiness, and then recreates local non-host-network Pod sandboxes.
+Focused nodemigrate CI is pending; migration remains blocked until it passes.
 
 Run 36728443584 did not reach the cgroup capture: immediately after Cilium
 clean-state, the probe treated a temporary lack of a Running CoreDNS Pod as a

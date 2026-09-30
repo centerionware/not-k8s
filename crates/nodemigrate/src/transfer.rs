@@ -1327,6 +1327,7 @@ impl KubeApi {
                                 restore_cilium_clean_state_flag(
                                     &config,
                                     original_clean_state.as_deref(),
+                                    "true",
                                 )
                                 .await?;
                                 cleanup_flag_restored = true;
@@ -1392,6 +1393,29 @@ impl KubeApi {
                             eprintln!(
                                 "nodemigrate: rebuilt Cilium host state on node {node_name}; replacement agent UID {current_uid} remained Ready for 10 seconds after clean-cilium-state"
                             );
+                            let bpf_root = original_config
+                                .data
+                                .as_ref()
+                                .and_then(|data| data.get("bpf-root"))
+                                .filter(|value| !value.is_empty())
+                                .map(PathBuf::from)
+                                .unwrap_or_else(|| PathBuf::from("/sys/fs/bpf"));
+                            let replacement_name = current
+                                .metadata
+                                .name
+                                .as_deref()
+                                .context("ready Cilium replacement Pod has no name")?;
+                            reattach_cilium_socket_lb(
+                                &pods,
+                                &events,
+                                &config,
+                                node_name,
+                                replacement_name,
+                                current_uid,
+                                original_clean_state.as_deref(),
+                                &bpf_root,
+                            )
+                            .await?;
                             recreate_node_pod_sandboxes(
                                 &client,
                                 node_name,
@@ -1411,7 +1435,12 @@ impl KubeApi {
 
             run_with_cilium_flag_restore(operation, async {
                 if cleanup_flag_changed {
-                    restore_cilium_clean_state_flag(&config, original_clean_state.as_deref()).await
+                    restore_cilium_clean_state_flag(
+                        &config,
+                        original_clean_state.as_deref(),
+                        "true",
+                    )
+                    .await
                 } else {
                     Ok(())
                 }
@@ -1942,6 +1971,7 @@ impl KubeApi {
 async fn restore_cilium_clean_state_flag(
     api: &Api<ConfigMap>,
     original: Option<&str>,
+    temporary_value: &str,
 ) -> Result<()> {
     let current = cilium_api_request(
         "reading Cilium ConfigMap while restoring clean-state flag",
@@ -1958,7 +1988,7 @@ async fn restore_cilium_clean_state_flag(
         return Ok(());
     }
     ensure!(
-        current_value == Some("true"),
+        current_value == Some(temporary_value),
         "Cilium clean-state flag changed concurrently; leaving the operator's value untouched"
     );
     let resource_version = current
@@ -1979,6 +2009,250 @@ async fn restore_cilium_clean_state_flag(
     cilium_api_request("restoring Cilium clean-state flag", patch_request)
         .await
         .context("restoring original Cilium clean-state flag")?;
+    Ok(())
+}
+
+fn remove_cilium_socket_lb_pins(bpf_root: &Path) -> Result<usize> {
+    let links_dir = bpf_root.join("cilium/socketlb/links/cgroup");
+    let entries = match fs::read_dir(&links_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("reading Cilium Socket LB link pins at {}", links_dir.display())
+            })
+        }
+    };
+
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!("reading Cilium Socket LB link pin in {}", links_dir.display())
+        })?;
+        if !entry.file_name().to_string_lossy().starts_with("cil_sock") {
+            continue;
+        }
+        ensure!(
+            !entry
+                .file_type()
+                .with_context(|| format!("checking Cilium link pin {}", entry.path().display()))?
+                .is_dir(),
+            "refusing to remove directory in Cilium Socket LB link pins: {}",
+            entry.path().display()
+        );
+        fs::remove_file(entry.path()).with_context(|| {
+            format!("removing stale Cilium Socket LB link pin {}", entry.path().display())
+        })?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+async fn reattach_cilium_socket_lb(
+    pods: &Api<Pod>,
+    events: &Api<Event>,
+    config: &Api<ConfigMap>,
+    node_name: &str,
+    pod_name: &str,
+    pod_uid: &str,
+    original_clean_state: Option<&str>,
+    bpf_root: &Path,
+) -> Result<()> {
+    let removed = remove_cilium_socket_lb_pins(bpf_root)?;
+    if removed == 0 {
+        eprintln!(
+            "nodemigrate: found no pinned Cilium Socket LB links under {}; skipping the extra agent restart",
+            bpf_root.display()
+        );
+        return Ok(());
+    }
+    eprintln!(
+        "nodemigrate: removed {removed} stale Cilium Socket LB link pins; restarting its agent to attach links to the active cgroup"
+    );
+
+    let mut clean_flag_changed = false;
+    let operation = async {
+        if original_clean_state != Some("false") {
+            // The API server can apply the patch even if the request times
+            // out, so arrange restoration before issuing it.
+            clean_flag_changed = true;
+            set_cilium_clean_state_flag(config, "false", original_clean_state).await?;
+        }
+        let delete_params = DeleteParams {
+            grace_period_seconds: Some(0),
+            preconditions: Some(Preconditions {
+                uid: Some(pod_uid.to_owned()),
+                resource_version: None,
+            }),
+            ..Default::default()
+        };
+        cilium_api_request(
+            "restarting Cilium agent after removing stale Socket LB links",
+            pods.delete(pod_name, &delete_params),
+        )
+        .await
+        .with_context(|| format!("restarting Cilium agent Pod {pod_name} after link cleanup"))?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        let mut replacement_uid = String::new();
+        let mut replacement_name = String::new();
+        let mut ready_since = None;
+        let mut clean_flag_restored = !clean_flag_changed;
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                let last_replacement = (!replacement_name.is_empty()).then(|| {
+                    (replacement_name.clone(), replacement_uid.clone())
+                });
+                capture_cilium_cleanup_diagnostics(
+                    pods,
+                    events,
+                    node_name,
+                    last_replacement.as_ref(),
+                    Some("waiting for Cilium Socket LB reattachment after pin removal"),
+                )
+                .await;
+                bail!("Cilium agent did not become Ready on node {node_name} after stale Socket LB link removal");
+            }
+            let list_request = pods.list(&ListParams::default().labels("k8s-app=cilium"));
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let current_pods = cilium_api_request_with_timeout(
+                "waiting for Cilium agent after Socket LB link removal",
+                list_request,
+                remaining,
+            )
+            .await
+            .context("waiting for Cilium agent after Socket LB link removal")?;
+            let replacement = current_pods.items.into_iter().find(|pod| {
+                pod.metadata.deletion_timestamp.is_none()
+                    && pod.metadata.uid.as_deref().is_some_and(|uid| uid != pod_uid)
+                    && pod.spec.as_ref().and_then(|spec| spec.node_name.as_deref())
+                        == Some(node_name)
+                    && pod.metadata.owner_references.as_ref().is_some_and(|owners| {
+                        owners.iter().any(|owner| owner.kind == "DaemonSet")
+                    })
+            });
+            if let Some(current) = replacement {
+                let current_uid = current
+                    .metadata
+                    .uid
+                    .as_deref()
+                    .context("reattached Cilium agent Pod has no UID")?;
+                let current_name = current
+                    .metadata
+                    .name
+                    .as_deref()
+                    .context("reattached Cilium agent Pod has no name")?;
+                if replacement_uid != current_uid {
+                    replacement_uid.clear();
+                    replacement_uid.push_str(current_uid);
+                    replacement_name.clear();
+                    replacement_name.push_str(current_name);
+                    ready_since = None;
+                    eprintln!(
+                        "nodemigrate: Cilium agent Pod {current_name} (UID {current_uid}) restarted for a fresh Socket LB cgroup attachment on {node_name}"
+                    );
+                }
+                let init_started = current
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.init_container_statuses.as_ref())
+                    .is_some_and(|statuses| {
+                        statuses.iter().any(|init| {
+                            init.name == "clean-cilium-state"
+                                && init.state.as_ref().is_some_and(|state| {
+                                    state.running.is_some() || state.terminated.is_some()
+                                })
+                        })
+                    });
+                if init_started && !clean_flag_restored {
+                    restore_cilium_clean_state_flag(config, original_clean_state, "false")
+                        .await?;
+                    clean_flag_restored = true;
+                    clean_flag_changed = false;
+                }
+                let ready = current.status.as_ref().is_some_and(|status| {
+                    status.conditions.as_ref().is_some_and(|conditions| {
+                        conditions.iter().any(|condition| {
+                            condition.type_ == "Ready" && condition.status == "True"
+                        })
+                    })
+                });
+                if ready {
+                    let since = *ready_since.get_or_insert_with(tokio::time::Instant::now);
+                    if tokio::time::Instant::now().duration_since(since)
+                        >= CILIUM_AGENT_READY_STABILITY
+                    {
+                        eprintln!(
+                            "nodemigrate: Cilium Socket LB links reattached; agent UID {current_uid} remained Ready for 10 seconds"
+                        );
+                        return Ok(());
+                    }
+                } else {
+                    ready_since = None;
+                }
+            } else {
+                replacement_uid.clear();
+                replacement_name.clear();
+                ready_since = None;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+    .await;
+
+    run_with_cilium_flag_restore(operation, async {
+        if clean_flag_changed {
+            restore_cilium_clean_state_flag(config, original_clean_state, "false").await
+        } else {
+            Ok(())
+        }
+    })
+    .await
+}
+
+async fn set_cilium_clean_state_flag(
+    api: &Api<ConfigMap>,
+    value: &str,
+    expected_current: Option<&str>,
+) -> Result<()> {
+    let current = cilium_api_request(
+        "reading Cilium ConfigMap before changing clean-state flag",
+        api.get("cilium-config"),
+    )
+    .await
+    .context("reading Cilium ConfigMap before changing clean-state flag")?;
+    let current_value = current
+        .data
+        .as_ref()
+        .and_then(|data| data.get("clean-cilium-state"))
+        .map(String::as_str);
+    if current_value == Some(value) {
+        ensure!(
+            expected_current == Some(value),
+            "Cilium clean-state flag changed concurrently; leaving the operator's value untouched"
+        );
+        return Ok(());
+    }
+    ensure!(
+        current_value == expected_current,
+        "Cilium clean-state flag changed concurrently; leaving the operator's value untouched"
+    );
+    let resource_version = current
+        .metadata
+        .resource_version
+        .as_deref()
+        .context("Cilium ConfigMap has no resourceVersion while changing clean-state flag")?;
+    let patch = serde_json::json!({
+        "metadata": {"resourceVersion": resource_version},
+        "data": {"clean-cilium-state": value}
+    });
+    let patch_params = PatchParams::default();
+    cilium_api_request(
+        "changing Cilium clean-state flag",
+        api.patch("cilium-config", &patch_params, &Patch::Merge(&patch)),
+    )
+    .await
+    .context("changing Cilium clean-state flag")?;
     Ok(())
 }
 
@@ -2028,7 +2302,7 @@ async fn capture_cilium_cleanup_diagnostics(
     replacement: Option<&(String, String)>,
     last_state: Option<&str>,
 ) {
-    eprintln!("nodemigrate: Cilium cleanup deadline diagnostics on {node_name}: state={}", last_state.unwrap_or("no replacement Pod observed"));
+    eprintln!("nodemigrate: Cilium recovery deadline diagnostics on {node_name}: state={}", last_state.unwrap_or("no replacement Pod observed"));
     let Some((pod_name, pod_uid)) = replacement else { return };
     match tokio::time::timeout(Duration::from_secs(5), pods.get_opt(pod_name)).await {
         Ok(Ok(Some(pod))) => {
@@ -4204,8 +4478,9 @@ mod tests {
         retryable_import_error, same_group_kind, sanitize, service_account_token_secret_patch,
         service_account_token_secret_value, skip_kind_reason, skip_object, snapshot_k3s_cni_paths,
         summarize_import_failures, take_pod_ephemeral_containers, write_export_manifest,
-        run_with_cilium_flag_restore, ApiResource, CiliumAgentProgress, DynamicObject, Export,
-        ExportedObject, KubeApi, NodeSchedulingState, SkipReason,
+        remove_cilium_socket_lb_pins, run_with_cilium_flag_restore, ApiResource,
+        CiliumAgentProgress, DynamicObject, Export, ExportedObject, KubeApi, NodeSchedulingState,
+        SkipReason,
         CILIUM_AGENT_READY_STABILITY,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
@@ -4222,6 +4497,27 @@ mod tests {
         assert!(parse_cilium_kube_proxy_replacement(Some("true")).unwrap());
         assert!(parse_cilium_kube_proxy_replacement(Some("strict")).unwrap());
         assert!(parse_cilium_kube_proxy_replacement(Some("unknown")).is_err());
+    }
+
+    #[test]
+    fn cilium_socket_lb_cleanup_removes_only_cilium_socket_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let links = temp.path().join("cilium/socketlb/links/cgroup");
+        fs::create_dir_all(&links).unwrap();
+        fs::write(links.join("cil_sock4_connect"), b"link").unwrap();
+        fs::write(links.join("cil_sock6_sendmsg"), b"link").unwrap();
+        fs::write(links.join("other_program"), b"keep").unwrap();
+
+        assert_eq!(remove_cilium_socket_lb_pins(temp.path()).unwrap(), 2);
+        assert!(!links.join("cil_sock4_connect").exists());
+        assert!(!links.join("cil_sock6_sendmsg").exists());
+        assert_eq!(fs::read(links.join("other_program")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn cilium_socket_lb_cleanup_tolerates_missing_pin_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(remove_cilium_socket_lb_pins(temp.path()).unwrap(), 0);
     }
 
     #[test]
