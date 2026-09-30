@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-30
 
-## Current worktree status
+## Current branch status
 
 The run previously listed below as active, migration workflow
 [36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745),
@@ -17,11 +17,24 @@ The saved final snapshot has Ready Nodes but many Pods Unknown, including the
 CSI StatefulSet Pod. Kubelet RBAC/NotFound messages on workers occurred before
 each worker's migration/join while its source kubelet was still addressing the
 replacement API; they stopped being evidence of a target Node authorizer bug.
-The remaining Docker CSI rollout cause is not yet established. Full job logs
-and artifacts are already saved under `/tmp/nodemigrate-36690929745*`; do not
+The CSI timeout was downstream of Nodelet waiting for CoreDNS readiness. The
+CoreDNS HTTP readiness failure itself remains unexplained. Full job logs and
+artifacts are already saved under `/tmp/nodemigrate-36690929745*`; do not
 download them again.
 
-The worktree now makes CRI sandbox/container cleanup idempotent for explicit
+The branch also adds Nodelet failure-only probe diagnostics. Its first focused
+quick-check
+[36697822043](https://github.com/centerionware/not-k8s/actions/runs/36697822043)
+found two ownership compile errors in the HTTP timeout path; commit `b4647a9c`
+fixed them. The corrected Nodelet quick-check
+[36698119270](https://github.com/centerionware/not-k8s/actions/runs/36698119270)
+passed both test configurations (job `109830878708`). Probe failures now
+report the target and connect/write/read/timeout/HTTP-status cause only when a
+probe crosses its failure threshold; probe decisions are unchanged. The
+underlying CoreDNS readiness failure remains unknown, so no migration rerun
+has been dispatched.
+
+The branch makes CRI sandbox/container cleanup idempotent for explicit
 NotFound responses and routes partial nodestore rollback cleanup to the
 destination containerd endpoint, including the worker rollback path. A focused
 regression test covers NotFound versus other CRI errors. `git diff --check`
@@ -35,7 +48,7 @@ workflow until that failure is fixed.
 The selected checkout is `/workspace/not-k8s`, branch
 `feat/nodemigrate-migration`, with open [PR #591](https://github.com/centerionware/not-k8s/pull/591)
 against `main`. The pushed PR head is
-`548e31a423e24222eef0a4f3751fb957d2742f08`. Focused quick-check for
+`b4647a9c9c0bd001d53c8bef1821d4bb484e5a76`. Focused quick-check for
 `nodeapiserver,nodemigrate` passed for code SHA
 `5da7ade07343e93fe783502f5e4c6ed09c8b361d` in
 [36689888324](https://github.com/centerionware/not-k8s/actions/runs/36689888324)

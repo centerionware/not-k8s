@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-30
 
-## Active worktree candidate
+## Active branch candidate
 
 Migration run
 [36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745)
@@ -21,20 +21,25 @@ hostpath CSI recovery step, but timed out waiting for the imported
 `csi-hostpathplugin` StatefulSet after changing its hostPath state volume. Its
 saved final snapshot shows Ready Nodes, running CRI tasks, and Kubernetes Pod
 status Unknown for many workloads, including the CSI StatefulSet. The same
-snapshot shows all five CoreDNS Pods Running with Pod IPs but `0/1` Ready;
-Nodelet remained in its CoreDNS startup gate, and its journal reports one
-CoreDNS liveness failure/restart at the end of the CSI rollout wait. The probe
-failure's network or health cause is unresolved and may be upstream of the CSI
-rollout. Worker kubelet RBAC and missing-object messages in the artifact precede those
+snapshot shows all five CoreDNS Pods Running with Pod IPs but `0/1` Ready.
+Nodelet's `wait_for_coredns()` gate therefore remained closed on every node,
+including worker-1, and ordinary workload reconciliation did not start the
+CSI Pod. The StatefulSet timeout is downstream of that gate. The logs record
+one CoreDNS liveness restart but do not include the failing readiness probe's
+connect result or HTTP status. Nodelet now emits failure-only probe details;
+its focused quick-check passed on the active branch. The actual CoreDNS probe
+failure remains unresolved and should be diagnosed before another migration
+run. The focused cleanup/rollback checks passed; the probe-diagnostic changes
+also passed targeted Nodelet quick-check. Worker kubelet RBAC and missing-object messages in the artifact precede those
 workers joining nodestore, while the original kubelet clients still target the
 replacement API; they are transient handoff diagnostics, not yet a proven
 node-authorizer defect. Artifacts already exist under
-`/tmp/nodemigrate-36690929745*`; do not fetch them again. Focused checks for
-the current cleanup/rollback fixes are pending, and no new migration run should
-start until the Docker recovery failure is also addressed.
+`/tmp/nodemigrate-36690929745*`; do not fetch them again. No new migration run
+should start until the CoreDNS probe failure is understood and the resulting
+fix batch is ready.
 
 PR #591 remains open on `feat/nodemigrate-migration`, now at
-`548e31a423e24222eef0a4f3751fb957d2742f08`. Focused `nodemigrate`
+`b4647a9c9c0bd001d53c8bef1821d4bb484e5a76`. Focused `nodemigrate`
 quick-check passed on this SHA in
 [36696369212](https://github.com/centerionware/not-k8s/actions/runs/36696369212)
 (job `109825202615`). The pushed batch includes

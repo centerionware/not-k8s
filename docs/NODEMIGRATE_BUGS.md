@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-30
 
-## Active fix batch (migration defects under repair)
+## Active fix batch (confirmed fixes passed; CoreDNS probe cause unresolved)
 
 Migration run
 [36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745)
@@ -15,30 +15,36 @@ errors remain fatal. A focused classifier regression is now in the worktree.
 destination Cilium sandbox IDs from `/run/containerd/containerd.sock` but
 used `NODEMIGRATE_CRI_ENDPOINT`, which still named the stopped source K3s
 runtime. Control-plane and worker rollback now carry the destination endpoint
-explicitly.
+explicitly. Both fixes passed the focused `nodemigrate` quick-check at
+[36696369212](https://github.com/centerionware/not-k8s/actions/runs/36696369212)
+on SHA `548e31a4`.
 
 **Component: Docker five-node hostpath CSI recovery.** All five migration
 operations completed and the lane reached the nodestore CSI restore step, but
 the imported `csi-hostpathplugin` StatefulSet rollout timed out after the
 test patched its durable state volume. Final diagnostics show Ready Nodes,
-CRI tasks running, but the plugin and many workload Pods Unknown. This is not
-yet diagnosed or fixed, so it blocks another migration run. The snapshot also
-shows five CoreDNS Pods Running with IPs but all `0/1` Ready; Nodelet logs one
-CoreDNS liveness probe restart at the end of the CSI rollout wait. The failed
-CoreDNS health/readiness gate may be upstream of the CSI Pod, but its probe
-failure's network or health cause is not in the captured logs. The worker kubelet
+CRI tasks running, but the plugin and many workload Pods Unknown. All five
+CoreDNS Pods were Running with Pod IPs but `0/1` Ready. That left
+`wait_for_coredns()` closed on every Nodelet, including worker-1, so ordinary
+Pod reconciliation remained paused and the CSI Pod stayed Unknown. The CSI
+rollout timeout is downstream of this gate. The saved journal records one
+CoreDNS liveness restart, but not the readiness probe's connection result or
+HTTP status. Nodelet now emits failure-only probe target and error details
+without changing readiness or restart decisions. Its focused quick-check
+passed at SHA `b4647a9c` in
+[36698119270](https://github.com/centerionware/not-k8s/actions/runs/36698119270)
+(job `109830878708`). The actual CoreDNS probe failure is still unresolved;
+wait for actionable evidence before another migration run. The worker kubelet
 RBAC and missing Pod/Node errors in the same artifact occurred before each
 worker joined the target; source kubelet traffic was still reaching the
 replacement API during handoff, so do not treat those lines as a confirmed
 target authorization defect. Captured evidence is under
-`/tmp/nodemigrate-36690929745*` and is already available locally. Focused CI
-for the current changes passed in
-[36696369212](https://github.com/centerionware/not-k8s/actions/runs/36696369212)
-on SHA `548e31a423e24222eef0a4f3751fb957d2742f08`. The Docker CSI/CoreDNS
-root cause remains unverified and still blocks another migration run.
+`/tmp/nodemigrate-36690929745*` and is already available locally; do not fetch
+it again. The remaining CoreDNS failure needs diagnosis before migration
+verification continues.
 
-Open PR #591 now includes commit
-`548e31a423e24222eef0a4f3751fb957d2742f08` on
+Open PR #591 now includes commits through
+`b4647a9c9c0bd001d53c8bef1821d4bb484e5a76` on
 `feat/nodemigrate-migration`. Focused quick-check
 [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
 failed while compiling `nodemigrate`; Nodelet passed 390 non-CRI and 1216
