@@ -386,13 +386,14 @@ async fn recreate_node_pod_sandboxes(
 
     let runtime_endpoint = runtime_endpoint.to_owned();
     let node_name = node_name.to_owned();
+    let log_node_name = node_name.clone();
     let count = tokio::task::spawn_blocking(move || {
         recreate_pod_sandboxes_for_uids(&runtime_endpoint, &node_name, &pod_uids)
     })
     .await
     .context("joining CRI Pod sandbox recreation task")??;
     eprintln!(
-        "nodemigrate: removed {count} non-host-network Pod sandbox(es) on node {node_name} so the runtime can rerun CNI setup against the cleaned Cilium datapath"
+        "nodemigrate: removed {count} non-host-network Pod sandbox(es) on node {log_node_name} so the runtime can rerun CNI setup against the cleaned Cilium datapath"
     );
     Ok(())
 }
@@ -417,11 +418,16 @@ fn recreate_pod_sandboxes_for_uids(
 
     for id in &ids {
         for operation in ["stopp", "rmp"] {
+            let operation_name = match operation {
+                "stopp" => "stopping",
+                "rmp" => "removing",
+                _ => operation,
+            };
             let output = Command::new("crictl")
                 .args(["--runtime-endpoint", runtime_endpoint, operation, id])
                 .output()
                 .with_context(|| {
-                    format!("{operation}ing Pod sandbox {id} on node {node_name}")
+                    format!("{operation_name} Pod sandbox {id} on node {node_name}")
                 })?;
             ensure!(
                 output.status.success(),
@@ -857,7 +863,6 @@ impl KubeApi {
                 } else {
                     Api::all_with(client.clone(), &resource)
                 };
-                let mut completed = false;
                 let csinode_deadline =
                     tokio::time::Instant::now() + std::time::Duration::from_secs(60);
                 let is_csinode = kind == "CSINode" && api_version.starts_with("storage.k8s.io/");
@@ -910,7 +915,6 @@ impl KubeApi {
                             .zip(existing_references)
                             .all(|(left, right)| left == right)
                     {
-                        completed = true;
                         break;
                     }
                     let resource_version = current
@@ -926,7 +930,6 @@ impl KubeApi {
                     {
                         Ok(_) => {
                             repaired += 1;
-                            completed = true;
                             break;
                         }
                         Err(kube::Error::Api(response))
@@ -958,10 +961,6 @@ impl KubeApi {
                         }
                     }
                 }
-                ensure!(
-                    completed,
-                    "migrated {kind} {name} kept changing during Node reference repair"
-                );
             }
             Ok(repaired)
         })

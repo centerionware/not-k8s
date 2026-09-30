@@ -7,7 +7,20 @@ Last updated: 2026-09-30
 The selected checkout is `/workspace/not-k8s`, branch
 `feat/nodemigrate-migration`, with open [PR #591](https://github.com/centerionware/not-k8s/pull/591)
 against `main`. The pushed PR head is
-`f514e61af89451771dc4616aa88b98977f4a69c2`; it covers Cilium replacement
+`6c8ce932d509e8a4744f4ce3c6b7723a372da77a`. At this SHA, PR-triggered
+nodemigrate script validation passed in [36683529226](https://github.com/centerionware/not-k8s/actions/runs/36683529226);
+the migration matrix was skipped because it runs only on explicit dispatch.
+The first targeted crate check, [36683529231](https://github.com/centerionware/not-k8s/actions/runs/36683529231),
+failed on three destination Cilium calls referencing an out-of-scope `target`
+and a moved `node_name` in the sandbox recreation task. The working tree now
+uses the destination CRI default/override for those forward migrations and
+keeps a separate node-name copy for logging. Changes are not yet rechecked;
+do not start another migration until the targeted compile/tests pass. The
+push-triggered validation passed shell syntax and snapshot/Helm/API/diagnostic
+checks; regular build and general e2e were not run.
+
+Earlier migration history: the pushed PR head was
+`f514e61af89451771dc4616aa88b98977f4a69c2`; it covered Cilium replacement
 readiness and diagnostics, Nodelet dynamic CSI reconciliation/retries, and
 five-node hostpath placement. Latest completed migration workflow
 [36674138076](https://github.com/centerionware/not-k8s/actions/runs/36674138076)

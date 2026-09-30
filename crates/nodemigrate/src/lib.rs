@@ -325,8 +325,10 @@ fn migrate_to_nodestore(
         eprintln!(
             "nodemigrate: rebuilding destination Cilium host datapath state for node {migrating_node_name}"
         );
+        // Use the destination's CRI default/override. The detected source
+        // endpoint may refer to a stopped, distribution-embedded runtime.
         if let Err(error) = target_api
-            .reset_cilium_agent_state(&migrating_node_name, target.runtime_endpoint.as_deref())
+            .reset_cilium_agent_state(&migrating_node_name, None)
         {
             return Err(rollback(error.context("rebuilding destination Cilium host datapath state")));
         }
@@ -411,7 +413,7 @@ fn migrate_to_nodestore(
             .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
     {
         if let Err(error) = target_api
-            .reset_cilium_agent_state(&migrating_node_name, target.runtime_endpoint.as_deref())
+            .reset_cilium_agent_state(&migrating_node_name, None)
         {
             return Err(rollback(
                 error.context("rebuilding destination Cilium host datapath state"),
@@ -699,7 +701,7 @@ fn migrate_worker_to_nodestore(
         .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
     {
         if let Err(error) =
-            target_api.reset_cilium_agent_state(&name, target.runtime_endpoint.as_deref())
+            target_api.reset_cilium_agent_state(&name, None)
         {
             return Err(rollback_forward_worker_migration(
                 source,

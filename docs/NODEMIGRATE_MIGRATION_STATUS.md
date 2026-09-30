@@ -5,10 +5,20 @@ Last updated: 2026-09-30
 ## Active worktree candidate
 
 PR #591 remains open on `feat/nodemigrate-migration`, now at
-`f514e61af89451771dc4616aa88b98977f4a69c2`. The pushed batch addresses the
-Cilium cleanup wait, CSI registration wakeups and metadata
-retries, retry UID/cancellation safety, and hostpath fixture node placement.
-Focused quick-check [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
+`6c8ce932d509e8a4744f4ce3c6b7723a372da77a`. The pushed batch includes
+local non-host-network sandbox recreation after Cilium datapath cleanup and
+the five-node fixture image/probe fixes. PR script validation passed at this
+SHA in [36683529226](https://github.com/centerionware/not-k8s/actions/runs/36683529226);
+the actual migration jobs were skipped by the PR event. Targeted crate tests
+in [36683529231](https://github.com/centerionware/not-k8s/actions/runs/36683529231)
+found three out-of-scope runtime endpoint references and a moved node-name
+value. The working-tree fixes are pending checks: forward destination Cilium
+reset uses the configured/default destination CRI endpoint, and the sandbox
+task retains a separate node name for logging. The CI warning about an
+unnecessary completion flag was also removed. Re-run targeted checks before
+dispatching another migration matrix. No regular build or general e2e gate ran.
+
+Earlier focused quick-check [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
 passed both Nodelet test configurations (390 non-CRI, 1216 CRI) but failed
 compiling `nodemigrate`; the compile errors were fixed in `678a0bba`. Follow-up
 nodemigrate quick-check [36673743053](https://github.com/centerionware/not-k8s/actions/runs/36673743053)
