@@ -4,6 +4,13 @@ Last updated: 2026-09-30
 
 ## Clean-state Cilium diagnostic
 
+Updated no-migration probe [36731098394](https://github.com/centerionware/not-k8s/actions/runs/36731098394)
+is running at SHA `da6c3ee2f3044a0ae905596fb8b70afabea5f2ef` (job
+`109940616117`). It includes the expected-no-CoreDNS Pod handling and captures
+the cgroup2 mount/Socket LB programs immediately after clean-state. Migration,
+Docker preflight, and general validation were skipped. Do not dispatch a
+migration run until the service datapath diagnosis is complete.
+
 Focused follow-up [36728443584](https://github.com/centerionware/not-k8s/actions/runs/36728443584)
 failed at SHA `6796db9e743d6d12a267d42a7ebed8399a0b3e89` after 15m37s (job
 `109931339199`). The `notk8s` build and CSI setup passed; migration and general

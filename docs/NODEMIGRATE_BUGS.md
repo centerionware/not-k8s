@@ -72,7 +72,10 @@ failure. The run diagnostics show the replacement CoreDNS Pod was created at
 This is a confirmed fixture timing defect, not evidence about Socket LB or
 ClusterIP behavior. The expected-unreachable probe now accepts that transient
 absence, and the cgroup attachment capture runs before probing CoreDNS.
-Focused local shell/checker validation passes; CI verification is pending.
+Focused local shell/checker validation passes. The updated focused diagnostic
+is running at
+[36731098394](https://github.com/centerionware/not-k8s/actions/runs/36731098394),
+SHA `da6c3ee2f3044a0ae905596fb8b70afabea5f2ef`; migration is skipped.
 
 Full logs are saved at
 `/tmp/nodemigrate-36716154527-k3s-probe-job.log` and
