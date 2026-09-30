@@ -54,7 +54,12 @@ kubelet. The updated checker passes locally and in PR validation
 [36713670774](https://github.com/centerionware/not-k8s/actions/runs/36713670774)
 on SHA `efcddde95ef7720d0974d5698b3dad2a73bac65a`. Living-document-only
 validation [36714065919](https://github.com/centerionware/not-k8s/actions/runs/36714065919)
-also passed on SHA `91899c5b`.
+also passed on SHA `91899c5b`. The updated focused diagnostic
+[36716154527](https://github.com/centerionware/not-k8s/actions/runs/36716154527)
+is in progress on SHA `4761372698dd661ddd95419fbd19cdb0707b5064`; its
+`notk8s` build is still running. PR validation
+[36716148475](https://github.com/centerionware/not-k8s/actions/runs/36716148475)
+passed on the same SHA. Migration, docker-preflight, and e2e jobs were skipped.
 
 ## Latest migration matrix
 

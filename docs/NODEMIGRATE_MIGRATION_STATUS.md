@@ -33,7 +33,10 @@ timed out; Cilium's endpoint table contained only host and health endpoints.
 This is evidence that the clean-state reset left the existing Pod sandbox
 without a Cilium endpoint. The run did not manually remove CRI state or invoke
 nodemigrate. The next diagnostic will API-recreate CoreDNS to trigger CNI ADD
-and probe its new UID/IP.
+and probe its new UID/IP. That diagnostic
+[36716154527](https://github.com/centerionware/not-k8s/actions/runs/36716154527)
+is now running at SHA `4761372698dd661ddd95419fbd19cdb0707b5064`; it does not
+invoke nodemigrate.
 
 ## Latest migration matrix: 36700106403
 

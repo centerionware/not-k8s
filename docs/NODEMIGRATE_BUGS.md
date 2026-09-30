@@ -55,8 +55,11 @@ expected reachability loss, and guards against direct CRI cleanup under
 Kubelet. The local diagnostic checker passes. PR validations
 [36713670774](https://github.com/centerionware/not-k8s/actions/runs/36713670774)
 and [36714065919](https://github.com/centerionware/not-k8s/actions/runs/36714065919)
-passed. The API-managed CoreDNS CNI-recovery correction is unverified until its
-focused workflow runs.
+passed. API-managed CoreDNS CNI-recovery diagnostic
+[36716154527](https://github.com/centerionware/not-k8s/actions/runs/36716154527)
+is running on SHA `47613726`; PR validation
+[36716148475](https://github.com/centerionware/not-k8s/actions/runs/36716148475)
+passed on that commit.
 
 ## Latest migration result: 36700106403
 
