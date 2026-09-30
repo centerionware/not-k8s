@@ -2,6 +2,26 @@
 
 Last updated: 2026-09-30
 
+## Branch migration matrix 36786000022
+
+[Run 36786000022](https://github.com/centerionware/not-k8s/actions/runs/36786000022)
+tested SHA `355fe289ac2b3b8bc18cc8de7c1575baf1174b54` with
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+Nodemigrate and combined `notk8s --features cri` builds passed in all
+applicable lanes. The upstream Kubernetes and Docker five-node return imports
+failed on cert-manager webhook Service connectivity; K3s return cleanup failed
+on a timed-out CRI sandbox stop while Cilium/API Service routing was unhealthy.
+Exact jobs were upstream `110127421783`, K3s `110127421966`, and Docker
+`110127421970`. One-time captured logs are under `/tmp` at the three
+`nodemigrate-36786000022-job-*.log` paths.
+
+The current source candidate moves reverse protected API import after Node
+replacement/readiness and local Cilium reset, waits for a stable Kubernetes
+API ClusterIP TCP route before Cilium-triggered CRI sandbox cleanup, and keeps
+the existing rollback path if the route fails to recover. Focused
+`nodemigrate` quick-check is pending; the next migration run must exercise all
+three lanes. No general build or full e2e ran.
+
 ## Branch migration matrix 36778028681
 
 [Run 36778028681](https://github.com/centerionware/not-k8s/actions/runs/36778028681)

@@ -2,6 +2,46 @@
 
 Last updated: 2026-09-30
 
+## Migration matrix 36786000022 failures
+
+Branch-built matrix
+[36786000022](https://github.com/centerionware/not-k8s/actions/runs/36786000022)
+tested SHA `355fe289ac2b3b8bc18cc8de7c1575baf1174b54` with Cilium KPR and the
+three-control-plane/two-worker Docker lane. The utility and combined runtime
+builds passed. Full job logs are saved at
+`/tmp/nodemigrate-36786000022-job-110127421783.log`,
+`/tmp/nodemigrate-36786000022-job-110127421966.log`, and
+`/tmp/nodemigrate-36786000022-job-110127421970.log`.
+
+- **Component: reverse API import ordering.** Upstream return started the
+  retained API, then immediately imported the protected export. Three
+  cert-manager resources failed admission because the webhook Service route
+  returned `no route to host` for `10.108.7.109:443`. The five-node return
+  import failed on the same three objects via `10.105.74.49:443`. The return
+  path registered/replaced the local Node and rebuilt local Cilium only after
+  this import. The current candidate now waits for returned-node readiness and
+  Cilium recovery before restoring workload and admission objects. This
+  addresses the observed ordering gap; runtime verification is pending.
+- **Component: Cilium datapath gate before CRI cleanup.** K3s rebuilt the
+  Cilium agent and Envoy, then `StopPodSandbox` timed out while local Pod
+  sandboxes were being recreated. The same recovery window contains failed
+  connections to the Kubernetes API ClusterIP `10.43.0.1:443` and Pod IPs.
+  The current candidate requires the Kubernetes Service ClusterIP TCP route to
+  stay reachable for 10 seconds before removing local sandboxes and uses a
+  bounded five-minute wait. It preserves rollback if the route remains down;
+  the causal link to the stop deadline is plausible but not confirmed without
+  a rerun.
+- **Component: Cilium ClusterIP datapath.** The host probe to the cert-manager
+  webhook alternated between HTTP 404 and connection failures during recovery.
+  At final diagnostics the K3s Cilium service listing showed an active API
+  backend, while its BPF map contained both non-routable entries and a routable
+  `10.43.0.1:443` backend. This does not establish why earlier connections
+  failed. The new route gate records the last connection error and fails safely
+  before CRI cleanup if service routing does not stabilize.
+
+Focused `nodemigrate` quick-check and migration rerun are pending for the
+candidate. No general build or full e2e ran.
+
 ## Migration matrix 36778028681 failures
 
 Branch-built matrix

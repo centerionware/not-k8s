@@ -1090,21 +1090,6 @@ fn migrate_to_existing(
         }
         eprintln!("nodemigrate: retained Cilium state is rebuilt before K3s node registration");
     }
-    if let Some(export) = &export {
-        eprintln!("nodemigrate: importing protected Kubernetes API export");
-        if let Err(error) = target_api.import(export) {
-            return Err(rollback_reverse_migration(
-                source,
-                target,
-                previous_service,
-                Some(export),
-                host_path_snapshot.as_ref(),
-                error.context("destination started but API import failed"),
-                &recovery_location,
-            ));
-        }
-        eprintln!("nodemigrate: protected Kubernetes API import completed");
-    }
     let observed_replacement_state = if destination_node_exists || replace_existing_node {
         match remove_replaced_node(&target_api, &returning_node_name, replace_existing_node) {
             Ok(state) => state,
@@ -1208,6 +1193,43 @@ fn migrate_to_existing(
                 &recovery_location,
             ));
         }
+    }
+    if target
+        .cluster
+        .as_ref()
+        .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
+    {
+        if let Err(error) = target_api.wait_for_kubernetes_service_route() {
+            return Err(rollback_reverse_migration(
+                source,
+                target,
+                previous_service,
+                export.as_ref(),
+                host_path_snapshot.as_ref(),
+                error.context("retained Cilium Kubernetes Service route is not ready for API import"),
+                &recovery_location,
+            ));
+        }
+    }
+    // Restore workload and admission objects only after the returned Node is
+    // registered and its local Cilium datapath has been rebuilt. Admission
+    // webhooks can be hosted behind ClusterIP Services, so importing them
+    // before the Service route works can leave protected CRs permanently
+    // blocked even though the API server itself is ready.
+    if let Some(export) = &export {
+        eprintln!("nodemigrate: importing protected Kubernetes API export");
+        if let Err(error) = target_api.import(export) {
+            return Err(rollback_reverse_migration(
+                source,
+                target,
+                previous_service,
+                Some(export),
+                host_path_snapshot.as_ref(),
+                error.context("destination started but API import failed"),
+                &recovery_location,
+            ));
+        }
+        eprintln!("nodemigrate: protected Kubernetes API import completed");
     }
     if let Err(error) = restore_node_scheduling_state(
         &target_api,

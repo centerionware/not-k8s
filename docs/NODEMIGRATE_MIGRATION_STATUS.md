@@ -2,6 +2,34 @@
 
 Last updated: 2026-09-30
 
+## Latest branch migration matrix: 36786000022
+
+[Run 36786000022](https://github.com/centerionware/not-k8s/actions/runs/36786000022)
+tested SHA `355fe289ac2b3b8bc18cc8de7c1575baf1174b54` with branch-built
+`nodemigrate`, combined `notk8s --features cri`, Cilium KPR, and five-node
+Docker migration enabled. All relevant builds passed. Upstream return
+migration failed restoring three cert-manager API objects because the
+webhook ClusterIP `10.108.7.109:443` was unreachable. The five-node return
+import failed on the same objects through `10.105.74.49:443`. K3s rebuilt its
+Cilium agent and Envoy but failed stopping local CRI sandbox
+`e902703a8617549a6a5402b4791cbcc57832b4fdd67037d7065261ff9c3bf42a` after
+`StopPodSandbox` returned `DeadlineExceeded`; the log also shows failed probes
+to API ClusterIP `10.43.0.1:443` and local Pod IPs during that recovery window.
+The K3s root cause for the blocked CNI/CRI cleanup remains unconfirmed.
+
+The current candidate repairs the confirmed reverse-path ordering gap by
+waiting for the returned Node and Cilium recovery before importing protected
+workload/admission resources. It also requires the Kubernetes API Service
+ClusterIP to stay TCP reachable for 10 seconds before local sandbox cleanup,
+with a five-minute bounded recovery window. Quick-check and runtime behavior
+are pending. Logs are saved at:
+
+- `/tmp/nodemigrate-36786000022-job-110127421783.log` (upstream)
+- `/tmp/nodemigrate-36786000022-job-110127421966.log` (K3s)
+- `/tmp/nodemigrate-36786000022-job-110127421970.log` (Docker five-node)
+
+No standard build or full e2e ran.
+
 ## Latest branch migration matrix: 36778028681
 
 [Run 36778028681](https://github.com/centerionware/not-k8s/actions/runs/36778028681)

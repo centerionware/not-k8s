@@ -6,6 +6,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     future::Future,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     process::Command,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -15,7 +16,7 @@ use anyhow::{bail, ensure, Context, Result};
 use base64::Engine;
 use k8s_openapi::api::{
     apps::v1::DaemonSet,
-    core::v1::{ConfigMap, Event, Namespace, Pod},
+    core::v1::{ConfigMap, Event, Namespace, Pod, Service},
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{
@@ -55,12 +56,30 @@ const SKIP_KINDS: &[&str] = &[
 
 const CILIUM_API_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CILIUM_AGENT_READY_STABILITY: Duration = Duration::from_secs(10);
+const CILIUM_SERVICE_ROUTE_READY_TIMEOUT: Duration = Duration::from_secs(300);
+const CILIUM_SERVICE_ROUTE_READY_STABILITY: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 struct CiliumAgentProgress {
     pod_uid: String,
     cleanup_succeeded: bool,
     ready_since: Option<tokio::time::Instant>,
+}
+
+#[derive(Default)]
+struct CiliumServiceRouteProgress {
+    reachable_since: Option<tokio::time::Instant>,
+}
+
+impl CiliumServiceRouteProgress {
+    fn observe(&mut self, reachable: bool, now: tokio::time::Instant) -> bool {
+        if !reachable {
+            self.reachable_since = None;
+            return false;
+        }
+        let reachable_since = *self.reachable_since.get_or_insert(now);
+        now.duration_since(reachable_since) >= CILIUM_SERVICE_ROUTE_READY_STABILITY
+    }
 }
 
 impl CiliumAgentProgress {
@@ -784,6 +803,11 @@ fn pod_sandbox_ids_for_uids(sandboxes: &Value, pod_uids: &BTreeSet<String>) -> V
 }
 
 impl KubeApi {
+    pub fn wait_for_kubernetes_service_route(&self) -> Result<()> {
+        let (runtime, client) = self.connected()?;
+        runtime.block_on(wait_for_kubernetes_service_route_with_client(&client))
+    }
+
     fn source_kubeconfig_path(installation: &Installation) -> PathBuf {
         std::env::var_os("NODEMIGRATE_SOURCE_KUBECONFIG")
             .map(PathBuf::from)
@@ -1705,6 +1729,12 @@ impl KubeApi {
                             restart_local_cilium_envoy(&client, &pods, node_name)
                                 .await
                                 .context("restarting the local Cilium Envoy Pod after host-state cleanup")?;
+                            eprintln!(
+                                "nodemigrate: waiting for the Kubernetes Service route to remain reachable before removing local Pod sandboxes"
+                            );
+                            wait_for_kubernetes_service_route_with_client(&client)
+                                .await
+                                .context("waiting for Cilium's Kubernetes Service datapath after host-state cleanup")?;
                             let standalone_pods = recreate_node_pod_sandboxes(
                                 &client,
                                 node_name,
@@ -2257,6 +2287,83 @@ impl KubeApi {
         runtime.shutdown_timeout(std::time::Duration::from_secs(5));
         eprintln!("nodemigrate: protected API import runtime shutdown returned");
         import_result
+    }
+}
+
+fn kubernetes_service_route(service: &Service) -> Result<SocketAddr> {
+    let spec = service
+        .spec
+        .as_ref()
+        .context("default/kubernetes Service has no spec")?;
+    let cluster_ip = spec
+        .cluster_ip
+        .as_deref()
+        .filter(|cluster_ip| !cluster_ip.is_empty() && *cluster_ip != "None")
+        .context("default/kubernetes Service has no ClusterIP")?
+        .parse::<IpAddr>()
+        .context("default/kubernetes Service ClusterIP is invalid")?;
+    let port = spec
+        .ports
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|port| {
+            port.name.as_deref() == Some("https")
+                && port.protocol.as_deref().unwrap_or("TCP") == "TCP"
+        })
+        .context("default/kubernetes Service has no TCP https port")?;
+    let port = u16::try_from(port.port).context("default/kubernetes https port is invalid")?;
+    Ok(SocketAddr::new(cluster_ip, port))
+}
+
+async fn wait_for_kubernetes_service_route_with_client(client: &Client) -> Result<()> {
+    let services: Api<Service> = Api::namespaced(client.clone(), "default");
+    let service = services
+        .get("kubernetes")
+        .await
+        .context("reading default/kubernetes Service before checking its route")?;
+    let target = kubernetes_service_route(&service)?;
+    let deadline = tokio::time::Instant::now() + CILIUM_SERVICE_ROUTE_READY_TIMEOUT;
+    let mut progress = CiliumServiceRouteProgress::default();
+    let mut last_report = tokio::time::Instant::now();
+
+    loop {
+        let probe = tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio::net::TcpStream::connect(target),
+        )
+        .await;
+        let (reachable, probe_error) = match probe {
+            Ok(Ok(_stream)) => (true, None),
+            Ok(Err(error)) => (false, Some(error.to_string())),
+            Err(_) => (false, Some("connect timed out after 2 seconds".to_owned())),
+        };
+        let now = tokio::time::Instant::now();
+        if progress.observe(reachable, now) {
+            eprintln!(
+                "nodemigrate: Kubernetes Service route {target} remained reachable for {} seconds",
+                CILIUM_SERVICE_ROUTE_READY_STABILITY.as_secs()
+            );
+            return Ok(());
+        }
+        if !reachable {
+            if now.duration_since(last_report) >= Duration::from_secs(10) {
+                eprintln!(
+                    "nodemigrate: Kubernetes Service route {target} is not reachable yet; Cilium must restore it before local Pod sandbox cleanup (last probe: {})",
+                    probe_error.as_deref().unwrap_or("unknown error")
+                );
+                last_report = now;
+            }
+        }
+
+        if now >= deadline {
+            bail!(
+                "Kubernetes Service route {target} did not remain reachable for {} seconds within {} seconds",
+                CILIUM_SERVICE_ROUTE_READY_STABILITY.as_secs(),
+                CILIUM_SERVICE_ROUTE_READY_TIMEOUT.as_secs()
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -4763,7 +4870,8 @@ mod tests {
         can_preserve_existing_crd, crd_metadata_merge_patch, crd_schema_matches,
         custom_resource_gvks, is_running_standalone_nonrestartable_pod,
         is_source_custom_resource, kubeconfig_root_ca,
-        namespace_ca_bundle_matches, node_is_ready_replacement, node_scheduling_patch, object_rank,
+        kubernetes_service_route, namespace_ca_bundle_matches, node_is_ready_replacement,
+        node_scheduling_patch, object_rank,
         node_readiness_summary,
         container_ids_for_sandbox, is_local_cilium_envoy_pod, node_pod_uids_requiring_cni,
         pod_sandbox_ids_for_uids,
@@ -4777,10 +4885,11 @@ mod tests {
         summarize_import_failures, take_pod_ephemeral_containers, write_export_manifest,
         remove_cilium_socket_lb_pins, run_with_cilium_flag_restore, ApiResource,
         CiliumAgentProgress, DynamicObject, Export, ExportedObject, KubeApi, NodeSchedulingState,
-        SkipReason,
+        CiliumServiceRouteProgress, SkipReason,
         CILIUM_AGENT_READY_STABILITY,
+        CILIUM_SERVICE_ROUTE_READY_STABILITY,
     };
-    use k8s_openapi::api::core::v1::Pod;
+    use k8s_openapi::api::core::v1::{Pod, Service};
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
     use std::collections::{BTreeMap, HashMap};
@@ -4795,6 +4904,49 @@ mod tests {
         assert!(parse_cilium_kube_proxy_replacement(Some("true")).unwrap());
         assert!(parse_cilium_kube_proxy_replacement(Some("strict")).unwrap());
         assert!(parse_cilium_kube_proxy_replacement(Some("unknown")).is_err());
+    }
+
+    #[test]
+    fn kubernetes_service_route_uses_the_https_cluster_ip() {
+        let service: Service = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"name": "kubernetes", "namespace": "default"},
+            "spec": {
+                "clusterIP": "10.43.0.1",
+                "ports": [
+                    {"name": "https", "port": 443, "protocol": "TCP"},
+                    {"name": "metrics", "port": 6443, "protocol": "TCP"}
+                ]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            kubernetes_service_route(&service).unwrap(),
+            "10.43.0.1:443".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn cilium_service_route_wait_resets_stability_after_a_failed_probe() {
+        let start = tokio::time::Instant::now();
+        let mut progress = CiliumServiceRouteProgress::default();
+
+        assert!(!progress.observe(true, start));
+        assert!(progress.observe(true, start + CILIUM_SERVICE_ROUTE_READY_STABILITY));
+        assert!(!progress.observe(
+            false,
+            start + CILIUM_SERVICE_ROUTE_READY_STABILITY + Duration::from_secs(1)
+        ));
+        assert!(!progress.observe(
+            true,
+            start + CILIUM_SERVICE_ROUTE_READY_STABILITY + Duration::from_secs(2)
+        ));
+        assert!(progress.observe(
+            true,
+            start + CILIUM_SERVICE_ROUTE_READY_STABILITY + Duration::from_secs(12)
+        ));
     }
 
     #[test]
