@@ -56,14 +56,10 @@ Inspection of the exact upstream Cilium `v1.20.2` source confirms its
 that cleanup detaches Socket LB cgroup programs and unmounts the configured
 cgroup root before the agent starts ([cleanup implementation](https://github.com/cilium/cilium/blob/v1.20.2/cilium-dbg/cmd/post_uninstall_cleanup.go),
 [Socket LB cgroup attachment](https://github.com/cilium/cilium/blob/v1.20.2/pkg/socketlb/cgroup.go)).
-The running agent reports Socket LB enabled, but that status alone does not
-show which programs are attached to the cgroup root. The `to stack` trace makes
-the post-restart cgroup attachment a concrete next check, not yet a confirmed
-root cause. The next focused diagnostic captures the cgroup2 mount and
-`bpftool cgroup tree` immediately before the failing Pod-origin Service probe.
-That no-migration follow-up ran as
-[36728443584](https://github.com/centerionware/not-k8s/actions/runs/36728443584)
-at branch SHA `6796db9e743d6d12a267d42a7ebed8399a0b3e89`.
+The first attachment inspection showed Socket LB programs on the cgroup root
+immediately after cleanup, so their absence alone does not explain the initial
+route failure. The later ordinary Cilium restart did leave the configured
+cgroup root mounted at `/../../../..` with no Socket LB programs attached there.
 
 Run 36728443584 did not reach the cgroup capture: immediately after Cilium
 clean-state, the probe treated a temporary lack of a Running CoreDNS Pod as a
@@ -75,17 +71,29 @@ absence, and the cgroup attachment capture runs before probing CoreDNS.
 Focused local shell/checker validation passed, and follow-up
 [36731098394](https://github.com/centerionware/not-k8s/actions/runs/36731098394)
 at SHA `da6c3ee2f3044a0ae905596fb8b70afabea5f2ef` got past that fixture race.
-It found the Socket LB programs attached at the cgroup root immediately after
-all-state cleanup, but absent from the configured root after a second Cilium
-agent restart. The second restart's mountinfo root was `/../../../..`, while
-the first was `/`; the agent logged `Updated link` for pinned `cil_sock*`
-programs despite the cgroup tree showing none at the root. A fresh Pod's API
-ClusterIP SYN went `to stack`; the active API backend and direct-backend probe
-still worked. This strongly implicates Socket LB reattachment on the second
-restart, but the break point is not yet isolated. The next diagnostic tests
-Pod-origin ClusterIP immediately after the first clean-state restart, then
-again after the second restart, and reports only programs attached directly
-to the cgroup root to keep the artifact concise.
+at SHA `da6c3ee2f3044a0ae905596fb8b70afabea5f2ef` showed the Socket LB programs
+attached at the cgroup root after cleanup, but absent from the configured root
+after the second Cilium agent restart. It could not determine when the Service
+route first failed.
+
+The stage comparison in
+[36733704748](https://github.com/centerionware/not-k8s/actions/runs/36733704748)
+at SHA `2b315ece2beaccb181402c9129aef0df6457af4a` found the Pod-origin API
+ClusterIP probe already failing immediately after `clean-cilium-state`, before
+the second restart. The direct API backend probe passed and the Cilium service
+map listed that backend active. At this point the Cilium endpoint table still
+showed existing endpoints `regenerating`; the fresh CoreDNS endpoint later
+showed `waiting-to-regenerate`. Therefore the probe ran before complete endpoint
+recovery, and does not establish a persistent post-recovery route failure. The
+second restart checkpoint also failed and had no Socket LB programs attached
+at the configured cgroup root. The probe now retries TCP for up to 60 seconds
+to allow endpoint/CNI regeneration and captures service, BPF LB, and endpoint
+state at failure. This distinguishes a transient readiness window from a
+persistent KPR defect without probing only once during endpoint regeneration.
+Shell and checker validation passed locally; focused diagnostic rerun pending.
+Migration was disabled; no migration behavior was tested. Full logs:
+`/tmp/nodemigrate-36733704748-k3s-probe-job.log` and
+`/tmp/nodemigrate-36733704748-artifact/nodemigrate-k3s-cilium-restart-36733704748/nodemigrate-k3s-cilium-restart.log`.
 
 Full logs are saved at
 `/tmp/nodemigrate-36716154527-k3s-probe-job.log` and

@@ -533,7 +533,7 @@ spec:
   - name: probe
     image: busybox:1.36.1
     imagePullPolicy: IfNotPresent
-    command: ["sh", "-ec", "nc -z -w 5 $target_ip $target_port"]
+    command: ["sh", "-ec", "attempt=0; while [ \"\$attempt\" -lt 20 ]; do if nc -z -w 2 $target_ip $target_port; then exit 0; fi; attempt=\$((attempt + 1)); sleep 1; done; exit 1"]
     resources:
       requests:
         cpu: 1m
@@ -553,6 +553,7 @@ EOF
             Failed)
                 KUBECONFIG="$kubeconfig" kubectl logs "$pod_name" -n kube-system >&2 || true
                 KUBECONFIG="$kubeconfig" kubectl describe pod "$pod_name" -n kube-system >&2 || true
+                capture_cilium_datapath "$kubeconfig" || true
                 KUBECONFIG="$kubeconfig" kubectl delete pod "$pod_name" \
                     -n kube-system --wait=true --timeout=30s >/dev/null || true
                 echo "Pod-origin API TCP probe failed at stage=$stage target=$target_ip:$target_port clusterIP=$cluster_ip" >&2

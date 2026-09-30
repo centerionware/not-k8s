@@ -4,6 +4,31 @@ Last updated: 2026-09-30
 
 ## Clean-state Cilium diagnostic
 
+Diagnostic run [36733704748](https://github.com/centerionware/not-k8s/actions/runs/36733704748)
+failed at SHA `2b315ece2beaccb181402c9129aef0df6457af4a` after 15m20s (job
+`109949752424`). The `notk8s` build and CSI setup passed; the diagnostic failed
+in its Pod-origin API Service probe. It now tests the ClusterIP before the
+second agent restart as well as after it. Both ClusterIP probes failed, while
+the direct API backend probe passed. At the first checkpoint, immediately
+after `clean-cilium-state`, Socket LB programs were attached at the configured
+cgroup root. Cilium's service map showed the API backend active, but the
+existing CoreDNS endpoint was still `regenerating`; after requesting a fresh
+CNI ADD it appeared `waiting-to-regenerate`. At the later checkpoint after an
+ordinary Cilium restart, the configured cgroup root was mounted at
+`/../../../..` and no Socket LB programs were attached there. This disproves
+the theory that the API route first breaks only during the second restart; it
+also shows the run probed before Cilium endpoint regeneration completed, so
+the initial ClusterIP failure does not establish a steady-state datapath
+failure. The probe now retries the TCP connection for up to 60 seconds so
+Cilium endpoint/CNI regeneration can settle, and captures Cilium service, BPF
+LB, and endpoint state when that retry window fails. Focused shell/checker
+validation passed locally; the updated diagnostic rerun is pending.
+Migration, Docker preflight, and general validation were skipped. Full logs:
+`/tmp/nodemigrate-36733704748-k3s-probe-job.log` and
+`/tmp/nodemigrate-36733704748-artifact/nodemigrate-k3s-cilium-restart-36733704748/nodemigrate-k3s-cilium-restart.log`.
+Do not dispatch migration until this check distinguishes transient endpoint
+rebuild from persistent Cilium route failure.
+
 Updated no-migration probe [36731098394](https://github.com/centerionware/not-k8s/actions/runs/36731098394)
 failed at SHA `da6c3ee2f3044a0ae905596fb8b70afabea5f2ef` after 15m22s (job
 `109940616117`). The `notk8s` build and fixture setup passed; migration,

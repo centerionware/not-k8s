@@ -300,7 +300,8 @@ grep -Fq 'PASS Pod-origin API TCP probe at stage=source target=10.43.0.1:443 clu
     echo "successful Pod-to-API-Service probe was not reported: $output" >&2
     exit 1
 }
-grep -Fq 'nc -z -w 5 10.43.0.1 443' "$NODEMIGRATE_TEST_APPLY_CAPTURE" || {
+grep -Fq 'while [ \"$attempt\" -lt 20 ]' "$NODEMIGRATE_TEST_APPLY_CAPTURE" \
+    && grep -Fq 'nc -z -w 2 10.43.0.1 443' "$NODEMIGRATE_TEST_APPLY_CAPTURE" || {
     echo "Pod probe does not test TCP access to the Kubernetes API ClusterIP" >&2
     cat "$NODEMIGRATE_TEST_APPLY_CAPTURE" >&2
     exit 1
@@ -313,7 +314,7 @@ grep -Fq 'PASS Pod-origin API TCP probe at stage=api-backend target=10.1.0.140:6
     echo "successful Pod-to-API-backend probe was not reported: $output" >&2
     exit 1
 }
-grep -Fq 'nc -z -w 5 10.1.0.140 6443' "$NODEMIGRATE_TEST_APPLY_CAPTURE" || {
+grep -Fq 'nc -z -w 2 10.1.0.140 6443' "$NODEMIGRATE_TEST_APPLY_CAPTURE" || {
     echo "Pod probe does not test direct TCP access to the Kubernetes API backend" >&2
     cat "$NODEMIGRATE_TEST_APPLY_CAPTURE" >&2
     exit 1
