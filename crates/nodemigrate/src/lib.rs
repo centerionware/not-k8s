@@ -325,7 +325,9 @@ fn migrate_to_nodestore(
         eprintln!(
             "nodemigrate: rebuilding destination Cilium host datapath state for node {migrating_node_name}"
         );
-        if let Err(error) = target_api.reset_cilium_agent_state(&migrating_node_name) {
+        if let Err(error) = target_api
+            .reset_cilium_agent_state(&migrating_node_name, target.runtime_endpoint.as_deref())
+        {
             return Err(rollback(error.context("rebuilding destination Cilium host datapath state")));
         }
         eprintln!(
@@ -408,7 +410,9 @@ fn migrate_to_nodestore(
             .as_ref()
             .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
     {
-        if let Err(error) = target_api.reset_cilium_agent_state(&migrating_node_name) {
+        if let Err(error) = target_api
+            .reset_cilium_agent_state(&migrating_node_name, target.runtime_endpoint.as_deref())
+        {
             return Err(rollback(
                 error.context("rebuilding destination Cilium host datapath state"),
             ));
@@ -694,7 +698,9 @@ fn migrate_worker_to_nodestore(
         .as_ref()
         .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
     {
-        if let Err(error) = target_api.reset_cilium_agent_state(&name) {
+        if let Err(error) =
+            target_api.reset_cilium_agent_state(&name, target.runtime_endpoint.as_deref())
+        {
             return Err(rollback_forward_worker_migration(
                 source,
                 previous_service.clone(),
@@ -1067,7 +1073,9 @@ fn migrate_to_existing(
         eprintln!(
             "nodemigrate: rebuilding retained Cilium state before registering the returned K3s node {returning_node_name}"
         );
-        if let Err(error) = target_api.reset_cilium_agent_state(&returning_node_name) {
+        if let Err(error) = target_api
+            .reset_cilium_agent_state(&returning_node_name, target.runtime_endpoint.as_deref())
+        {
             return Err(rollback_reverse_migration(
                 source,
                 target,
@@ -1174,7 +1182,9 @@ fn migrate_to_existing(
         eprintln!(
             "nodemigrate: rebuilding retained Cilium host datapath state for node {returning_node_name}"
         );
-        if let Err(error) = target_api.reset_cilium_agent_state(&returning_node_name) {
+        if let Err(error) = target_api
+            .reset_cilium_agent_state(&returning_node_name, target.runtime_endpoint.as_deref())
+        {
             return Err(rollback_reverse_migration(
                 source,
                 target,
@@ -1564,7 +1574,9 @@ fn migrate_worker_from_nodestore(
         .as_ref()
         .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
     {
-        if let Err(error) = target_api.reset_cilium_agent_state(&name) {
+        if let Err(error) =
+            target_api.reset_cilium_agent_state(&name, target.runtime_endpoint.as_deref())
+        {
             return Err(rollback_reverse_migration(
                 source,
                 target,

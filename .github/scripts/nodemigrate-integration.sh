@@ -1410,8 +1410,7 @@ apply_fixture_manifest_with_conflict_retry() {
     done
 }
 
-install_workloads() {
-    local stage=source
+ensure_kubectl_image() {
     if [[ -z "${NODEMIGRATE_KUBECTL_IMAGE:-}" ]]; then
         local kubectl_version
         kubectl_version="$(kubectl version --client -o yaml \
@@ -1423,6 +1422,11 @@ install_workloads() {
         NODEMIGRATE_KUBECTL_IMAGE="registry.k8s.io/kubectl:$kubectl_version"
         export NODEMIGRATE_KUBECTL_IMAGE
     fi
+}
+
+install_workloads() {
+    local stage=source
+    ensure_kubectl_image
     kubectl label nodes --all operator.example/pool=blue --overwrite
     kubectl annotate nodes --all nodemigrate.io/source-uid=operator-node-value --overwrite
     kubectl taint nodes --all operator.example/dedicated=migration:PreferNoSchedule --overwrite
@@ -2963,6 +2967,7 @@ verify_stage() {
     chmod 0700 "$CHECKPOINT_DIR" "$stage_dir"
     CURRENT_KUBECONFIG="$2"
     export KUBECONFIG="$CURRENT_KUBECONFIG"
+    ensure_kubectl_image
     echo "Verifying stage=$stage distro=$SOURCE_DIST kubeconfig=$CURRENT_KUBECONFIG"
     verify_api_ca_continuity "$stage" "$CURRENT_KUBECONFIG"
     if [[ "$stage" == nodestore ]]; then
@@ -4570,6 +4575,7 @@ main() {
         verify_returned_k3s_audit
     fi
     assert_csi_device_volume_matches_source "$SOURCE_KUBECONFIG" after-return-migration
+    probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" returned-before-csi
     KUBECONFIG="$SOURCE_KUBECONFIG" install_hostpath_driver /var/lib/kubelet true
     restore_csi_device_volume_after_fixture_reinstall "$SOURCE_KUBECONFIG" returned
     verify_stage returned "$SOURCE_KUBECONFIG"

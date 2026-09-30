@@ -7,7 +7,7 @@ Last updated: 2026-09-30
 The selected checkout is `/workspace/not-k8s`, branch
 `feat/nodemigrate-migration`, with open [PR #591](https://github.com/centerionware/not-k8s/pull/591)
 against `main`. The pushed PR head is
-`678a0bba0731c9d511070b5a8cf0b0a79933c1cd`; it covers Cilium replacement
+`f514e61af89451771dc4616aa88b98977f4a69c2`; it covers Cilium replacement
 readiness and diagnostics, Nodelet dynamic CSI reconciliation/retries, and
 five-node hostpath placement. Latest completed migration workflow
 [36674138076](https://github.com/centerionware/not-k8s/actions/runs/36674138076)
@@ -34,15 +34,59 @@ skipped. `bash -n` on the changed integration scripts and `git diff --check`
 pass. A package-wide
 `cargo fmt --check` reports formatting differences across the existing
 `nodelet` and `nodemigrate` trees, so it is not a clean formatting signal for
-this patch and no repository-wide formatting churn was applied. Migration
-The upstream failure diagnostics show Cilium's API init cleanup exited zero,
+this patch and no repository-wide formatting churn was applied. The prior
+upstream failure diagnostics show Cilium's API init cleanup exited zero,
 but later `CreateContainer` attempts failed with
 `failed to stat "/run/xtables.lock/": not a directory`; the exact failing
-container and mount input were not captured. The five-node source fixture now
-seeds its hostpath topology label before PV provisioning. An uncommitted
-follow-up also adds empty-subPath handling and failure-only Cilium mount
-diagnostics; it has not been checked. Do not run the regular build gate or
-general e2e suite for this task.
+container and mount input were not captured. Commit `f514e61a` seeds the
+five-node source fixture's hostpath topology label before PV provisioning and
+adds Nodelet empty-subPath handling, container-name error context, and
+failure-only Cilium mount diagnostics. Nodelet quick-check passed in
+[36677863272](https://github.com/centerionware/not-k8s/actions/runs/36677863272);
+script validation passed in
+[36677829876](https://github.com/centerionware/not-k8s/actions/runs/36677829876);
+nodemigrate crate and packaging checks passed in
+[36677830069](https://github.com/centerionware/not-k8s/actions/runs/36677830069).
+Migration run [36678250408](https://github.com/centerionware/not-k8s/actions/runs/36678250408)
+is complete against branch-built components with Cilium KPR and five-node
+migration enabled. K3s passed the full round trip in 26m (job
+`109767861015`). Upstream passed forward migration, nodestore checks, and
+return migration, then failed returned workload recovery: Cilium's API Service
+backend appeared active, but Pod-to-Service API requests returned `no route
+to host`; the endpoint snapshot had only five ready endpoints for the cluster's
+many Pods. Hostpath CSI provisioning stayed Pending. Docker passed the
+five-node migration to nodestore and all workload assertions there, then the
+separate fixture checkpoint process exited on an unset
+`NODEMIGRATE_KUBECTL_IMAGE`. A follow-up fixture fix initializes the image in
+each process and probes API ClusterIP routing before returned CSI setup. The
+full lane logs and artifacts are saved under `/tmp/nodemigrate-36678250408*`.
+No regular build gate or general e2e suite ran.
+
+## 2026-09-30 migration run 36678250408
+
+Run [36678250408](https://github.com/centerionware/not-k8s/actions/runs/36678250408)
+tested `f514e61af89451771dc4616aa88b98977f4a69c2` with branch runtime, Cilium
+KPR, and the five-node lane enabled. K3s passed its complete forward/return
+round trip in 26m (job `109767861015`). Upstream Kubernetes completed both
+migration directions and passed the nodestore workload/API checks. The
+returned-stage CSI setup failed because `nodebootstrap-csi-readiness` remained
+Pending; Cilium agent logs show Pod-to-Service API requests to `10.96.0.1:443`
+failing with `no route to host`, despite the replacement Cilium agent being
+Ready and its service map listing backend `10.1.0.251:6443` active. Its
+endpoint list showed only five ready endpoints, indicating workload sandboxes
+were not rerunning CNI after the datapath cleanup. The worktree now recreates
+non-host-network Pod sandboxes on the local Node after the Cilium agent is
+ready, causing the runtime to repeat CNI setup without deleting API objects or
+host-network control-plane sandboxes. Docker
+passed all five-node workload checks through the nodestore checkpoint, then
+failed because `.github/scripts/nodemigrate-five-node-fixture.sh` runs in a
+fresh process where `NODEMIGRATE_KUBECTL_IMAGE` was unset. The current
+worktree initializes that image per process and adds a returned-stage
+ClusterIP probe before CSI setup. These fixes still need focused CI validation.
+Full logs and artifacts:
+`/tmp/nodemigrate-36678250408-{k3s,kubernetes,docker}.log` and
+`/tmp/nodemigrate-36678250408-artifacts/`. Neither upstream nor five-node
+passed the full round-trip gate. No regular build or full e2e ran.
 
 ## Current gate
 
@@ -61,12 +105,13 @@ five-node migration result.
 The branch Cilium loop fix passed nodemigrate quick-check
 [36673743053](https://github.com/centerionware/not-k8s/actions/runs/36673743053),
 but the migration still stalled at a later runtime boundary. The new fixture
-now seeds the source topology label before PV provisioning. The uncommitted
-follow-up adds empty-`subPath` handling and Cilium mount diagnostics, pending
-focused CI. Full logs are saved at `/tmp/nodemigrate-36674138076-{k3s,kubernetes,docker}.log`
+now seeds the source topology label before PV provisioning. The follow-up
+fixes passed focused CI and the branch-runtime migration matrix is running as
+[36678250408](https://github.com/centerionware/not-k8s/actions/runs/36678250408).
+Full logs are saved at `/tmp/nodemigrate-36674138076-{k3s,kubernetes,docker}.log`
 and artifacts under `/tmp/nodemigrate-36674138076-artifacts/`. No general e2e
-or regular build gate ran. Do not start another migration run until the whole
-fix batch passes focused checks.
+or regular build gate ran. Do not start another migration run until this one
+completes and its failures are addressed.
 
 Earlier status:
 

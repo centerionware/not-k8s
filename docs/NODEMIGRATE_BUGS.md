@@ -2,10 +2,10 @@
 
 Last updated: 2026-09-30
 
-## Active fix batch (working tree, not yet CI-verified)
+## Active fix batch (focused CI passed; migration defects under repair)
 
 Open PR #591 now includes commit
-`678a0bba0731c9d511070b5a8cf0b0a79933c1cd` on
+`f514e61af89451771dc4616aa88b98977f4a69c2` on
 `feat/nodemigrate-migration`. Focused quick-check
 [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
 failed while compiling `nodemigrate`; Nodelet passed 390 non-CRI and 1216
@@ -27,8 +27,8 @@ Migration workflow
 completed at SHA `678a0bba` with `runtime_source=branch`, Cilium KPR, and the
 five-node lane enabled. K3s passed its round trip. Upstream safely rolled back
 after a Cilium readiness deadline, and the five-node fixture failed before
-nodemigrate ran. The current uncommitted batch addresses the two actionable
-findings below; the upstream CRI file-mount mechanism still needs confirmation.
+nodemigrate ran. Commit `f514e61a` addresses the fixture failure and adds
+Nodelet diagnostics for the still-unconfirmed upstream CRI file-mount error.
 
 - Cilium cleanup now tracks the replacement Pod UID, cleanup-init exit code,
   and a continuous Ready interval for that same Pod. Each loop checks its
@@ -36,7 +36,8 @@ findings below; the upstream CRI file-mount mechanism still needs confirmation.
   bounded state changes, and captures Pod, container-log, and event details
   on deadline. The clean-state ConfigMap restoration is attempted after both
   success and operation failure, with resourceVersion protection. These
-  changes and their focused state tests are not yet CI-verified; the Cilium
+  changes and their focused state tests passed nodemigrate checks in
+  [36677830069](https://github.com/centerionware/not-k8s/actions/runs/36677830069); the Cilium
   environment value is read from a ConfigMap key reference when its container
   starts, so the actual replacement init/CRI sequence still needs runtime
   evidence.
@@ -45,25 +46,53 @@ findings below; the upstream CRI file-mount mechanism still needs confirmation.
   failed CSINode/Node topology metadata reconciliation. Retry cancellation
   signals tasks without aborting an in-flight CRI mutation, then revalidates
   the current Pod UID before publishing retry status. Focused tests are added
-  but remain unverified until CI runs.
+  and passed the Nodelet quick-check in
+  [36677863272](https://github.com/centerionware/not-k8s/actions/runs/36677863272).
 - The Docker five-node fixture pins the hostpath CSI plugin to the PV topology
   node before provisioning fixture claims, checks driver readiness on all
   required nodes, seeds its node-specific topology label before provisioning,
   resolves PV topology values back to Nodes, and preserves existing StatefulSet
-  selectors. Shell syntax and whitespace validation have not yet been rerun on
-  this batch.
+  selectors. Script validation passed in
+  [36677829876](https://github.com/centerionware/not-k8s/actions/runs/36677829876).
 
 Nodelet now treats an empty `subPath` as the volume root, adds the container
 name to CRI create/start errors, and logs Cilium agent mount source/target paths
-when container creation fails. Run 36674138076 repeatedly reported
+when container creation fails. Nodelet quick-check passed in
+[36677863272](https://github.com/centerionware/not-k8s/actions/runs/36677863272).
+Run 36674138076 repeatedly reported
 `failed to stat "/run/xtables.lock/": ... not a directory` while Cilium's
 replacement remained Pending. The official Cilium manifest declares
 `/run/xtables.lock` as a `FileOrCreate` hostPath with a `/run/xtables.lock`
 mount target and no `subPath`; therefore the saved run does not prove the new
 empty-subPath handling is the cause. The added failure-only mount diagnostics
-will show the exact input if this persists. The Nodelet change and focused test
-remain unverified until quick-check runs. No replacement migration has been
-dispatched.
+will show the exact input if this persists. Nodemigrate crate and packaging
+checks passed in
+[36677830069](https://github.com/centerionware/not-k8s/actions/runs/36677830069).
+Branch-runtime migration run
+[36678250408](https://github.com/centerionware/not-k8s/actions/runs/36678250408)
+completed at SHA `f514e61a` with Cilium KPR and the five-node lane enabled.
+K3s passed its full round trip in 26m (job `109767861015`). The upstream
+Kubernetes lane completed forward and return migration, then failed returned
+workload recovery: Pod-to-Service API requests to `10.96.0.1:443` returned
+`no route to host`, and the hostpath CSI readiness PVC remained Pending. Cilium
+reported its replacement agent Ready and listed the API Service backend as
+active, but its endpoint snapshot showed only five ready endpoints while the
+cluster had many more Pods. The migration reset had cleared Cilium's local
+endpoint state without forcing extant workload sandboxes through CNI ADD
+again. The worktree now removes only the local Node's non-host-network CRI Pod
+sandboxes after Cilium is Ready, preserving API objects and host-network
+control-plane sandboxes so their owning kubelet/runtime recreates Pod network
+state. This replaces the previous `/run/xtables.lock/` failure hypothesis;
+that error did not recur. The Docker five-node lane passed migration to
+nodestore and all
+workload checks through that stage, then its fixture exited because the
+separate checkpoint process had not initialized `NODEMIGRATE_KUBECTL_IMAGE`.
+The working tree now derives that image in every fixture process and checks
+Pod-to-Service API routing immediately after return, before CSI setup can
+obscure that signal. The fixture image and Cilium reset fixes need focused
+validation before another migration run. Captured logs/artifacts are in
+`/tmp/nodemigrate-36678250408-{k3s,kubernetes,docker}.log` and
+`/tmp/nodemigrate-36678250408-artifacts/`.
 
 ## Findings from migration run 36664092690
 

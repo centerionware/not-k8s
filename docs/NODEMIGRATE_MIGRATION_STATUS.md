@@ -5,7 +5,7 @@ Last updated: 2026-09-30
 ## Active worktree candidate
 
 PR #591 remains open on `feat/nodemigrate-migration`, now at
-`678a0bba0731c9d511070b5a8cf0b0a79933c1cd`. The pushed batch addresses the
+`f514e61af89451771dc4616aa88b98977f4a69c2`. The pushed batch addresses the
 Cilium cleanup wait, CSI registration wakeups and metadata
 retries, retry UID/cancellation safety, and hostpath fixture node placement.
 Focused quick-check [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
@@ -19,15 +19,31 @@ its replacement Cilium Pod remained Pending; the Nodelet journal repeatedly
 reported a CRI container-create error on `/run/xtables.lock/`. The five-node
 lane failed in fixture preflight because worker-1 lacked
 `topology.hostpath.csi/node`, before nodemigrate ran. These findings and the
-uncommitted follow-up batch are detailed below. Push-triggered script checks passed in
+follow-up fix are detailed below. Push-triggered script checks passed in
 [36673741337](https://github.com/centerionware/not-k8s/actions/runs/36673741337),
 and migration-specific crate/packaging checks passed in
 [36673741370](https://github.com/centerionware/not-k8s/actions/runs/36673741370);
-its live migration jobs were skipped. The current uncommitted fix batch adds
-Nodelet empty-`subPath` handling and Cilium mount diagnostics, and labels the
-source five-node hostpath topology before provisioning. Focused CI for this
-batch is pending; no new migration run has been dispatched. No general e2e or
-regular build gate is requested.
+its live migration jobs were skipped. The follow-up adds Nodelet
+empty-`subPath` handling and Cilium mount diagnostics, and labels the source
+five-node hostpath topology before provisioning. Nodelet quick-check, migration
+script validation, and nodemigrate checks passed at `f514e61a` in runs
+[36677863272](https://github.com/centerionware/not-k8s/actions/runs/36677863272),
+[36677829876](https://github.com/centerionware/not-k8s/actions/runs/36677829876),
+and [36677830069](https://github.com/centerionware/not-k8s/actions/runs/36677830069).
+Branch-runtime migration run
+[36678250408](https://github.com/centerionware/not-k8s/actions/runs/36678250408)
+completed with Cilium KPR and the five-node lane enabled. K3s passed the full
+round trip in 26m (job `109767861015`). Upstream passed forward migration,
+nodestore checks, and return migration, then could not restore Pod-to-Service
+API routing; its Cilium endpoint list contained only five ready endpoints
+despite many Pods, and hostpath CSI's readiness PVC remained Pending. The
+five-node lane passed migration and workload checks through the nodestore
+checkpoint, then hit an unset fixture image variable in a fresh verification
+process. The worktree now recreates only local non-host-network Pod sandboxes
+after Cilium is ready, so the runtime reruns CNI setup; it also initializes the
+fixture image per process and probes API ClusterIP routing before returned CSI
+setup. The changes need focused CI validation before another migration run. No
+general e2e or regular build gate is requested.
 
 ## Previous completed run: 36664092690
 

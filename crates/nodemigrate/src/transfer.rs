@@ -368,6 +368,110 @@ fn owner_reference_repair_patch(
     patch
 }
 
+async fn recreate_node_pod_sandboxes(
+    client: &Client,
+    node_name: &str,
+    runtime_endpoint: &str,
+) -> Result<()> {
+    let pods: Api<Pod> = Api::all(client.clone());
+    let params = ListParams::default().fields(&format!("spec.nodeName={node_name}"));
+    let node_pods = pods
+        .list(&params)
+        .await
+        .with_context(|| format!("listing Pods assigned to node {node_name}"))?;
+    let pod_uids = node_pod_uids_requiring_cni(&node_pods.items, node_name);
+    if pod_uids.is_empty() {
+        return Ok(());
+    }
+
+    let runtime_endpoint = runtime_endpoint.to_owned();
+    let node_name = node_name.to_owned();
+    let count = tokio::task::spawn_blocking(move || {
+        recreate_pod_sandboxes_for_uids(&runtime_endpoint, &node_name, &pod_uids)
+    })
+    .await
+    .context("joining CRI Pod sandbox recreation task")??;
+    eprintln!(
+        "nodemigrate: removed {count} non-host-network Pod sandbox(es) on node {node_name} so the runtime can rerun CNI setup against the cleaned Cilium datapath"
+    );
+    Ok(())
+}
+
+fn recreate_pod_sandboxes_for_uids(
+    runtime_endpoint: &str,
+    node_name: &str,
+    pod_uids: &BTreeSet<String>,
+) -> Result<usize> {
+    let output = Command::new("crictl")
+        .args(["--runtime-endpoint", runtime_endpoint, "pods", "-o", "json"])
+        .output()
+        .context("listing local CRI Pod sandboxes after Cilium datapath cleanup")?;
+    ensure!(
+        output.status.success(),
+        "crictl could not list Pod sandboxes after Cilium datapath cleanup: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let sandboxes: Value = serde_json::from_slice(&output.stdout)
+        .context("parsing local CRI Pod sandboxes after Cilium datapath cleanup")?;
+    let ids = pod_sandbox_ids_for_uids(&sandboxes, pod_uids);
+
+    for id in &ids {
+        for operation in ["stopp", "rmp"] {
+            let output = Command::new("crictl")
+                .args(["--runtime-endpoint", runtime_endpoint, operation, id])
+                .output()
+                .with_context(|| {
+                    format!("{operation}ing Pod sandbox {id} on node {node_name}")
+                })?;
+            ensure!(
+                output.status.success(),
+                "crictl {operation} failed for Pod sandbox {id} on node {node_name}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
+    Ok(ids.len())
+}
+
+fn node_pod_uids_requiring_cni(pods: &[Pod], node_name: &str) -> BTreeSet<String> {
+    pods.iter()
+        .filter(|pod| {
+            pod.metadata.deletion_timestamp.is_none()
+                && pod
+                    .spec
+                    .as_ref()
+                    .is_some_and(|spec| {
+                        spec.node_name.as_deref() == Some(node_name)
+                            && spec.host_network != Some(true)
+                    })
+        })
+        .filter_map(|pod| pod.metadata.uid.clone())
+        .collect()
+}
+
+fn pod_sandbox_ids_for_uids(sandboxes: &Value, pod_uids: &BTreeSet<String>) -> Vec<String> {
+    sandboxes
+        .get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|sandbox| {
+            sandbox
+                .pointer("/labels/io.kubernetes.pod.uid")
+                .or_else(|| sandbox.pointer("/metadata/uid"))
+                .and_then(Value::as_str)
+                .is_some_and(|uid| pod_uids.contains(uid))
+        })
+        .filter_map(|sandbox| {
+            sandbox
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
 impl KubeApi {
     fn source_kubeconfig_path(installation: &Installation) -> PathBuf {
         std::env::var_os("NODEMIGRATE_SOURCE_KUBECONFIG")
@@ -908,12 +1012,20 @@ impl KubeApi {
     /// lives in a cluster-wide ConfigMap, but changing it does not roll the
     /// DaemonSet; restore the original value as soon as the local init starts
     /// so later Pod restarts on peer nodes do not erase their datapaths.
-    pub fn reset_cilium_agent_state(&self, node_name: &str) -> Result<()> {
+    pub fn reset_cilium_agent_state(
+        &self,
+        node_name: &str,
+        runtime_endpoint: Option<&str>,
+    ) -> Result<()> {
         let (runtime, client) = self.connected()?;
+        let runtime_endpoint = runtime_endpoint
+            .map(str::to_owned)
+            .or_else(|| std::env::var("NODEMIGRATE_CRI_ENDPOINT").ok())
+            .unwrap_or_else(|| "unix:///run/containerd/containerd.sock".to_owned());
         runtime.block_on(async {
             let pods: Api<Pod> = Api::namespaced(client.clone(), "kube-system");
             let events: Api<Event> = Api::namespaced(client.clone(), "kube-system");
-            let config: Api<ConfigMap> = Api::namespaced(client, "kube-system");
+            let config: Api<ConfigMap> = Api::namespaced(client.clone(), "kube-system");
             // A joining node is registered before its Cilium DaemonSet Pod is
             // necessarily scheduled. Do not roll back a healthy node join just
             // because the controller has not observed the new Node yet.
@@ -1242,6 +1354,13 @@ impl KubeApi {
                             eprintln!(
                                 "nodemigrate: rebuilt Cilium host state on node {node_name}; replacement agent UID {current_uid} remained Ready for 10 seconds after clean-cilium-state"
                             );
+                            recreate_node_pod_sandboxes(
+                                &client,
+                                node_name,
+                                &runtime_endpoint,
+                            )
+                            .await
+                            .context("recreating node Pod sandboxes after Cilium datapath cleanup")?;
                             return Ok(());
                         }
                     } else {
@@ -4039,6 +4158,7 @@ mod tests {
         can_preserve_existing_crd, crd_metadata_merge_patch, crd_schema_matches,
         custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
         namespace_ca_bundle_matches, node_is_ready_replacement, node_scheduling_patch, object_rank,
+        node_pod_uids_requiring_cni, pod_sandbox_ids_for_uids,
         node_uid_has_been_replaced, object_skip_reason, object_type_label,
         owner_reference_repair_patch, parse_cilium_kube_proxy_replacement,
         persistent_host_paths, pod_status_is_terminal_or_exited, prepare_initial_import_object,
@@ -5246,6 +5366,43 @@ current-context: test
                 "user-managed endpoint or application Lease was omitted"
             );
         }
+    }
+
+    #[test]
+    fn cilium_reset_recreates_only_local_non_host_network_pod_sandboxes() {
+        let pods = serde_json::from_value::<Vec<super::Pod>>(serde_json::json!([
+            {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": "web", "namespace": "apps", "uid": "web-uid"},
+                "spec": {"nodeName": "worker-1"}
+            },
+            {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": "api", "namespace": "kube-system", "uid": "api-uid"},
+                "spec": {"nodeName": "worker-1", "hostNetwork": true}
+            },
+            {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": "other", "namespace": "apps", "uid": "other-uid"},
+                "spec": {"nodeName": "worker-2"}
+            }
+        ]))
+        .unwrap();
+        let pod_uids = node_pod_uids_requiring_cni(&pods, "worker-1");
+        assert_eq!(pod_uids, ["web-uid".to_owned()].into_iter().collect());
+
+        let sandboxes = serde_json::json!({"items": [
+            {"id": "web-sandbox", "labels": {"io.kubernetes.pod.uid": "web-uid"}},
+            {"id": "api-sandbox", "labels": {"io.kubernetes.pod.uid": "api-uid"}},
+            {"id": "other-sandbox", "labels": {"io.kubernetes.pod.uid": "other-uid"}}
+        ]});
+        assert_eq!(
+            pod_sandbox_ids_for_uids(&sandboxes, &pod_uids),
+            vec!["web-sandbox".to_owned()]
+        );
     }
 
     #[test]
