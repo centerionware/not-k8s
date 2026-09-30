@@ -1,6 +1,6 @@
 # nodemigrate full migration goal
 
-Last updated: 2026-09-29
+Last updated: 2026-09-30
 
 This document defines the complete intended scope and acceptance criteria for
 the standalone `nodemigrate` utility. It is the task-specific authority for
@@ -449,3 +449,158 @@ repository-wide merge policy for other work.
   components, fixes, and focused verification evidence.
 - [Release status](NODEMIGRATE_RELEASE_STATUS.md) — version source, package
   separation, release readiness, and publication record.
+
+## Active stabilization handoff (2026-09-30)
+
+This section records the current failure evidence and the implementation work
+needed before the next migration attempt. It supplements the goal and
+acceptance criteria above; it does not claim the migration is fixed.
+
+### Checkout and verified progress
+
+Work in `/workspace/not-k8s`, branch `feat/nodemigrate-migration`, [PR
+#591](https://github.com/centerionware/not-k8s/pull/591), open against `main`.
+The reviewed branch head is `f1956b4e0bbcdad51cd237790f6c3a1fc215f729`.
+Preserve unrelated untracked directories in the checkout.
+
+The latest completed migration run is
+[36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690),
+testing `18520d8ddb360e01bf2aa665c65cce22390762fb`:
+
+| Lane | Observed result | First unresolved boundary |
+| --- | --- | --- |
+| K3s | Full forward/return checkpoints passed; migration step took 25m21s | Preserve this result; it does not verify other lanes |
+| Upstream Kubernetes | Hit the configured 60-minute migration-step limit; no user or agent canceled it | Replacement Cilium Pod appeared, then cleanup/readiness stopped progressing |
+| Docker five-node | Failed after forward migration at nodestore workload verification | PVs required worker-1 while the CSI driver ran on worker-2 |
+
+At `f1956b4e`, focused run
+[36670163295](https://github.com/centerionware/not-k8s/actions/runs/36670163295)
+passed nodemigrate crate tests. Integration validation
+[36670163242](https://github.com/centerionware/not-k8s/actions/runs/36670163242)
+passed shell/jq checks, but all cluster migration jobs were skipped because
+that was the push-triggered validation path. Focused `quick-check` run
+[36670741332](https://github.com/centerionware/not-k8s/actions/runs/36670741332)
+also passed for `nodemigrate`. These results do not verify the Cilium or CSI
+runtime fixes. Older entries below or in the status documents that call
+36664092690 active or describe its checks as pending are historical.
+
+### Cilium recovery and missing failure evidence
+
+The tested code placed the deadline check and sleep after an unconditional
+loop in `KubeApi::reset_cilium_agent_state`
+(`crates/nodemigrate/src/transfer.rs`). The job log contains the compiler's
+`unreachable statement` warning at 03:23:51Z. At 03:38:41Z migration logged
+replacement Pod `cilium-8368a` on `runnervm8df0l`, then made no further
+progress before the step cap. The artifact ends at that message.
+
+Head `f1956b4e` moves the deadline check and sleep inside the loop. This
+removes the infinite loop; it does not prove why the replacement failed to
+complete cleanup and readiness. The available upstream artifact lacks the
+replacement's init/status/CRI history at the failure interval. Do not infer a
+specific init, datapath, or Nodelet status bug from the missing evidence, and
+do not increase the workflow timeout as a substitute for fixing the state
+machine.
+
+Before another migration run:
+
+- Track the replacement Pod UID and exclude deleting Pods. Reset cleanup
+  success, Ready timing, failure-attempt tracking, and one-time logging when
+  the UID changes. Cleanup success from one Pod must never satisfy another
+  Pod's readiness; require the current Pod's cleanup success and uninterrupted
+  Ready interval together.
+- Check the deadline before every iteration and early continuation, including
+  the Ready-but-less-than-ten-seconds path. Bound each API request by the
+  remaining operation budget, do not declare success after the deadline, and
+  reserve bounded time to restore the temporary ConfigMap flag.
+- Log bounded state changes while waiting: replacement UID and
+  resourceVersion, deletion state, Pod conditions, each init container's
+  current/last state and restart count, and agent readiness. On deadline,
+  capture events and local CRI init/agent state and bounded logs before
+  rollback removes evidence. Avoid credentials and unbounded log dumps.
+- Audit when the cluster-wide `clean-cilium-state` flag is consumed by the
+  deployed Pod spec, including failed init retries and unrelated Cilium Pod
+  restarts. The code currently restores it when the init is first observed
+  Running or Terminated; do not assume a later retry performed cleanup just
+  because it exited zero. Preserve restoration on every exit and protect
+  against concurrent ConfigMap changes.
+- Add deterministic tests with a controlled clock/API sequence for no
+  replacement, an init that never starts, failed-init recovery, Ready
+  flapping, UID replacement during the ten-second interval, deadline expiry
+  during stabilization, and flag restoration on failure.
+
+On the next authorized runtime run, compare API status with CRI state before
+choosing another fix: if CRI finished an init but API status is stale, trace
+Nodelet reconciliation; if CRI never started it, follow that init's actual
+predecessor or error. Capture this evidence before rollback.
+
+### CSI placement and Nodelet recovery
+
+The Docker artifact for run 36664092690 shows CSI registration PASS followed
+by a StatefulSet rollout timeout. `csi-hostpathplugin-0` ran on worker-2 while
+`migration-stateful-0` and both fixture PVs required worker-1. Worker-1
+repeatedly reported no `hostpath.csi.k8s.io` driver; at 03:51:00Z it reported
+waiting for CSI attachment after 24 retries. A Ready driver on another node
+does not satisfy the workload's topology requirement.
+
+The current five-node fixture calls
+`pin_hostpath_driver_to_fixture_volumes` at source, nodestore, and returned
+checkpoints. Validate that behavior while preserving PV affinity, volume
+handles, catalog, payload, and strict parity. The current calls happen after
+driver installation and rollout waits; source pinning also happens after
+fixture workloads provision volumes. Establish the intended placement,
+durable catalog mount, and staging mount before the replacement plugin
+launches and before source CSI volumes are provisioned. Preserve the resulting
+topology in exported state. A checkpoint pin must not be the first time the
+target learns where node-local CSI data lives.
+
+Strengthen verification along the full dependency chain: PVC -> PV -> required
+node -> current Node-owned CSINode/driver entry -> Ready CSI plugin on that
+node. Verify read/write access through existing volume handles and original
+payload markers. Do not move or recreate claims to match a misplaced driver,
+or insert a static endpoint to hide registration failure.
+
+The source-confirmed Nodelet recovery gaps are:
+
+- `PodController::schedule_retry` in `crates/nodelet/src/pods.rs` stops
+  external-resource retries after 24 attempts. `CsiDrivers::register` in
+  `crates/nodelet/src/runtime/csi.rs` only updates the endpoint map; plugin
+  registration does not directly enqueue Pods waiting for that driver. The
+  run proves retry exhaustion, but does not prove late registration on
+  worker-1 caused this specific failure.
+- Feed driver availability into keyed Pod reconciliation and index current-UID
+  Pods waiting on that driver. Reconcile them when the dependency arrives.
+  Apply the same reasoning to attachment completion, using bounded/backed-off
+  recovery when no event is guaranteed. Coalesce retries and cancel old-UID
+  work on deletion or replacement. Check detached retry tasks for duplicate
+  work and ensure a retry cannot act on a same-name replacement.
+- In `crates/nodelet/src/plugin_registry.rs::register_one`, CSINode or Node
+  topology write failures are logged as retrying on the next sync, but the
+  function returns success and the socket becomes known, so later scans skip
+  it. Keep failed metadata reconciliation pending with bounded keyed retries;
+  do not require unplugging or restarting the driver to repair it.
+
+Add a real-driver regression that delays registration beyond the old retry
+budget, then allows registration without changing/recreating the Pod or
+restarting Nodelet; the existing PVC must mount and retain its payload. Also
+force the first CSINode write to fail while the socket remains present and
+prove metadata converges. Preserve shared plugin ownership.
+
+### Evidence and next validation
+
+Full logs are saved at `/tmp/nodemigrate-36664092690-kubernetes.log` and
+`/tmp/nodemigrate-36664092690-docker.log`. Downloaded artifacts are under
+`/tmp/nodemigrate-36664092690-artifacts/kubernetes/` and
+`/tmp/nodemigrate-36664092690-artifacts/docker/`; the Docker artifact line
+references above are from `nodemigrate-docker-preflight.log`. Run/job metadata
+from the audit is `/tmp/nodemigrate-review-36664092690.json`.
+
+Use the repository Rust, stabilization, and CI skills while implementing.
+Run focused CI for changed crates and script validation, then the dedicated
+migration workflow with `runtime_source=branch`, Cilium KPR, and five-node
+migration enabled under the existing authorization. Preserve the remaining
+KPR modes and replacement scenarios; one successful lane is not completion.
+No local Cargo builds/tests or local e2e. Update the living status documents
+with each lane's first failed transition, tested SHA, run ID, observed state,
+proposed cause, fix, focused result, and runtime result. Keep validation skips
+distinct from migration passes, and do not treat a bounded timeout as proof of
+successful Cilium recovery.

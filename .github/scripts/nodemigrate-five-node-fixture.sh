@@ -17,6 +17,9 @@ export KUBECONFIG="$SOURCE_KUBECONFIG"
 case "${1:?use source, nodestore, or returned}" in
     source)
         install_hostpath_driver /var/lib/kubelet
+        # Keep the node-local hostpath catalog on the same node that will own
+        # the generated PV topology before provisioning any fixture claims.
+        pin_hostpath_driver_to_node worker-1
         install_workloads
         pin_hostpath_driver_to_fixture_volumes
         verify_stage source "$SOURCE_KUBECONFIG"

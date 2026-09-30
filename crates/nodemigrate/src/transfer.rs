@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::{bail, ensure, Context, Result};
 use base64::Engine;
-use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Pod};
+use k8s_openapi::api::core::v1::{ConfigMap, Event, Namespace, Pod};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{
     api::{
@@ -51,6 +51,45 @@ const SKIP_KINDS: &[&str] = &[
 ];
 
 const CILIUM_API_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const CILIUM_AGENT_READY_STABILITY: Duration = Duration::from_secs(10);
+
+#[derive(Default)]
+struct CiliumAgentProgress {
+    pod_uid: String,
+    cleanup_succeeded: bool,
+    ready_since: Option<tokio::time::Instant>,
+}
+
+impl CiliumAgentProgress {
+    fn observe(
+        &mut self,
+        pod_uid: &str,
+        cleanup_exit_code: Option<i32>,
+        ready: bool,
+        now: tokio::time::Instant,
+        deadline: tokio::time::Instant,
+    ) -> bool {
+        if self.pod_uid != pod_uid {
+            self.pod_uid.clear();
+            self.pod_uid.push_str(pod_uid);
+            self.cleanup_succeeded = false;
+            self.ready_since = None;
+        }
+        if let Some(exit_code) = cleanup_exit_code {
+            self.cleanup_succeeded = exit_code == 0;
+        }
+        if !self.cleanup_succeeded || !ready || now >= deadline {
+            self.ready_since = None;
+            return false;
+        }
+        let ready_since = *self.ready_since.get_or_insert(now);
+        now.duration_since(ready_since) >= CILIUM_AGENT_READY_STABILITY
+    }
+
+    fn reset_readiness(&mut self) {
+        self.ready_since = None;
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SkipReason {
@@ -873,6 +912,7 @@ impl KubeApi {
         let (runtime, client) = self.connected()?;
         runtime.block_on(async {
             let pods: Api<Pod> = Api::namespaced(client.clone(), "kube-system");
+            let events: Api<Event> = Api::namespaced(client.clone(), "kube-system");
             let config: Api<ConfigMap> = Api::namespaced(client, "kube-system");
             // A joining node is registered before its Cilium DaemonSet Pod is
             // necessarily scheduled. Do not roll back a healthy node join just
@@ -990,25 +1030,59 @@ impl KubeApi {
 
                 let deadline =
                     tokio::time::Instant::now() + std::time::Duration::from_secs(300);
-                let mut cleanup_init_exit_code = None;
+                let mut progress = CiliumAgentProgress::default();
                 let mut cleanup_flag_restored = !cleanup_flag_changed;
-                let mut ready_since = None;
                 let mut last_failed_init_restart_count = None;
                 let mut cleanup_init_failure_details = None;
-                let mut replacement_pod_logged = false;
+                let mut last_observed_state = None;
+                let mut last_replacement: Option<(String, String)> = None;
                 loop {
+                    if tokio::time::Instant::now() >= deadline {
+                        capture_cilium_cleanup_diagnostics(
+                            &pods,
+                            &events,
+                            node_name,
+                            last_replacement.as_ref(),
+                            last_observed_state.as_deref(),
+                        )
+                        .await;
+                        bail!(
+                            "Cilium clean-cilium-state did not complete and the replacement agent did not remain Ready on node {node_name}; last failed init: {}",
+                            cleanup_init_failure_details
+                                .as_deref()
+                                .unwrap_or("no failed init attempt was reported")
+                        );
+                    }
                     let list_params = ListParams::default().labels("k8s-app=cilium");
                     let current_pods = pods.list(&list_params);
-                    let current_pods = cilium_api_request(
+                    let request_timeout = deadline.saturating_duration_since(
+                        tokio::time::Instant::now(),
+                    );
+                    let current_pods = match cilium_api_request_with_timeout(
                         "listing replacement Cilium agent Pods",
                         current_pods,
+                        request_timeout,
                     )
                     .await
-                    .with_context(|| {
-                        format!("waiting for replacement Cilium agent on {node_name}")
-                    })?;
+                    {
+                        Ok(current_pods) => current_pods,
+                        Err(error) => {
+                            capture_cilium_cleanup_diagnostics(
+                                &pods,
+                                &events,
+                                node_name,
+                                last_replacement.as_ref(),
+                                last_observed_state.as_deref(),
+                            )
+                            .await;
+                            return Err(error).with_context(|| {
+                                format!("waiting for replacement Cilium agent on {node_name}")
+                            });
+                        }
+                    };
                     let replacement = current_pods.items.into_iter().find(|pod| {
-                        pod.spec
+                        pod.metadata.deletion_timestamp.is_none()
+                            && pod.spec
                             .as_ref()
                             .and_then(|spec| spec.node_name.as_deref())
                             == Some(node_name)
@@ -1022,13 +1096,28 @@ impl KubeApi {
                             && pod.metadata.uid.as_deref().is_some_and(|pod_uid| pod_uid != uid)
                     });
                     if let Some(current) = replacement {
-                        if !replacement_pod_logged {
+                        let current_uid = current
+                            .metadata
+                            .uid
+                            .as_deref()
+                            .context("replacement Cilium agent Pod has no UID")?;
+                        if progress.pod_uid != current_uid {
+                            progress = CiliumAgentProgress {
+                                pod_uid: current_uid.to_owned(),
+                                ..Default::default()
+                            };
+                            last_failed_init_restart_count = None;
+                            cleanup_init_failure_details = None;
                             eprintln!(
-                                "nodemigrate: replacement Cilium agent Pod {} appeared on node {node_name}",
-                                current.metadata.name.as_deref().unwrap_or("<unnamed>")
+                                "nodemigrate: replacement Cilium agent Pod {} (UID {}) appeared on node {node_name}",
+                                current.metadata.name.as_deref().unwrap_or("<unnamed>"),
+                                current_uid
                             );
-                            replacement_pod_logged = true;
                         }
+                        last_replacement = Some((
+                            current.metadata.name.clone().unwrap_or_else(|| name.clone()),
+                            current_uid.to_owned(),
+                        ));
                         let init_state = current
                             .status
                             .as_ref()
@@ -1036,15 +1125,18 @@ impl KubeApi {
                             .and_then(|statuses| {
                                 statuses.iter().find(|status| status.name == "clean-cilium-state")
                             });
+                        let cleanup_exit_code = init_state
+                            .and_then(|init| init.state.as_ref())
+                            .and_then(|state| state.terminated.as_ref())
+                            .map(|terminated| terminated.exit_code);
                         if let Some(init_state) = init_state {
                             if let Some(terminated) = init_state
                                 .state
                                 .as_ref()
                                 .and_then(|state| state.terminated.as_ref())
                             {
-                                if terminated.exit_code == 0 {
-                                    cleanup_init_exit_code = Some(0);
-                                } else if last_failed_init_restart_count
+                                if terminated.exit_code != 0
+                                    && last_failed_init_restart_count
                                     != Some(init_state.restart_count)
                                 {
                                     last_failed_init_restart_count =
@@ -1091,59 +1183,83 @@ impl KubeApi {
                                 cleanup_flag_changed = false;
                             }
                         }
-                        if cleanup_init_exit_code == Some(0) {
-                            let ready = current.status.as_ref().is_some_and(|status| {
-                                status.conditions.as_ref().is_some_and(|conditions| {
-                                    conditions.iter().any(|condition| {
-                                        condition.type_ == "Ready" && condition.status == "True"
-                                    })
+                        let ready = current.status.as_ref().is_some_and(|status| {
+                            status.conditions.as_ref().is_some_and(|conditions| {
+                                conditions.iter().any(|condition| {
+                                    condition.type_ == "Ready" && condition.status == "True"
                                 })
-                            });
-                            if ready {
-                                let now = tokio::time::Instant::now();
-                                let stable_since = ready_since.get_or_insert(now);
-                                if now.duration_since(*stable_since)
-                                    < std::time::Duration::from_secs(10)
-                                {
-                                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                                    continue;
-                                }
-                                eprintln!(
-                                    "nodemigrate: rebuilt Cilium host state on node {node_name}; replacement agent remained Ready for 10 seconds after clean-cilium-state"
-                                );
-                                return Ok(());
-                            }
-                            ready_since = None;
+                            })
+                        });
+                        let conditions = current
+                            .status
+                            .as_ref()
+                            .and_then(|status| status.conditions.as_ref())
+                            .map(|conditions| {
+                                conditions
+                                    .iter()
+                                    .map(|condition| {
+                                        format!("{}={}:{}", condition.type_, condition.status, condition.reason.as_deref().unwrap_or(""))
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            })
+                            .unwrap_or_else(|| "<none>".to_owned());
+                        let init_summary = current
+                            .status
+                            .as_ref()
+                            .and_then(|status| status.init_container_statuses.as_ref())
+                            .map(|statuses| {
+                                statuses
+                                    .iter()
+                                    .map(|init| {
+                                        let state = init.state.as_ref().map(|state| {
+                                            if let Some(running) = state.running.as_ref() {
+                                                format!("running@{}", running.started_at.as_ref().map(|time| time.0.to_string()).unwrap_or_default())
+                                            } else if let Some(terminated) = state.terminated.as_ref() {
+                                                format!("exit{}:{}", terminated.exit_code, terminated.reason.as_deref().unwrap_or(""))
+                                            } else if let Some(waiting) = state.waiting.as_ref() {
+                                                format!("waiting:{}", waiting.reason.as_deref().unwrap_or(""))
+                                            } else {
+                                                "unknown".to_owned()
+                                            }
+                                        }).unwrap_or_else(|| "unknown".to_owned());
+                                        format!("{}#{}:{}", init.name, init.restart_count, state)
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            })
+                            .unwrap_or_else(|| "<none>".to_owned());
+                        let observed_state = format!(
+                            "uid={current_uid} rv={} ready={ready} conditions=[{conditions}] init=[{init_summary}]",
+                            current.metadata.resource_version.as_deref().unwrap_or("<none>")
+                        );
+                        if last_observed_state.as_deref() != Some(&observed_state) {
+                            eprintln!("nodemigrate: Cilium replacement state on {node_name}: {observed_state}");
+                            last_observed_state = Some(observed_state);
+                        }
+                        let now = tokio::time::Instant::now();
+                        if progress.observe(current_uid, cleanup_exit_code, ready, now, deadline) {
+                            eprintln!(
+                                "nodemigrate: rebuilt Cilium host state on node {node_name}; replacement agent UID {current_uid} remained Ready for 10 seconds after clean-cilium-state"
+                            );
+                            return Ok(());
                         }
                     } else {
-                        ready_since = None;
-                    }
-                    if tokio::time::Instant::now() >= deadline {
-                        bail!(
-                            "Cilium clean-cilium-state did not complete and the replacement agent did not remain Ready on node {node_name}; last failed init: {}",
-                            cleanup_init_failure_details
-                                .as_deref()
-                                .unwrap_or("no failed init attempt was reported")
-                        );
+                        progress.reset_readiness();
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
             .await;
 
-            let restore_result = if cleanup_flag_changed {
-                restore_cilium_clean_state_flag(&config, original_clean_state.as_deref()).await
-            } else {
-                Ok(())
-            };
-            match (operation, restore_result) {
-                (Ok(()), Ok(())) => Ok(()),
-                (Err(error), Ok(())) => Err(error),
-                (Ok(()), Err(error)) => Err(error),
-                (Err(operation_error), Err(restore_error)) => Err(operation_error.context(
-                    format!("restoring original Cilium clean-state flag also failed ({restore_error:#})"),
-                )),
-            }
+            run_with_cilium_flag_restore(operation, async {
+                if cleanup_flag_changed {
+                    restore_cilium_clean_state_flag(&config, original_clean_state.as_deref()).await
+                } else {
+                    Ok(())
+                }
+            })
+            .await
         })
     }
 
@@ -1714,15 +1830,104 @@ where
     E: std::error::Error + Send + Sync + 'static,
     F: Future<Output = std::result::Result<T, E>>,
 {
-    tokio::time::timeout(CILIUM_API_REQUEST_TIMEOUT, request)
+    cilium_api_request_with_timeout(description, request, CILIUM_API_REQUEST_TIMEOUT).await
+}
+
+async fn cilium_api_request_with_timeout<T, E, F>(
+    description: &str,
+    request: F,
+    timeout: Duration,
+) -> Result<T>
+where
+    E: std::error::Error + Send + Sync + 'static,
+    F: Future<Output = std::result::Result<T, E>>,
+{
+    ensure!(!timeout.is_zero(), "Cilium API request {description} has no remaining time budget");
+    tokio::time::timeout(timeout, request)
         .await
-        .with_context(|| {
-            format!(
-                "Cilium API request {description} exceeded {} seconds",
-                CILIUM_API_REQUEST_TIMEOUT.as_secs()
-            )
-        })?
+        .with_context(|| format!("Cilium API request {description} exceeded {} seconds", timeout.as_secs_f64()))?
         .with_context(|| format!("Cilium API request {description} failed"))
+}
+
+async fn run_with_cilium_flag_restore<T, O, R>(operation: O, restore: R) -> Result<T>
+where
+    O: Future<Output = Result<T>>,
+    R: Future<Output = Result<()>>,
+{
+    let operation = operation.await;
+    let restore = restore.await;
+    match (operation, restore) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(operation_error), Err(restore_error)) => Err(operation_error.context(
+            format!("restoring original Cilium clean-state flag also failed ({restore_error:#})"),
+        )),
+    }
+}
+
+async fn capture_cilium_cleanup_diagnostics(
+    pods: &Api<Pod>,
+    events: &Api<Event>,
+    node_name: &str,
+    replacement: Option<&(String, String)>,
+    last_state: Option<&str>,
+) {
+    eprintln!("nodemigrate: Cilium cleanup deadline diagnostics on {node_name}: state={}", last_state.unwrap_or("no replacement Pod observed"));
+    let Some((pod_name, pod_uid)) = replacement else { return };
+    match tokio::time::timeout(Duration::from_secs(5), pods.get_opt(pod_name)).await {
+        Ok(Ok(Some(pod))) => {
+            let phase = pod.status.as_ref().and_then(|status| status.phase.as_deref()).unwrap_or("<none>");
+            let init = pod.status.as_ref().and_then(|status| status.init_container_statuses.as_ref()).map(|statuses| {
+                statuses.iter().map(|status| {
+                    let state = status.state.as_ref().map(|state| {
+                        if let Some(running) = state.running.as_ref() { format!("running since {:?}", running.started_at) }
+                        else if let Some(terminated) = state.terminated.as_ref() { format!("exit={} reason={} message={:?}", terminated.exit_code, terminated.reason.as_deref().unwrap_or(""), terminated.message) }
+                        else if let Some(waiting) = state.waiting.as_ref() { format!("waiting reason={} message={:?}", waiting.reason.as_deref().unwrap_or(""), waiting.message) }
+                        else { "unknown".to_owned() }
+                    }).unwrap_or_else(|| "unknown".to_owned());
+                    format!("{} restart={} {state}", status.name, status.restart_count)
+                }).collect::<Vec<_>>().join("; ")
+            }).unwrap_or_else(|| "<none>".to_owned());
+            let containers = pod.status.as_ref().and_then(|status| status.container_statuses.as_ref()).map(|statuses| {
+                statuses.iter().map(|status| format!("{} ready={} restart={}", status.name, status.ready, status.restart_count)).collect::<Vec<_>>().join("; ")
+            }).unwrap_or_else(|| "<none>".to_owned());
+            eprintln!("nodemigrate: Cilium Pod diagnostic name={pod_name} expected_uid={pod_uid} actual_uid={} rv={} phase={phase} deleting={} init=[{init}] containers=[{containers}]",
+                pod.metadata.uid.as_deref().unwrap_or("<none>"),
+                pod.metadata.resource_version.as_deref().unwrap_or("<none>"),
+                pod.metadata.deletion_timestamp.is_some());
+            for container in ["clean-cilium-state", "cilium-agent"] {
+                let params = LogParams { container: Some(container.to_owned()), tail_lines: Some(50), ..Default::default() };
+                let logs = tokio::time::timeout(Duration::from_secs(5), pods.logs(pod_name, &params)).await;
+                match logs {
+                    Ok(Ok(logs)) => {
+                        let bounded: String = logs.chars().take(8_000).collect();
+                        eprintln!("nodemigrate: Cilium {container} log tail for {pod_name}: {bounded}");
+                    }
+                    Ok(Err(error)) => eprintln!("nodemigrate: unable to read Cilium {container} logs for {pod_name}: {error:#}"),
+                    Err(_) => eprintln!("nodemigrate: reading Cilium {container} logs for {pod_name} timed out"),
+                }
+            }
+        }
+        Ok(Ok(None)) => eprintln!("nodemigrate: Cilium replacement Pod {pod_name} UID {pod_uid} disappeared before diagnostics"),
+        Ok(Err(error)) => eprintln!("nodemigrate: unable to read Cilium replacement Pod {pod_name}: {error:#}"),
+        Err(_) => eprintln!("nodemigrate: reading Cilium replacement Pod {pod_name} timed out"),
+    }
+    let params = ListParams::default()
+        .fields(&format!("involvedObject.uid={pod_uid}"))
+        .limit(20);
+    match tokio::time::timeout(Duration::from_secs(5), events.list(&params)).await {
+        Ok(Ok(list)) => {
+            for event in list.items {
+                eprintln!("nodemigrate: Cilium Pod event type={} reason={} message={}",
+                    event.type_.as_deref().unwrap_or(""),
+                    event.reason.as_deref().unwrap_or(""),
+                    event.message.as_deref().unwrap_or(""));
+            }
+        }
+        Ok(Err(error)) => eprintln!("nodemigrate: unable to list Cilium Pod events: {error:#}"),
+        Err(_) => eprintln!("nodemigrate: listing Cilium Pod events timed out"),
+    }
 }
 
 fn parse_cilium_kube_proxy_replacement(value: Option<&str>) -> Result<bool> {
@@ -3843,13 +4048,16 @@ mod tests {
         retryable_import_error, same_group_kind, sanitize, service_account_token_secret_patch,
         service_account_token_secret_value, skip_kind_reason, skip_object, snapshot_k3s_cni_paths,
         summarize_import_failures, take_pod_ephemeral_containers, write_export_manifest,
-        ApiResource, DynamicObject, Export, ExportedObject, KubeApi, NodeSchedulingState,
-        SkipReason,
+        run_with_cilium_flag_restore, ApiResource, CiliumAgentProgress, DynamicObject, Export,
+        ExportedObject, KubeApi, NodeSchedulingState, SkipReason,
+        CILIUM_AGENT_READY_STABILITY,
     };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
+    use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+    use std::time::Duration;
 
     #[test]
     fn parses_cilium_service_proxy_mode() {
@@ -3858,6 +4066,100 @@ mod tests {
         assert!(parse_cilium_kube_proxy_replacement(Some("true")).unwrap());
         assert!(parse_cilium_kube_proxy_replacement(Some("strict")).unwrap());
         assert!(parse_cilium_kube_proxy_replacement(Some("unknown")).is_err());
+    }
+
+    #[test]
+    fn cilium_cleanup_wait_requires_cleanup_and_stable_ready_for_same_pod_uid() {
+        let start = tokio::time::Instant::now();
+        let deadline = start + Duration::from_secs(300);
+        let mut progress = CiliumAgentProgress::default();
+
+        // A missing replacement or an init that has not started cannot pass.
+        progress.reset_readiness();
+        assert!(!progress.observe("pod-a", None, false, start, deadline));
+        assert!(!progress.observe("pod-a", None, true, start, deadline));
+
+        // A failed attempt is not success; a later successful init begins the
+        // Ready stability window from the successful observation.
+        assert!(!progress.observe("pod-a", Some(1), true, start, deadline));
+        assert!(!progress.observe("pod-a", Some(0), true, start, deadline));
+        assert!(progress.observe(
+            "pod-a",
+            Some(0),
+            true,
+            start + CILIUM_AGENT_READY_STABILITY,
+            deadline,
+        ));
+
+        // A UID replacement cannot inherit either cleanup success or its
+        // readiness interval from the previous Pod.
+        assert!(!progress.observe(
+            "pod-b",
+            None,
+            true,
+            start + CILIUM_AGENT_READY_STABILITY,
+            deadline,
+        ));
+        assert!(!progress.observe(
+            "pod-b",
+            Some(0),
+            true,
+            start + CILIUM_AGENT_READY_STABILITY,
+            deadline,
+        ));
+        assert!(progress.observe(
+            "pod-b",
+            Some(0),
+            true,
+            start + CILIUM_AGENT_READY_STABILITY * 2,
+            deadline,
+        ));
+    }
+
+    #[test]
+    fn cilium_cleanup_wait_resets_stability_after_ready_flap_and_deadline() {
+        let start = tokio::time::Instant::now();
+        let deadline = start + Duration::from_secs(300);
+        let mut progress = CiliumAgentProgress::default();
+        assert!(!progress.observe("pod-a", Some(0), true, start, deadline));
+        assert!(!progress.observe(
+            "pod-a",
+            Some(0),
+            false,
+            start + Duration::from_secs(8),
+            deadline,
+        ));
+        assert!(!progress.observe(
+            "pod-a",
+            Some(0),
+            true,
+            start + Duration::from_secs(9),
+            deadline,
+        ));
+        assert!(!progress.observe("pod-a", Some(0), true, deadline, deadline));
+        assert!(!progress.observe(
+            "pod-a",
+            Some(0),
+            true,
+            start + Duration::from_secs(20),
+            deadline,
+        ));
+    }
+
+    #[tokio::test]
+    async fn cilium_clean_state_flag_restoration_runs_after_operation_failure() {
+        let restored = Arc::new(AtomicBool::new(false));
+        let restored_by_cleanup = restored.clone();
+        let result = run_with_cilium_flag_restore(
+            async { anyhow::bail!("cleanup failed") },
+            async move {
+                restored_by_cleanup.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(restored.load(Ordering::SeqCst));
     }
 
     #[test]

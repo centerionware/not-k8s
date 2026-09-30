@@ -74,6 +74,24 @@ fn reaches_the_ceiling_in_a_bounded_number_of_steps() {
 }
 
 #[test]
+fn external_resource_retries_keep_a_bounded_recovery_edge_after_fast_attempts() {
+    assert_eq!(external_retry_delay(1, RETRY_FIRST_DELAY), RETRY_FIRST_DELAY);
+    assert_eq!(
+        external_retry_delay(FAST_EXTERNAL_RETRY_ATTEMPTS - 1, RETRY_FIRST_DELAY),
+        RETRY_FIRST_DELAY
+    );
+    assert_eq!(
+        external_retry_delay(FAST_EXTERNAL_RETRY_ATTEMPTS, RETRY_FIRST_DELAY),
+        Duration::from_secs(10)
+    );
+    let mut delay = RETRY_FIRST_DELAY;
+    for attempt in FAST_EXTERNAL_RETRY_ATTEMPTS..FAST_EXTERNAL_RETRY_ATTEMPTS + 20 {
+        delay = external_retry_delay(attempt, delay);
+    }
+    assert_eq!(delay, RETRY_MAX_DELAY);
+}
+
+#[test]
 fn projected_service_account_token_waits_are_retried() {
     let status = RuntimeStatus {
         phase: Phase::Pending,

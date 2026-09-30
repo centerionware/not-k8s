@@ -37,6 +37,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tokio::sync::mpsc::UnboundedSender;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tracing::{debug, warn};
 
@@ -188,6 +189,14 @@ pub struct CsiDrivers {
     /// PVC volume is skipped with a warning, same treatment any other
     /// unresolvable volume already gets.
     endpoints: Mutex<BTreeMap<String, String>>,
+    /// Emits a keyed wakeup when dynamic registration makes a driver
+    /// available. A Pod waiting on that dependency may have no further API
+    /// or CRI event to cause reconciliation.
+    registration_events: Mutex<Option<UnboundedSender<String>>>,
+    /// pod key -> Pod UID, indexed by the CSI driver that Pod is waiting for.
+    /// Registrar events drain only the keys for the driver that became
+    /// available; same-name Pod replacement updates or removes the UID.
+    waiting_pods: Mutex<HashMap<String, HashMap<String, String>>>,
     /// Per-driver `STAGE_UNSTAGE_VOLUME` capability, fetched once and
     /// cached — real kubelet does the same rather than calling
     /// `NodeGetCapabilities` on every single mount.
@@ -230,6 +239,8 @@ impl CsiDrivers {
     pub fn new(endpoints: BTreeMap<String, String>) -> Self {
         Self {
             endpoints: Mutex::new(endpoints),
+            registration_events: Mutex::new(None),
+            waiting_pods: Mutex::new(HashMap::new()),
             staging_root: staging_root(),
             stage_capable: Mutex::new(HashMap::new()),
             refs: Mutex::new(HashMap::new()),
@@ -262,6 +273,41 @@ impl CsiDrivers {
         self.endpoints.lock().unwrap().contains_key(driver)
     }
 
+    pub(crate) fn set_registration_events(&self, events: UnboundedSender<String>) {
+        *self.registration_events.lock().unwrap() = Some(events);
+    }
+
+    pub(crate) fn wait_for_driver(&self, driver: &str, pod_key: &str, pod_uid: &str) {
+        let endpoints = self.endpoints.lock().unwrap();
+        if endpoints.contains_key(driver) {
+            drop(endpoints);
+            self.send_pod_reconcile(pod_key);
+            return;
+        }
+        self.waiting_pods
+            .lock()
+            .unwrap()
+            .entry(driver.to_owned())
+            .or_default()
+            .insert(pod_key.to_owned(), pod_uid.to_owned());
+    }
+
+    pub(crate) fn forget_waiting_pod(&self, pod_uid: &str) {
+        let mut waiting = self.waiting_pods.lock().unwrap();
+        waiting.retain(|_, pods| {
+            pods.retain(|_, uid| uid != pod_uid);
+            !pods.is_empty()
+        });
+    }
+
+    fn send_pod_reconcile(&self, pod_key: &str) {
+        if let Some(events) = self.registration_events.lock().unwrap().as_ref() {
+            if events.send(pod_key.to_owned()).is_err() {
+                debug!(pod = pod_key, "Pod controller is not receiving CSI registration events");
+            }
+        }
+    }
+
     /// Every `(driver, volume_handle)` pair currently mounted by at least
     /// one pod on this node (round 34) — feeds
     /// `Node.status.volumesInUse`/`.volumesAttached`. Real kubelet tracks
@@ -278,7 +324,18 @@ impl CsiDrivers {
     /// dynamically-discovered driver. Called by `plugin_registry.rs` when a
     /// CSI driver's registrar announces itself.
     pub fn register(&self, driver: String, endpoint: String) {
-        self.endpoints.lock().unwrap().insert(driver, endpoint);
+        let mut endpoints = self.endpoints.lock().unwrap();
+        let changed = endpoints.insert(driver.clone(), endpoint.clone()).as_deref()
+            != Some(endpoint.as_str());
+        let waiting = if changed {
+            self.waiting_pods.lock().unwrap().remove(&driver).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        drop(endpoints);
+        for pod_key in waiting.keys() {
+            self.send_pod_reconcile(pod_key);
+        }
     }
 
     /// Remove a driver — its registration socket disappeared, so its

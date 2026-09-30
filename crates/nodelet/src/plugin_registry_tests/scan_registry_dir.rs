@@ -102,3 +102,13 @@ fn finds_sockets_in_both_registry_directories() {
     let _ = std::fs::remove_dir_all(nodelet_dir);
     let _ = std::fs::remove_dir_all(kubelet_dir);
 }
+
+#[test]
+fn failed_csi_metadata_reconciliation_uses_bounded_backoff() {
+    let mut delay = CSI_METADATA_RETRY_INITIAL;
+    for _ in 0..16 {
+        delay = next_metadata_retry_delay(delay);
+        assert!(delay <= CSI_METADATA_RETRY_MAX);
+    }
+    assert_eq!(delay, CSI_METADATA_RETRY_MAX);
+}

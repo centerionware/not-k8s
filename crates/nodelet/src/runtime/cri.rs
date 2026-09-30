@@ -605,7 +605,7 @@ impl CriRuntime {
         // the same channel from the runtime's current inventory so existing
         // sandboxes and containers are reconciled immediately after a nodelet
         // or host restart, even when their API status still says Running.
-        tokio::spawn(seed_existing_runtime_pods(rt.clone(), tx));
+        tokio::spawn(seed_existing_runtime_pods(rt.clone(), tx.clone()));
 
         // Best-effort: a malformed/unreadable CredentialProviderConfig
         // shouldn't block startup any more than a missing one does —
@@ -623,6 +623,7 @@ impl CriRuntime {
         };
 
         let csi = Arc::new(crate::runtime::csi::CsiDrivers::new(csi_drivers));
+        csi.set_registration_events(tx.clone());
         // Device health transitions use the priority event channel rather
         // than sharing the ordinary CRI container-event queue. They are the
         // same shape of "real state change that never touches the Pod

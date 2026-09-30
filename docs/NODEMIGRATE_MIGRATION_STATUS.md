@@ -2,6 +2,19 @@
 
 Last updated: 2026-09-30
 
+## Active worktree candidate
+
+PR #591 remains open on `feat/nodemigrate-migration`, with PR head
+`f1956b4e0bbcdad51cd237790f6c3a1fc215f729`. A working-tree batch now
+addresses the Cilium cleanup wait, CSI registration wakeups and metadata
+retries, retry UID/cancellation safety, and hostpath fixture node placement.
+The source has not yet passed focused CI, and none of these changes has been
+exercised by migration runtime. Local shell syntax and `git diff --check`
+passed. The migration rerun remains gated on focused CI for `nodelet` and
+`nodemigrate`; then run the authorized migration workflow with the branch
+runtime, Cilium KPR, and five-node migration enabled. No general e2e or
+regular build gate is requested.
+
 ## Latest completed run: 36664092690
 
 Run [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690)

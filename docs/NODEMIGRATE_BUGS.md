@@ -2,6 +2,40 @@
 
 Last updated: 2026-09-30
 
+## Active fix batch (working tree, not yet CI-verified)
+
+The branch head is still `f1956b4e0bbcdad51cd237790f6c3a1fc215f729` on open
+PR #591. The current uncommitted batch addresses the failure mechanisms
+recorded below:
+
+- Cilium cleanup now tracks the replacement Pod UID, cleanup-init exit code,
+  and a continuous Ready interval for that same Pod. Each loop checks its
+  deadline, bounds the replacement-Pod list request by remaining time, emits
+  bounded state changes, and captures Pod, container-log, and event details
+  on deadline. The clean-state ConfigMap restoration is attempted after both
+  success and operation failure, with resourceVersion protection. These
+  changes and their focused state tests are not yet CI-verified; the Cilium
+  environment value is read from a ConfigMap key reference when its container
+  starts, so the actual replacement init/CRI sequence still needs runtime
+  evidence.
+- Nodelet now wakes Pods waiting for a missing dynamic CSI driver when that
+  driver registers, bounds and coalesces retries by Pod UID, and retries
+  failed CSINode/Node topology metadata reconciliation. Retry cancellation
+  signals tasks without aborting an in-flight CRI mutation, then revalidates
+  the current Pod UID before publishing retry status. Focused tests are added
+  but remain unverified until CI runs.
+- The Docker five-node fixture pins the hostpath CSI plugin to the PV topology
+  node before provisioning fixture claims, checks driver readiness on all
+  required nodes, and preserves existing StatefulSet `nodeSelector` entries.
+  Shell syntax and whitespace validation pass locally; a migration run has
+  not exercised the updated fixture.
+
+Do not dispatch another migration run until focused checks pass for both
+`nodelet` and `nodemigrate` and the integration scripts are validated. The
+next runtime run must use the branch runtime and the existing K3s, upstream
+Kubernetes, and five-node lanes; no regular build gate or general e2e suite is
+part of this migration loop.
+
 ## Findings from migration run 36664092690
 
 Run [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690)

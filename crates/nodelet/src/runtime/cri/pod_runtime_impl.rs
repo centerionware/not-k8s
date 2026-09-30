@@ -367,6 +367,7 @@ impl PodRuntime for CriRuntime {
 
     async fn remove_pod(&self, pod: &Pod) -> Result<()> {
         let id = pod_id(pod);
+        self.csi.forget_waiting_pod(&id.uid);
         let removal_started = tokio::time::Instant::now();
         // Teardown runs on its own task so a long grace period cannot block
         // unrelated Pod events, but it must still serialize with a replacement

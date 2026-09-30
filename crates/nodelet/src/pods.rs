@@ -85,6 +85,10 @@ pub struct PodController {
     /// Pod watch. Kept across delete events so a late event for an old UID
     /// cannot tear down a replacement Pod with the same name.
     observed_pods: Arc<Mutex<HashMap<String, ObservedPod>>>,
+    /// One retry task per Pod key/UID. Watch-driven retries can coalesce
+    /// against it, and replacement/deletion cancels work for the old UID.
+    retry_tasks: Arc<Mutex<HashMap<String, RetryTask>>>,
+    next_retry_id: Arc<AtomicU64>,
     /// Every pod this node currently runs, keyed by `pod_key(ns, name)`, to
     /// the ConfigMap/Secret names its own volumes reference — a local
     /// mirror of exactly what `on_referenced_object_changed()` needs,
@@ -182,6 +186,8 @@ impl Clone for PodController {
             probe_tasks: self.probe_tasks.clone(),
             torn_down: self.torn_down.clone(),
             observed_pods: self.observed_pods.clone(),
+            retry_tasks: self.retry_tasks.clone(),
+            next_retry_id: self.next_retry_id.clone(),
             pod_refs: self.pod_refs.clone(),
             reconcile_workers: self.reconcile_workers.clone(),
         }
@@ -212,12 +218,37 @@ struct ObservedPod {
     resource_version: Option<u64>,
 }
 
+struct RetryTask {
+    uid: String,
+    id: u64,
+    cancel: watch::Sender<bool>,
+}
+
+struct RetryTaskGuard {
+    key: String,
+    id: u64,
+    tasks: Arc<Mutex<HashMap<String, RetryTask>>>,
+}
+
+impl Drop for RetryTaskGuard {
+    fn drop(&mut self) {
+        let mut tasks = self.tasks.lock().unwrap();
+        if tasks.get(&self.key).is_some_and(|task| task.id == self.id) {
+            tasks.remove(&self.key);
+        }
+    }
+}
+
 fn watch_event_is_stale(previous: Option<&ObservedPod>, current: &ObservedPod) -> bool {
     let Some(previous) = previous else { return false };
     previous
         .resource_version
         .zip(current.resource_version)
         .is_some_and(|(previous, current)| current < previous)
+}
+
+fn retry_task_is_for_uid(existing_uid: Option<&str>, requested_uid: &str) -> bool {
+    existing_uid == Some(requested_uid)
 }
 
 /// Releases a pod's `torn_down` entry when its teardown task ends.
@@ -328,6 +359,7 @@ impl Backoff for WatchBackoffPolicy {
 /// failing schedules nothing at all. See `PodController::schedule_retry`.
 const RETRY_FIRST_DELAY: Duration = Duration::from_secs(5);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(300);
+const FAST_EXTERNAL_RETRY_ATTEMPTS: u32 = 24;
 
 /// A pod teardown is the last actor that can remove a terminating Pod. Both
 /// runtime cleanup and the final API delete therefore retry until the
@@ -377,6 +409,14 @@ fn next_retry_delay(current: Duration) -> Duration {
     }
 }
 
+fn external_retry_delay(attempts: u32, current: Duration) -> Duration {
+    if attempts < FAST_EXTERNAL_RETRY_ATTEMPTS {
+        RETRY_FIRST_DELAY
+    } else {
+        next_retry_delay(current)
+    }
+}
+
 impl PodController {
     pub fn new(client: Client, runtime: Arc<dyn PodRuntime>, node_name: String) -> Self {
         Self::new_with_dns_gate(client, runtime, node_name, false)
@@ -406,6 +446,8 @@ impl PodController {
             probe_tasks: Arc::new(Mutex::new(HashMap::new())),
             torn_down: Arc::new(Mutex::new(HashSet::new())),
             observed_pods: Arc::new(Mutex::new(HashMap::new())),
+            retry_tasks: Arc::new(Mutex::new(HashMap::new())),
+            next_retry_id: Arc::new(AtomicU64::new(1)),
             pod_refs: Arc::new(Mutex::new(HashMap::new())),
             reconcile_workers: Arc::new(ReconcileWorkers::new()),
         }
@@ -465,6 +507,12 @@ impl PodController {
     fn enqueue_runtime_reconcile(&self, key: String) {
         if key.split_once('/').is_some() {
             self.enqueue_reconcile_request(key, ReconcileRequest::Refresh, false);
+        }
+    }
+
+    fn cancel_retry(&self, key: &str) {
+        if let Some(task) = self.retry_tasks.lock().unwrap().remove(key) {
+            task.cancel.send_replace(true);
         }
     }
 
@@ -1107,10 +1155,15 @@ impl PodController {
                         );
                         if let Some(key) = key {
                             self.cancel_reconcile(&key);
+                            self.cancel_retry(&key);
                         }
                         self.spawn_teardown(pod);
                     } else {
                         if uid_replaced {
+                            if let Some((namespace, name)) = key_parts(&pod) {
+                                let key = pod_key(&namespace, &name);
+                                self.cancel_retry(&key);
+                            }
                             self.enqueue_pod_reconcile_replacing(pod);
                         } else {
                             self.enqueue_pod_reconcile(pod);
@@ -1127,7 +1180,9 @@ impl PodController {
                 // does not start a second concurrent teardown at all.
                 if self.observe_watch_pod(&pod) {
                     if let Some((namespace, name)) = key_parts(&pod) {
-                        self.cancel_reconcile(&pod_key(&namespace, &name));
+                        let key = pod_key(&namespace, &name);
+                        self.cancel_reconcile(&key);
+                        self.cancel_retry(&key);
                     }
                     self.spawn_teardown(pod);
                 }
@@ -1142,6 +1197,7 @@ impl PodController {
     /// timeout must schedule a retry rather than simply dropping the pod.
     async fn reconcile_with_timeout(&self, pod: Pod) {
         let Some((ns, name)) = key_parts(&pod) else { return };
+        let uid = pod.metadata.uid.clone().unwrap_or_default();
         match tokio::time::timeout(RECONCILE_TIMEOUT, self.reconcile(pod)).await {
             Ok(()) => {}
             Err(_) => {
@@ -1150,7 +1206,7 @@ impl PodController {
                     timeout_secs = RECONCILE_TIMEOUT.as_secs(),
                     "pod reconcile timed out; continuing event loop"
                 );
-                self.schedule_retry(ns, name);
+                self.schedule_retry(ns, name, uid);
             }
         }
     }
@@ -1176,6 +1232,7 @@ impl PodController {
             // something normal to dedupe against — fall through to a
             // real teardown() every time rather than risk collapsing
             // unrelated events into one shared "" key.
+            self.cancel_retry(&pod_key(&ns, &name));
             self.spawn_teardown(pod);
             return;
         }
@@ -1217,6 +1274,7 @@ impl PodController {
         let phase_terminal = matches!(status.and_then(|s| s.phase.as_deref()), Some("Failed") | Some("Succeeded"));
         let reason_terminal = matches!(status.and_then(|s| s.reason.as_deref()), Some("Evicted") | Some("DeadlineExceeded"));
         if phase_terminal || reason_terminal {
+            self.cancel_retry(&pod_key(&ns, &name));
             self.stop_probe_supervisor(&ns, &name);
             self.pod_refs.lock().unwrap().remove(&pod_key(&ns, &name));
             return;
@@ -1252,6 +1310,10 @@ impl PodController {
                         "Cilium Pod runtime reconciliation completed"
                     );
                 }
+                let waiting_external = is_waiting_for_external_resource(&status);
+                if !waiting_external {
+                    self.cancel_retry(&pod_key(&ns, &name));
+                }
                 self.ensure_probe_supervisor(&pod, &ns, &name, status.pod_ip.as_deref());
                 let prev = pod.status.as_ref();
                 let gates = readiness_gate_types(&pod);
@@ -1273,8 +1335,12 @@ impl PodController {
                 // shape (originally for a failed ensure_pod); it now also
                 // recognizes and chains on both these conditions — see
                 // its own doc comment.
-                if is_waiting_for_external_resource(&status) {
-                    self.schedule_retry(ns, name);
+                if waiting_external {
+                    self.schedule_retry(
+                        ns,
+                        name,
+                        pod.metadata.uid.clone().unwrap_or_default(),
+                    );
                 }
             }
             Err(e) => {
@@ -1287,7 +1353,11 @@ impl PodController {
                 // reacts to the failure itself as its own edge instead of
                 // silently dropping it.
                 warn!(pod = %format!("{ns}/{name}"), error = ?e, "ensure_pod failed; retrying with backoff");
-                self.schedule_retry(ns, name);
+                self.schedule_retry(
+                    ns,
+                    name,
+                    pod.metadata.uid.clone().unwrap_or_default(),
+                );
             }
         }
     }
@@ -1302,10 +1372,10 @@ impl PodController {
     /// The two cases get different *cadences*, both bounded, neither a
     /// periodic poll of anything.
     ///
-    /// A pending CSI volume is not a failure at all — it's an ordinary wait
-    /// on an external attacher that can legitimately take well over a minute
-    /// under load (confirmed live in CI). That keeps the steady 5s cadence,
-    /// capped, so a genuinely wedged attach eventually stops.
+    /// A pending external dependency gets an initial fast retry window, then
+    /// a bounded exponential backoff. This preserves a recovery edge when a
+    /// CSI attachment completes without a Pod event. Registration events can
+    /// wake the same keyed worker immediately; the backoff is the safety net.
     ///
     /// An ensure_pod() *error* retries with exponential backoff, from 5s up
     /// to a 5-minute ceiling, for as long as the Pod exists. This used to be
@@ -1324,43 +1394,90 @@ impl PodController {
     /// nothing failing schedules nothing at all and costs exactly zero, and a
     /// permanently broken pod settles at one wakeup every 5 minutes. The cost
     /// is proportional to what is actually broken, not to cluster size.
-    fn schedule_retry(&self, ns: String, name: String) {
+    fn schedule_retry(&self, ns: String, name: String, uid: String) {
+        if uid.is_empty() {
+            warn!(pod = %format!("{ns}/{name}"), "cannot schedule Pod retry without UID");
+            return;
+        }
+        let key = pod_key(&ns, &name);
+        let id = self.next_retry_id.fetch_add(1, Ordering::Relaxed);
+        let mut retry_tasks = self.retry_tasks.lock().unwrap();
+        if retry_task_is_for_uid(retry_tasks.get(&key).map(|task| task.uid.as_str()), &uid) {
+            return;
+        }
+        if let Some(previous) = retry_tasks.remove(&key) {
+            previous.cancel.send_replace(true);
+        }
         let client = self.client.clone();
         let runtime = self.runtime.clone();
         let host_ip = self.host_ip.clone();
         let health = self.health.clone();
+        let tasks = self.retry_tasks.clone();
+        let task_key = key.clone();
+        let task_uid = uid.clone();
+        let (cancel, mut cancel_rx) = watch::channel(false);
         tokio::spawn(async move {
-            const MAX_VOLUME_ATTEMPTS: u32 = 24; // ~2 minutes at 5s apart
+            let _guard = RetryTaskGuard { key: task_key.clone(), id, tasks };
             let mut volume_attempts: u32 = 0;
             let mut attempt: u32 = 0;
             let mut delay = RETRY_FIRST_DELAY;
             loop {
                 attempt += 1;
-                tokio::time::sleep(delay).await;
+                tokio::select! {
+                    _ = cancel_rx.changed() => return,
+                    _ = tokio::time::sleep(delay) => {}
+                }
+                if *cancel_rx.borrow() {
+                    return;
+                }
                 let api: Api<Pod> = Api::namespaced(client.clone(), &ns);
-                let pod = match api.get_opt(&name).await {
-                    Ok(Some(p)) if p.metadata.deletion_timestamp.is_none() => p,
+                let current = tokio::select! {
+                    _ = cancel_rx.changed() => return,
+                    current = api.get_opt(&name) => current,
+                };
+                let pod = match current {
+                    Ok(Some(p))
+                        if p.metadata.deletion_timestamp.is_none()
+                            && p.metadata.uid.as_deref() == Some(task_uid.as_str()) => p,
                     _ => return,
                 };
                 match runtime.ensure_pod(&pod).await {
                     Ok(status) => {
                         debug!(pod = %format!("{ns}/{name}"), phase = status.phase.as_str(), attempt, "ensured (retry)");
+                        if *cancel_rx.borrow() {
+                            return;
+                        }
+                        let latest = tokio::select! {
+                            _ = cancel_rx.changed() => return,
+                            latest = api.get_opt(&name) => latest,
+                        };
+                        let pod = match latest {
+                            Ok(Some(p))
+                                if p.metadata.deletion_timestamp.is_none()
+                                    && p.metadata.uid.as_deref() == Some(task_uid.as_str()) => p,
+                            Ok(_) => return,
+                            Err(error) => {
+                                delay = next_retry_delay(delay);
+                                warn!(pod = %format!("{ns}/{name}"), error = ?error, attempt, retry_in = ?delay, "failed to revalidate Pod UID after retry ensure; backing off without publishing stale status");
+                                continue;
+                            }
+                        };
                         let prev = pod.status.as_ref();
                         let gates = readiness_gate_types(&pod);
                         let qos = crate::eviction::qos_class(&pod);
+                        let waiting_external = is_waiting_for_external_resource(&status);
                         if let Err(e) = write_status(&client, &host_ip, &ns, &name, &status, prev, &gates, &health, qos, pod.metadata.generation).await {
                             warn!(pod = %format!("{ns}/{name}"), error = ?e, "failed to write pod status (retry)");
                         }
-                        if !is_waiting_for_external_resource(&status) {
+                        if !waiting_external {
                             return; // resolved, or failed for some other reason — either way, done retrying
                         }
-                        // An ordinary wait, not a failure: back to the steady
-                        // cadence rather than backing off.
                         volume_attempts += 1;
-                        delay = RETRY_FIRST_DELAY;
-                        if volume_attempts >= MAX_VOLUME_ATTEMPTS {
-                            warn!(pod = %format!("{ns}/{name}"), "still waiting for a CSI volume attach after {MAX_VOLUME_ATTEMPTS} retries — giving up; pod stays Pending until the next real watch event");
-                            return;
+                        delay = external_retry_delay(volume_attempts, delay);
+                        if volume_attempts >= FAST_EXTERNAL_RETRY_ATTEMPTS {
+                            if volume_attempts == FAST_EXTERNAL_RETRY_ATTEMPTS {
+                                warn!(pod = %format!("{ns}/{name}"), retry_in = ?delay, "external dependency is still pending; continuing with bounded backoff");
+                            }
                         }
                     }
                     Err(e) => {
@@ -1368,8 +1485,19 @@ impl PodController {
                         warn!(pod = %format!("{ns}/{name}"), error = ?e, attempt, retry_in = ?delay, "retry ensure_pod also failed; backing off");
                     }
                 }
+                if *cancel_rx.borrow() {
+                    return;
+                }
             }
         });
+        retry_tasks.insert(
+            key,
+            RetryTask {
+                uid,
+                id,
+                cancel,
+            },
+        );
     }
 
     /// Tears down a pod's runtime state and, if it still exists in the

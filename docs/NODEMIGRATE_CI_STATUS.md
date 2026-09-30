@@ -2,6 +2,23 @@
 
 Last updated: 2026-09-30
 
+## Current worktree status
+
+The selected checkout is `/workspace/not-k8s`, branch
+`feat/nodemigrate-migration`, with open [PR #591](https://github.com/centerionware/not-k8s/pull/591)
+against `main`. The PR head remains
+`f1956b4e0bbcdad51cd237790f6c3a1fc215f729`; a new, uncommitted fix batch
+covers Cilium replacement readiness and diagnostics, Nodelet dynamic CSI
+reconciliation/retries, and five-node hostpath placement. `bash -n` on the
+changed integration scripts and `git diff --check` pass. A package-wide
+`cargo fmt --check` reports formatting differences across the existing
+`nodelet` and `nodemigrate` trees, so it is not a clean formatting signal for
+this patch and no repository-wide formatting churn was applied. No quick-check
+or migration workflow has been dispatched for the current changes. There are
+no active branch runs. Commit and push the complete fix batch, then run the
+focused `nodelet,nodemigrate` quick-check before another migration workflow.
+Do not run the regular build gate or general e2e suite for this task.
+
 ## Current gate
 
 The latest migration run is [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690)
