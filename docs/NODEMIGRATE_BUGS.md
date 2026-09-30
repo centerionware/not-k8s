@@ -61,6 +61,9 @@ show which programs are attached to the cgroup root. The `to stack` trace makes
 the post-restart cgroup attachment a concrete next check, not yet a confirmed
 root cause. The next focused diagnostic captures the cgroup2 mount and
 `bpftool cgroup tree` immediately before the failing Pod-origin Service probe.
+That no-migration follow-up is queued as
+[36728443584](https://github.com/centerionware/not-k8s/actions/runs/36728443584)
+at branch SHA `6796db9e743d6d12a267d42a7ebed8399a0b3e89`.
 
 Full logs are saved at
 `/tmp/nodemigrate-36716154527-k3s-probe-job.log` and

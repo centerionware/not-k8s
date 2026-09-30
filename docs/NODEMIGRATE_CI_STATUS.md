@@ -4,6 +4,12 @@ Last updated: 2026-09-30
 
 ## Clean-state Cilium diagnostic
 
+Focused follow-up [36728443584](https://github.com/centerionware/not-k8s/actions/runs/36728443584)
+is queued at SHA `6796db9e743d6d12a267d42a7ebed8399a0b3e89` (job
+`109931339199`). It will capture the Cilium cgroup2 mount and attached
+Socket LB programs before repeating only the no-migration K3s+Cilium probe.
+The migration and general validation jobs are skipped.
+
 Focused Cilium packet diagnostic [36725184073](https://github.com/centerionware/not-k8s/actions/runs/36725184073)
 failed at SHA `03deefc8da64cb635a5ef87616b0788958e21e63` after 15m43s (job
 `109920132880`). The `notk8s` build and CSI setup passed; the restart probe
