@@ -25,8 +25,15 @@ which one. The no-migration diagnostic
 completed with a harness defect. Cilium's operator replaced CoreDNS, but the
 probe used the old Pod IP; the script then manually deleted CRI sandboxes under
 K3s's kubelet, which retained stale probe state and failed to recover CoreDNS.
-The worktree now waits for the CoreDNS rollout and probes the current Ready Pod
-IP without removing CRI state under Kubelet. This correction still needs CI.
+Corrected follow-up run
+[36713423587](https://github.com/centerionware/not-k8s/actions/runs/36713423587)
+completed after setup and the `notk8s` build passed. Cilium's clean-state init
+and replacement agent were healthy, but host probes to the current CoreDNS
+UID/IP timed out. The endpoint table contained only host and health endpoints.
+This confirms that the reset removed the ordinary Pod endpoint while its CRI
+sandbox remained. The run did not remove CRI state manually or invoke
+nodemigrate. The worktree now tests recovery after an API-managed CoreDNS Pod
+replacement triggers fresh CNI setup.
 
 ## Confirmed no-migration diagnostic harness defect
 
@@ -43,14 +50,13 @@ probe its current IP, without deleting CRI state under Kubelet.
 
 PR validation [36713356086](https://github.com/centerionware/not-k8s/actions/runs/36713356086)
 then failed because its lightweight checker still called the removed ordinary
-Cilium-restart helper. The checker now exercises the current Ready-CoreDNS
-probe and asserts the no-migration path does not remove CRI sandboxes under
-Kubelet. `bash .github/scripts/check_nodemigrate_diagnostics.sh` and shell
-syntax validation pass locally, and PR validation
+Cilium-restart helper. The checker now exercises Ready-CoreDNS filtering and
+expected reachability loss, and guards against direct CRI cleanup under
+Kubelet. The local diagnostic checker passes. PR validations
 [36713670774](https://github.com/centerionware/not-k8s/actions/runs/36713670774)
-passed on SHA `efcddde9`. Corrected no-migration diagnostic
-[36713423587](https://github.com/centerionware/not-k8s/actions/runs/36713423587)
-remains in progress on SHA `542e0fb2`.
+and [36714065919](https://github.com/centerionware/not-k8s/actions/runs/36714065919)
+passed. The API-managed CoreDNS CNI-recovery correction is unverified until its
+focused workflow runs.
 
 ## Latest migration result: 36700106403
 

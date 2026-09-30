@@ -53,6 +53,18 @@ case "${KUBECTL_FIXTURE:-}" in
                 ;;
         esac
         ;;
+    coredns-recreate)
+        case "$*" in
+            *"get pods -n kube-system -l k8s-app=kube-dns -o json"*)
+                if [[ -f "${NODEMIGRATE_COREDNS_DELETE_MARKER:?}" ]]; then
+                    printf '%s\n' '{"items":[{"metadata":{"name":"coredns-new","uid":"new","deletionTimestamp":null},"status":{"phase":"Running","podIP":"10.42.0.23","conditions":[{"type":"Ready","status":"True"}]}}]}'
+                else
+                    printf '%s\n' '{"items":[{"metadata":{"name":"coredns-old","uid":"old","deletionTimestamp":null},"status":{"phase":"Running","podIP":"10.42.0.22","conditions":[{"type":"Ready","status":"True"}]}}]}'
+                fi
+                ;;
+            *"delete pod coredns-old"*) touch "${NODEMIGRATE_COREDNS_DELETE_MARKER:?}" ;;
+        esac
+        ;;
     *)
         echo "unknown fixture" >&2
         exit 2
@@ -63,6 +75,10 @@ chmod +x "$TEST_DIR/kubectl"
 
 cat > "$TEST_DIR/curl" <<'STUB'
 #!/usr/bin/env bash
+if [[ "${CURL_FIXTURE:-success}" == unreachable ]]; then
+    printf 'curl: (28) timeout\n' >&2
+    exit 28
+fi
 printf 'http=200 connect=0.001 total=0.002'
 STUB
 chmod +x "$TEST_DIR/curl"
@@ -284,8 +300,32 @@ if grep -Fq 'coredns-old' <<< "$output"; then
     echo "host-origin probe targeted a non-Ready old CoreDNS Pod: $output" >&2
     exit 1
 fi
+export CURL_FIXTURE=unreachable
+output="$(probe_host_coredns /tmp/test-kubeconfig clean-state-before-cni-add true 2>&1)" || {
+    echo "expected unreachable-CoreDNS probe fixture failed: $output" >&2
+    exit 1
+}
+grep -Fq 'PASS host-origin CoreDNS probe failed as expected at stage=clean-state-before-cni-add' <<< "$output" || {
+    echo "expected post-cleanup probe failure was not recorded: $output" >&2
+    exit 1
+}
+unset CURL_FIXTURE
+export KUBECTL_FIXTURE=coredns-recreate
+export NODEMIGRATE_COREDNS_DELETE_MARKER="$TEST_DIR/coredns-pod-deleted"
+output="$(recreate_coredns_pod_for_probe /tmp/test-kubeconfig 2>&1)" || {
+    echo "API-managed CoreDNS recreation fixture failed: $output" >&2
+    exit 1
+}
+grep -Fq 'PASS CoreDNS received a fresh CNI sandbox after API recreation: pod=coredns-new uid=new ip=10.42.0.23' <<< "$output" || {
+    echo "CoreDNS recreation did not report the new Pod UID/IP: $output" >&2
+    exit 1
+}
 grep -Fq 'reset_cilium_state_for_probe "$SOURCE_KUBECONFIG"' "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
     echo "restart diagnostic does not exercise Cilium clean-state recovery" >&2
+    exit 1
+}
+grep -Fq 'recreate_coredns_pod_for_probe "$SOURCE_KUBECONFIG"' "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
+    echo "restart diagnostic does not test a fresh CNI ADD after cleanup" >&2
     exit 1
 }
 if grep -Fq 'recreate_non_host_pod_sandboxes_for_probe' "$ROOT/.github/scripts/nodemigrate-integration.sh"; then

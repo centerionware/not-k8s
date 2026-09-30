@@ -28,17 +28,22 @@ unresolved.
 
 Enhanced no-migration clean-state diagnostic
 [36710560344](https://github.com/centerionware/not-k8s/actions/runs/36710560344)
-failed at SHA `72ddff65` in `Run restart probe` (job `109871069034`). The Cilium
-clean-state init completed and the replacement agent stayed Ready. However,
-Cilium's operator replaced CoreDNS, while the probe kept using the previous
-CoreDNS Pod IP. The script then removed 17 CRI sandboxes underneath K3s's
-kubelet; Kubelet retained stale probe state and CoreDNS did not recover within
-five minutes. This is a diagnostic-harness defect and does not establish a
-Nodelet failure. The script now waits for the CoreDNS rollout and probes the
-current Ready Pod IP; it no longer removes CRI sandboxes under K3s. This
-correction has no CI evidence yet. Artifact and workflow logs are
-saved under `/tmp/nodemigrate-36710560344-artifact/` and
-`/tmp/nodemigrate-36710560344-k3s-probe-workflow.log`.
+failed at SHA `72ddff65` in `Run restart probe` (job `109871069034`). Its
+artifact exposed two harness defects: it probed CoreDNS's previous IP after
+Cilium replaced that Pod, then removed 17 CRI sandboxes underneath K3s's
+kubelet. That run is not migration evidence. Corrected diagnostic
+[36713423587](https://github.com/centerionware/not-k8s/actions/runs/36713423587)
+failed at SHA `542e0fb2` in 15m26s (job `109880434680`) after the `notk8s`
+build and setup passed. Cilium's clean-state init completed; the replacement
+agent and node stayed Ready; and CoreDNS kept its current UID/IP. Both
+host-origin HTTP probes timed out. The Cilium endpoint table contained only
+host and health endpoints, with no workload endpoints. This confirms the
+clean-state reset left the existing CoreDNS sandbox without a Cilium endpoint.
+The harness no longer deletes CRI state. The next diagnostic will request an
+API-managed CoreDNS Pod replacement to trigger fresh CNI setup and test its
+new UID/IP. It does not invoke nodemigrate. Logs are saved under
+`/tmp/nodemigrate-36713423587-artifact/` and
+`/tmp/nodemigrate-36713423587-k3s-probe-workflow.log`.
 
 PR validation [36713356086](https://github.com/centerionware/not-k8s/actions/runs/36713356086)
 also exposed a stale fixture in `check_nodemigrate_diagnostics.sh`: it called
@@ -47,9 +52,9 @@ the clean-state reset. The checker now tests filtering to the current Ready
 CoreDNS Pod IP and guards against direct CRI sandbox deletion under K3s's
 kubelet. The updated checker passes locally and in PR validation
 [36713670774](https://github.com/centerionware/not-k8s/actions/runs/36713670774)
-on SHA `efcddde95ef7720d0974d5698b3dad2a73bac65a`. Corrected no-migration
-diagnostic [36713423587](https://github.com/centerionware/not-k8s/actions/runs/36713423587)
-is still running on SHA `542e0fb2f0437c13161f502974b2fbc757911149`.
+on SHA `efcddde95ef7720d0974d5698b3dad2a73bac65a`. Living-document-only
+validation [36714065919](https://github.com/centerionware/not-k8s/actions/runs/36714065919)
+also passed on SHA `91899c5b`.
 
 ## Latest migration matrix
 

@@ -656,17 +656,22 @@ probe_host_coredns() {
     local kubeconfig="${1:?missing probe kubeconfig}"
     local stage="${2:?missing probe stage}"
     local pod_json pod_ip pod_name port path result output ready_pods failed=false
+    local expect_unreachable="${3:-false}"
     pod_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
         -l k8s-app=kube-dns -o json)" || return 1
-    ready_pods="$(jq -r '
+    ready_pods="$(jq -r --argjson expect_unreachable "$expect_unreachable" '
         .items[]?
         | select(.status.phase == "Running")
-        | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
         | select((.status.podIP // "") != "")
+        | select($expect_unreachable or any(.status.conditions[]?; .type == "Ready" and .status == "True"))
         | [.metadata.name, (.status.podIP // "")] | @tsv
       ' <<<"$pod_json")" || return 1
     [[ -n "$ready_pods" ]] || {
-        echo "no Ready CoreDNS Pod has a Pod IP at probe stage $stage" >&2
+        if [[ "$expect_unreachable" == true ]]; then
+            echo "no Running CoreDNS Pod has a Pod IP at probe stage $stage" >&2
+        else
+            echo "no Ready CoreDNS Pod has a Pod IP at probe stage $stage" >&2
+        fi
         return 1
     }
     while IFS=$'\t' read -r pod_name pod_ip; do
@@ -687,7 +692,63 @@ probe_host_coredns() {
             fi
         done
     done <<<"$ready_pods"
-    [[ "$failed" == false ]] || return 1
+    if [[ "$failed" == true ]]; then
+        if [[ "$expect_unreachable" == true ]]; then
+            echo "PASS host-origin CoreDNS probe failed as expected at stage=$stage after Cilium datapath cleanup"
+            return 0
+        fi
+        return 1
+    fi
+    if [[ "$expect_unreachable" == true ]]; then
+        echo "CoreDNS unexpectedly remained reachable after Cilium datapath cleanup at stage=$stage" >&2
+        return 1
+    fi
+    return 0
+}
+
+recreate_coredns_pod_for_probe() {
+    local kubeconfig="${1:?missing probe kubeconfig}"
+    local pods_json old_pod_json old_pod_name old_pod_uid replacement_json replacement_pod_name attempt
+    pods_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+        -l k8s-app=kube-dns -o json)" || return 1
+    old_pod_json="$(jq -ce '
+        if (.items | length) == 1 then .items[0]
+        else error("expected one CoreDNS Pod in this single-node diagnostic") end
+      ' <<<"$pods_json")" || {
+        echo "expected one CoreDNS Pod for the single-node clean-state diagnostic" >&2
+        return 1
+    }
+    old_pod_name="$(jq -er '.metadata.name' <<<"$old_pod_json")" || return 1
+    old_pod_uid="$(jq -er '.metadata.uid' <<<"$old_pod_json")" || return 1
+    echo "Deleting CoreDNS Pod $old_pod_name UID=$old_pod_uid through the API to request a fresh CNI ADD"
+    KUBECONFIG="$kubeconfig" kubectl delete pod "$old_pod_name" -n kube-system \
+        --wait=true --timeout=120s || return 1
+
+    replacement_json=""
+    for attempt in $(seq 1 300); do
+        pods_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+            -l k8s-app=kube-dns -o json 2>/dev/null)" || pods_json='{"items":[]}'
+        replacement_json="$(jq -c --arg old_uid "$old_pod_uid" '
+            .items[]?
+            | select(.metadata.uid != $old_uid and .metadata.deletionTimestamp == null)
+            | select(.status.phase == "Running")
+            | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+            | select((.status.podIP // "") != "")
+            | {name:.metadata.name, uid:.metadata.uid, ip:.status.podIP}
+          ' <<<"$pods_json" | head -n 1)" || replacement_json=""
+        if [[ -n "$replacement_json" ]]; then
+            break
+        fi
+        sleep 1
+    done
+    [[ -n "$replacement_json" ]] || {
+        echo "CoreDNS did not become Ready with a new UID after API-managed Pod recreation" >&2
+        KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+            -l k8s-app=kube-dns -o wide >&2 || true
+        return 1
+    }
+    replacement_pod_name="$(jq -er '.name' <<<"$replacement_json")" || return 1
+    echo "PASS CoreDNS received a fresh CNI sandbox after API recreation: pod=$replacement_pod_name uid=$(jq -r '.uid' <<<"$replacement_json") ip=$(jq -r '.ip' <<<"$replacement_json")"
 }
 
 restore_cilium_clean_state_for_probe() {
@@ -4463,9 +4524,15 @@ main() {
         reset_cilium_state_for_probe "$SOURCE_KUBECONFIG"
         KUBECONFIG="$SOURCE_KUBECONFIG" kubectl wait \
             --for=condition=Ready node --all --timeout=5m
-        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl rollout status \
-            deployment/coredns -n kube-system --timeout=5m
-        probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-rebuilt
+        probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-before-cni-add true
+        echo "Cilium datapath immediately after clean-state, before a fresh CoreDNS CNI ADD"
+        capture_cilium_datapath "$SOURCE_KUBECONFIG"
+        recreate_coredns_pod_for_probe "$SOURCE_KUBECONFIG"
+        probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-after-cni-add
+        echo "Cilium datapath after API-managed CoreDNS CNI recreation"
+        capture_cilium_datapath "$SOURCE_KUBECONFIG"
+        echo "PASS focused Cilium clean-state host-path recovery diagnostic; nodemigrate remains disabled"
+        return 0
         verify_stage cilium-agent-restarted "$SOURCE_KUBECONFIG"
         assert_migratable_api_objects_retained source cilium-agent-restarted
         probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" cilium-agent-restarted

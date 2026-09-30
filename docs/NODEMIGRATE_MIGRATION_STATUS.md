@@ -23,15 +23,17 @@ path remain untested by this diagnostic. Saved logs are under
 
 Enhanced no-migration clean-state diagnostic
 [36710560344](https://github.com/centerionware/not-k8s/actions/runs/36710560344)
-failed at SHA `72ddff65` in job `109871069034`. Cilium cleanup completed, but
-the diagnostic probed CoreDNS's old IP after Cilium's operator replaced that
-Pod. It then manually removed 17 non-host-network CRI sandboxes while K3s's
-kubelet still owned those Pods; stale Kubelet probe state prevented CoreDNS
-from recovering within five minutes. This is a harness defect, not evidence
-against Nodelet. The corrected script waits for CoreDNS rollout and probes its
-current Ready Pod IP without deleting CRI state under Kubelet. This correction
-has no CI evidence yet. The run did not invoke nodemigrate and is
-not migration evidence.
+failed at SHA `72ddff65` in job `109871069034` due to harness defects: it probed
+CoreDNS's previous IP after Cilium replaced the Pod, then deleted CRI sandboxes
+under K3s's kubelet. Corrected run
+[36713423587](https://github.com/centerionware/not-k8s/actions/runs/36713423587)
+failed at SHA `542e0fb2` after setup and the `notk8s` build passed. Cilium and
+the node stayed Ready, but the current CoreDNS Pod's host-origin HTTP probes
+timed out; Cilium's endpoint table contained only host and health endpoints.
+This is evidence that the clean-state reset left the existing Pod sandbox
+without a Cilium endpoint. The run did not manually remove CRI state or invoke
+nodemigrate. The next diagnostic will API-recreate CoreDNS to trigger CNI ADD
+and probe its new UID/IP.
 
 ## Latest migration matrix: 36700106403
 
