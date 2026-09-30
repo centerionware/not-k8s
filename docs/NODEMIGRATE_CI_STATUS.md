@@ -25,6 +25,13 @@ removed. The final CoreDNS token/network symptoms remain unverified against
 these recovery changes. Focused quick-check and a migration rerun are pending.
 No general build or full e2e ran.
 
+Focused quick-check [36777417980](https://github.com/centerionware/not-k8s/actions/runs/36777417980)
+tested `545d44223824f6fa7b6e3757dd9351786aa4ff5b` and failed compiling the
+new Pod recovery unit tests because their module omitted the `Pod` import.
+The test import is fixed in the worktree. No migration matrix was dispatched;
+rerun quick-check before starting one. Full job log:
+`/tmp/nodemigrate-quickcheck-36777417980-job-110098726234.log`.
+
 ## Branch migration matrix 36764002800
 
 Migration matrix

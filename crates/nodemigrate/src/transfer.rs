@@ -4740,6 +4740,7 @@ mod tests {
         SkipReason,
         CILIUM_AGENT_READY_STABILITY,
     };
+    use k8s_openapi::api::core::v1::Pod;
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
     use std::collections::{BTreeMap, HashMap};
