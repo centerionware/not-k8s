@@ -37,14 +37,16 @@ and probe its new UID/IP. That diagnostic
 [36716154527](https://github.com/centerionware/not-k8s/actions/runs/36716154527)
 failed after 19m27s at SHA `4761372698dd661ddd95419fbd19cdb0707b5064`; it did
 not invoke nodemigrate. Cilium logged successful endpoint creation for the
-new Pod IP, but the Pod remained unready because it could not reach the
-Kubernetes API ClusterIP. Cilium's BPF service map marked that ClusterIP
-non-routable after `clean-cilium-state`, despite its service listing showing
-an active backend. This confirms endpoint recreation alone does not recover
-the Cilium Service datapath. A no-migration diagnostic is being extended to
-restart the Cilium agent again with the cleanup flag restored, then verify
-whether the service map and workload probes recover. Diagnose and repair or
-safely adjust cleanup sequencing before another migration run.
+new Pod IP; its host `/health` probe returned 200, but `/ready` returned 503
+because its Kubernetes plugin could not sync the API. After a second Cilium
+agent restart with `clean-cilium-state` restored, the agent became Ready and
+the final BPF service map showed the Kubernetes API backend at
+`10.1.0.10:6443`. CoreDNS still did not become Ready within five minutes. The
+diagnostic timed out on its CoreDNS rollout before probing Pod-origin TCP
+access to either the Kubernetes API ClusterIP or direct backend; it therefore
+does not prove those routes remained broken. The diagnostic is being changed
+to test both routes before waiting on CoreDNS readiness. Diagnose and repair
+or safely adjust cleanup sequencing before another migration run.
 
 ## Latest migration matrix: 36700106403
 

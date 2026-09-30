@@ -21,19 +21,27 @@ that recreating a workload endpoint alone does not restore the Kubernetes
 Service datapath after this clean-state reset. Cilium documents
 `clean-cilium-state` as an invasive all-state cleanup whose BPF state must be
 reconstructed from Kubernetes; see [Cilium configuration](https://docs.cilium.io/en/stable/network/kubernetes/configuration/).
-The exact missing reconciliation/reinitialization mechanism remains
-unresolved. The next diagnostic now tests whether restarting the Cilium agent
-again with the clean-state flag restored repopulates the service map. This
-remains a no-migration diagnostic, not a product fix. Do not retry migration
-until the path is diagnosed and repaired or cleanup sequencing is safely
-corrected.
+Follow-up no-migration diagnostic
+[36719510988](https://github.com/centerionware/not-k8s/actions/runs/36719510988)
+confirmed that a second Cilium agent restart with the clean-state flag
+restored did become Ready and its final BPF service map showed a backend for
+`10.43.0.1:443` at `10.1.0.10:6443`. This narrows the unresolved problem:
+the replacement CoreDNS Pod's host `/health` request succeeded, its `/ready`
+request returned 503, and its API watches still timed out; CoreDNS did not
+become Ready in the five-minute rollout window. The run stopped before its
+Pod-origin API TCP probe, so it does not establish whether the Kubernetes
+ClusterIP or direct backend was reachable after the second restart. The next
+diagnostic tests both routes before waiting for CoreDNS readiness. Cilium's
+agent restart and service-map recovery are observations, not a product fix.
+Do not retry migration until Pod-origin API access and Nodelet's host-probe
+path are verified after cleanup.
 
 Full logs are saved at
 `/tmp/nodemigrate-36716154527-k3s-probe-job.log` and
 `/tmp/nodemigrate-36716154527-artifact/nodemigrate-k3s-cilium-restart.log`.
-The run also emitted repeated K3s probe-manager "already exists" messages
-during the long unready interval; these are observed secondary symptoms, not
-yet established as an independent cause.
+The diagnostic runs emitted repeated K3s probe-manager "already exists"
+messages during the unready interval; these are observed secondary symptoms,
+not yet established as an independent cause.
 
 ## Additional confirmed diagnostic fixture defect
 

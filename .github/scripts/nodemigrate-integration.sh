@@ -499,11 +499,21 @@ capture_cilium_datapath() {
 probe_api_clusterip_from_pod() {
     local kubeconfig="${1:?missing probe kubeconfig}"
     local stage="${2:?missing probe stage}"
-    local cluster_ip pod_name phase deadline
+    local cluster_ip target_ip target_port pod_name phase deadline
     cluster_ip="$(KUBECONFIG="$kubeconfig" kubectl get service kubernetes \
         -n default -o jsonpath='{.spec.clusterIP}')"
     [[ "$cluster_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || {
         echo "Kubernetes Service has an invalid ClusterIP at stage=$stage: $cluster_ip" >&2
+        return 1
+    }
+    target_ip="${3:-$cluster_ip}"
+    [[ "$target_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || {
+        echo "API TCP probe has an invalid destination at stage=$stage: $target_ip" >&2
+        return 1
+    }
+    target_port="${4:-443}"
+    [[ "$target_port" =~ ^[0-9]+$ ]] && (( target_port > 0 && target_port < 65536 )) || {
+        echo "API TCP probe has an invalid destination port at stage=$stage: $target_port" >&2
         return 1
     }
     pod_name="nodemigrate-api-route-$stage"
@@ -523,7 +533,7 @@ spec:
   - name: probe
     image: busybox:1.36.1
     imagePullPolicy: IfNotPresent
-    command: ["sh", "-ec", "nc -z -w 5 $cluster_ip 443"]
+    command: ["sh", "-ec", "nc -z -w 5 $target_ip $target_port"]
     resources:
       requests:
         cpu: 1m
@@ -535,7 +545,7 @@ EOF
             -n kube-system -o jsonpath='{.status.phase}' 2>/dev/null || true)"
         case "$phase" in
             Succeeded)
-                echo "PASS Pod-to-Service API TCP probe at stage=$stage clusterIP=$cluster_ip"
+                echo "PASS Pod-origin API TCP probe at stage=$stage target=$target_ip:$target_port clusterIP=$cluster_ip"
                 KUBECONFIG="$kubeconfig" kubectl delete pod "$pod_name" \
                     -n kube-system --wait=true --timeout=30s >/dev/null
                 return 0
@@ -545,7 +555,7 @@ EOF
                 KUBECONFIG="$kubeconfig" kubectl describe pod "$pod_name" -n kube-system >&2 || true
                 KUBECONFIG="$kubeconfig" kubectl delete pod "$pod_name" \
                     -n kube-system --wait=true --timeout=30s >/dev/null || true
-                echo "Pod-to-Service API TCP probe failed at stage=$stage clusterIP=$cluster_ip" >&2
+                echo "Pod-origin API TCP probe failed at stage=$stage target=$target_ip:$target_port clusterIP=$cluster_ip" >&2
                 return 1
                 ;;
         esac
@@ -554,7 +564,7 @@ EOF
     KUBECONFIG="$kubeconfig" kubectl describe pod "$pod_name" -n kube-system >&2 || true
     KUBECONFIG="$kubeconfig" kubectl delete pod "$pod_name" \
         -n kube-system --wait=true --timeout=30s >/dev/null || true
-    echo "Pod-to-Service API TCP probe timed out at stage=$stage clusterIP=$cluster_ip" >&2
+    echo "Pod-origin API TCP probe timed out at stage=$stage target=$target_ip:$target_port clusterIP=$cluster_ip" >&2
     return 1
 }
 
@@ -4576,12 +4586,29 @@ main() {
         restart_cilium_agent_for_probe "$SOURCE_KUBECONFIG"
         KUBECONFIG="$SOURCE_KUBECONFIG" kubectl rollout status daemonset/cilium \
             -n kube-system --timeout=5m
-        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl rollout status deployment/coredns \
-            -n kube-system --timeout=5m
-        probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" clean-state-agent-restarted
-        probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-agent-restarted
         echo "Cilium datapath after second agent restart with clean-cilium-state restored"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
+        local post_restart_api_ok=true post_restart_backend_ok=true api_backend_ip
+        probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" clean-state-agent-restarted \
+            || post_restart_api_ok=false
+        api_backend_ip="$(KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get endpoints kubernetes \
+            -n default -o jsonpath='{.subsets[0].addresses[0].ip}')"
+        if [[ "$api_backend_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" clean-state-api-backend \
+                "$api_backend_ip" 6443 || post_restart_backend_ok=false
+        else
+            echo "Kubernetes API Service has no valid endpoint address after Cilium restart: $api_backend_ip" >&2
+            post_restart_backend_ok=false
+        fi
+        if [[ "$post_restart_api_ok" != true || "$post_restart_backend_ok" != true ]]; then
+            echo "FAIL post-reset Pod-origin Kubernetes API probes: clusterIP=$post_restart_api_ok backend=$post_restart_backend_ok" >&2
+            capture_cilium_datapath "$SOURCE_KUBECONFIG"
+            return 1
+        fi
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl rollout status deployment/coredns \
+            -n kube-system --timeout=5m
+        probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-agent-restarted
+        probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" clean-state-agent-restarted-ready
         echo "PASS focused Cilium clean-state datapath recovery diagnostic; nodemigrate remains disabled"
         return 0
         verify_stage cilium-agent-restarted "$SOURCE_KUBECONFIG"

@@ -77,10 +77,25 @@ passed on the same SHA. Migration, docker-preflight, and e2e jobs were skipped.
 
 The next no-migration probe will restart Cilium once more with
 `clean-cilium-state` restored, then test whether this repopulates the BPF
-service map and restores CoreDNS/API-Service traffic. This tests a recovery
-hypothesis only; it does not change nodemigrate. Do not dispatch migration
-while the post-clean-state Kubernetes ClusterIP datapath failure remains
-unresolved.
+service map and restores CoreDNS/API-Service traffic. Follow-up
+[36719510988](https://github.com/centerionware/not-k8s/actions/runs/36719510988)
+passed setup and the `notk8s` build but failed after 20m13s in the focused
+probe. After the first clean-state reset, a newly recreated CoreDNS Pod's
+host `/health` probe returned 200 while `/ready` returned 503. The second
+Cilium agent restart became Ready, and the final Cilium service listing and
+BPF backend map showed the Kubernetes API Service routed to `10.1.0.10:6443`.
+Nevertheless, CoreDNS did not become Ready within five minutes, and its API
+watches continued to fail. The probe timed out waiting for CoreDNS rollout
+before running a direct Pod-origin TCP check to either `10.43.0.1:443` or its
+backend `10.1.0.10:6443`; this is a diagnostic ordering gap, not proof that
+those routes fail after the second restart. Next diagnostic will test both
+addresses before waiting on CoreDNS. No nodemigrate command ran. Logs and
+artifact are saved at `/tmp/nodemigrate-36719510988-k3s-probe-job.log` and
+`/tmp/nodemigrate-36719510988-artifact/nodemigrate-k3s-cilium-restart.log`.
+
+This tests recovery hypotheses only; it does not change nodemigrate. Do not
+dispatch migration until Pod-origin API access and the Nodelet host-probe path
+are verified after cleanup.
 
 ## Latest migration matrix
 
