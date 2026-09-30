@@ -4,6 +4,26 @@ Last updated: 2026-09-30
 
 ## Clean-state Cilium diagnostic
 
+Focused follow-up [36736279009](https://github.com/centerionware/not-k8s/actions/runs/36736279009)
+failed at SHA `2ab4d15c61274233d68414a18483cec706a8142f` after 15m58s (job
+`109958731722`). The `notk8s` build and CSI setup passed; migration, Docker
+preflight, and general validation were skipped. The updated Pod probe retried
+API ClusterIP TCP for about 60 seconds; it still failed, while the direct API
+backend passed. Cilium logged `Finished regenerating restored endpoints` before
+the probe Pod's endpoint program was loaded successfully. During the retry
+window, all observed SYNs to `10.43.0.1:443` went through `stack` and were
+forwarded unchanged to the node network, rather than translated to the active
+API backend. The service map showed that backend active. This rules out a
+short endpoint-regeneration delay as the cause. Immediately after all-state
+cleanup, `bpftool cgroup show /run/cilium/cgroupv2` listed the Socket LB
+programs; after an ordinary Cilium restart, that configured path was mounted
+at `/../../../..` and had no programs. Next capture pinned BPF link metadata
+and cgroup IDs before cleanup, after cleanup, and after restart to determine
+why a visible root attachment does not translate the probe flow and why the
+mount root changes. Logs: `/tmp/nodemigrate-36736279009-k3s-probe-job.log` and
+`/tmp/nodemigrate-36736279009-artifact/nodemigrate-k3s-cilium-restart-36736279009/nodemigrate-k3s-cilium-restart.log`.
+Migration remains disabled until the KPR path recovers.
+
 Diagnostic run [36733704748](https://github.com/centerionware/not-k8s/actions/runs/36733704748)
 failed at SHA `2b315ece2beaccb181402c9129aef0df6457af4a` after 15m20s (job
 `109949752424`). The `notk8s` build and CSI setup passed; the diagnostic failed

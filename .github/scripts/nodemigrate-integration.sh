@@ -571,7 +571,7 @@ EOF
 
 capture_cilium_socket_lb_attachment() {
     local kubeconfig="${1:?missing probe kubeconfig}"
-    local cilium_pod cgroup_root
+    local stage="${2:-unspecified}" cilium_pod cgroup_root
     cilium_pod="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
         -l k8s-app=cilium -o jsonpath='{.items[0].metadata.name}')" || return 1
     [[ -n "$cilium_pod" ]] || {
@@ -581,7 +581,7 @@ capture_cilium_socket_lb_attachment() {
     cgroup_root="$(KUBECONFIG="$kubeconfig" kubectl get configmap cilium-config \
         -n kube-system -o go-template='{{index .data "cgroup-root"}}')" || return 1
     cgroup_root="${cgroup_root:-/run/cilium/cgroupv2}"
-    echo "Cilium Socket LB cgroup attachment from pod/$cilium_pod (root=$cgroup_root):"
+    echo "Cilium Socket LB cgroup attachment stage=$stage from pod/$cilium_pod (root=$cgroup_root):"
     KUBECONFIG="$kubeconfig" kubectl -n kube-system exec "$cilium_pod" \
         -c cilium-agent -- sh -c '
             echo "cgroup2 mounts:";
@@ -589,6 +589,12 @@ capture_cilium_socket_lb_attachment() {
             echo "Programs attached directly to the cgroup root:";
             if command -v bpftool >/dev/null 2>&1; then
                 bpftool cgroup show "$1" || true;
+                echo "Pinned Socket LB link metadata:";
+                for link in /sys/fs/bpf/cilium/socketlb/links/cgroup/cil_sock*; do
+                    [ -e "$link" ] || continue;
+                    echo "pinned_link=$link";
+                    bpftool link show pinned "$link" || true;
+                done;
             else
                 echo "bpftool is not present in the Cilium image";
             fi
@@ -607,7 +613,7 @@ probe_api_clusterip_with_cilium_monitor() {
         return 1
     }
     mkdir -p "$(dirname "$log_file")"
-    capture_cilium_socket_lb_attachment "$kubeconfig" || return 1
+    capture_cilium_socket_lb_attachment "$kubeconfig" "$stage" || return 1
     echo "Starting Cilium trace/drop monitor for Pod-origin API ClusterIP probe at stage=$stage"
     timeout --signal=INT 110s env KUBECONFIG="$kubeconfig" kubectl -n kube-system \
         exec "$cilium_pod" -c cilium-agent -- cilium-dbg monitor \
@@ -4628,11 +4634,12 @@ main() {
         probe_host_coredns "$SOURCE_KUBECONFIG" source
         echo "Cilium datapath before K3s restart"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
+        capture_cilium_socket_lb_attachment "$SOURCE_KUBECONFIG" source-before-clean-state
 
         reset_cilium_state_for_probe "$SOURCE_KUBECONFIG"
         KUBECONFIG="$SOURCE_KUBECONFIG" kubectl wait \
             --for=condition=Ready node --all --timeout=5m
-        capture_cilium_socket_lb_attachment "$SOURCE_KUBECONFIG"
+        capture_cilium_socket_lb_attachment "$SOURCE_KUBECONFIG" clean-state-completed
         probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-before-cni-add true
         echo "Cilium datapath immediately after clean-state, before a fresh CoreDNS CNI ADD"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"

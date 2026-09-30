@@ -86,12 +86,25 @@ showed existing endpoints `regenerating`; the fresh CoreDNS endpoint later
 showed `waiting-to-regenerate`. Therefore the probe ran before complete endpoint
 recovery, and does not establish a persistent post-recovery route failure. The
 second restart checkpoint also failed and had no Socket LB programs attached
-at the configured cgroup root. The probe now retries TCP for up to 60 seconds
-to allow endpoint/CNI regeneration and captures service, BPF LB, and endpoint
-state at failure. This distinguishes a transient readiness window from a
-persistent KPR defect without probing only once during endpoint regeneration.
-Shell and checker validation passed locally; focused diagnostic rerun pending.
-Migration was disabled; no migration behavior was tested. Full logs:
+at the configured cgroup root. Follow-up
+[36736279009](https://github.com/centerionware/not-k8s/actions/runs/36736279009)
+still failed after the new probe retried TCP for up to 60 seconds. Cilium logged
+all restored endpoints regenerated and then loaded the probe endpoint's BPF
+program, but all observed API ClusterIP SYNs remained untranslated through the
+end of the retry window. The service map showed an active API backend, and
+direct TCP to that backend succeeded. This confirms a persistent Cilium KPR
+path failure after clean-state cleanup, not merely a short endpoint
+regeneration delay. The cgroup-root listing showed Socket LB programs
+immediately after cleanup but no programs at the configured root after the
+second restart, where mountinfo reported root `/../../../..`. The next
+diagnostic records pinned Socket LB link metadata and cgroup IDs at the
+ordinary baseline, after cleanup, and after restart to determine whether links
+attach to the cgroup hierarchy used by workloads. Migration was disabled; no
+migration behavior was tested. Full logs:
+`/tmp/nodemigrate-36736279009-k3s-probe-job.log` and
+`/tmp/nodemigrate-36736279009-artifact/nodemigrate-k3s-cilium-restart-36736279009/nodemigrate-k3s-cilium-restart.log`.
+
+Full logs for the preceding run:
 `/tmp/nodemigrate-36733704748-k3s-probe-job.log` and
 `/tmp/nodemigrate-36733704748-artifact/nodemigrate-k3s-cilium-restart-36733704748/nodemigrate-k3s-cilium-restart.log`.
 

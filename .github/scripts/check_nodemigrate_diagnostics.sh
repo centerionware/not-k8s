@@ -395,6 +395,15 @@ grep -Fq 'capture_cilium_socket_lb_attachment "$SOURCE_KUBECONFIG"' \
     echo "restart diagnostic does not capture Socket LB attachment immediately after clean-state" >&2
     exit 1
 }
+grep -Fq 'capture_cilium_socket_lb_attachment "$SOURCE_KUBECONFIG" source-before-clean-state' \
+    "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
+    echo "restart diagnostic does not capture the pre-clean-state Socket LB baseline" >&2
+    exit 1
+}
+grep -Fq 'bpftool link show pinned "$link"' "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
+    echo "restart diagnostic does not inspect pinned Socket LB link cgroup identities" >&2
+    exit 1
+}
 grep -Fq 'probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" clean-state-before-second-agent-restart' \
     "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
     echo "restart diagnostic does not test ClusterIP between the clean-state and second-agent restart" >&2
