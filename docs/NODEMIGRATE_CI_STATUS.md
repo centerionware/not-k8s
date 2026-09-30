@@ -23,6 +23,14 @@ five-node fixture sequence to finish. Evidence and remaining causes are in
 [NODEMIGRATE_BUGS.md](NODEMIGRATE_BUGS.md). No regular build or general e2e
 gate ran; no migration retry is queued while the known failures remain.
 
+Follow-up commit `c1782c654597b335965b793a6ef2afe4ea5f5d67` restores the
+previously passing pre-registration Cilium reset order for returned K3s,
+keeps the post-registration order for other retained targets, and adds import,
+Cilium-cleanup, and rollback boundary logs. Its focused `nodemigrate`
+quick-check passed in
+[run 36649148406](https://github.com/centerionware/not-k8s/actions/runs/36649148406),
+and PR validation passed. The migration lanes have not been rerun.
+
 ## 2026-09-29 migration rerun 36633722194
 
 Run [36633722194](https://github.com/centerionware/not-k8s/actions/runs/36633722194)

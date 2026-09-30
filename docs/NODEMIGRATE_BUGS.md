@@ -37,10 +37,15 @@ logs are saved once under `/tmp/nodemigrate-36644181073-*.log`.
   now bounds each nodemigrate invocation to 30 minutes; the enclosing step is
   extended to allow all five nodes and fixture checks to complete.
 
-The targeted `nodebootstrap,nodemigrate` quick-check passed for this SHA in
+The `nodebootstrap,nodemigrate` quick-check passed for the run's SHA in
 [run 36643843760](https://github.com/centerionware/not-k8s/actions/runs/36643843760).
-No regular build or general e2e gate ran. The next migration retry remains
-held until the Cilium handoff and returned K3s datapath failures are addressed.
+After the follow-up timeout, ordering, and diagnostic changes, the focused
+`nodemigrate` quick-check passed at SHA
+`c1782c654597b335965b793a6ef2afe4ea5f5d67` in
+[run 36649148406](https://github.com/centerionware/not-k8s/actions/runs/36649148406).
+PR validation also passed. No regular build or general e2e gate ran. The next
+migration retry remains held until the upstream Cilium recovery stall is
+addressed.
 
 ## Findings from migration run 36633722194
 
