@@ -31,6 +31,10 @@ new Pod recovery unit tests because their module omitted the `Pod` import.
 The test import is fixed in the worktree. No migration matrix was dispatched;
 rerun quick-check before starting one. Full job log:
 `/tmp/nodemigrate-quickcheck-36777417980-job-110098726234.log`.
+Follow-up quick-check [36777744809](https://github.com/centerionware/not-k8s/actions/runs/36777744809)
+passed at SHA `6925a3bbdff284b61e412995270839b0de2e7c70` for
+`components=nodemigrate`, including its unit tests. The migration matrix is the
+next runtime verification.
 
 ## Branch migration matrix 36764002800
 
