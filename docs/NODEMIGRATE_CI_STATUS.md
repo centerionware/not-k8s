@@ -26,7 +26,9 @@ recovery window showed transient no-route-to-host errors and
 checkpoint. The persistent K3s failure is the timed-out sandbox stop. The
 current worktree checks `crictl inspectp` after a StopPodSandbox deadline and
 continues only if CRI confirms the sandbox is already `SANDBOX_NOTREADY`; the
-focused quick-check for this recovery is pending. The saved run logs are:
+focused quick-check for this recovery passed at SHA `d923d555` in
+[36785639656](https://github.com/centerionware/not-k8s/actions/runs/36785639656).
+The saved run logs are:
 
 - `/tmp/nodemigrate-36778028681-job-110100782824-kubernetes.log`
 - `/tmp/nodemigrate-36778028681-job-110100783277-k3s.log`
@@ -36,8 +38,7 @@ No general build or full e2e ran. The current worktree also preserves existing
 staged control-plane Node identities instead of deleting them before API
 import, and includes UID/condition details in a readiness timeout. Its focused
 quick-check passed at [36785046986](https://github.com/centerionware/not-k8s/actions/runs/36785046986).
-Do not rerun the migration matrix until the K3s sandbox-state recovery check
-passes its focused quick-check.
+The migration matrix is the next runtime verification.
 
 Focused quick-check
 [36784767990](https://github.com/centerionware/not-k8s/actions/runs/36784767990)
@@ -49,7 +50,9 @@ Follow-up quick-check
 [36785046986](https://github.com/centerionware/not-k8s/actions/runs/36785046986)
 passed at SHA `3d353277` for `components=nodemigrate`, including its unit tests.
 This verifies the staged-node preservation path compiles and the readiness
-diagnostic helper test passes; it does not resolve the K3s runtime failure.
+diagnostic helper test passes. The CRI sandbox-state recovery check and its
+unit test passed at SHA `d923d555` in
+[36785639656](https://github.com/centerionware/not-k8s/actions/runs/36785639656).
 
 ## Branch migration matrix 36770365252
 

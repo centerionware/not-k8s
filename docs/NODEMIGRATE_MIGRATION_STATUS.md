@@ -25,7 +25,9 @@ Node conditions or kubelet/Cilium diagnostics for `cp-1`, so no root cause is
 confirmed. Avoid another migration attempt until the K3s teardown/rollback path
 and multi-control-plane readiness failure are addressed. The current worktree
 checks CRI sandbox state after a stop deadline and continues only when CRI
-confirms `SANDBOX_NOTREADY`; its focused quick-check is pending. Logs are in
+confirms `SANDBOX_NOTREADY`; its focused quick-check passed at SHA `d923d555`
+in [36785639656](https://github.com/centerionware/not-k8s/actions/runs/36785639656).
+Logs are in
 `/tmp/nodemigrate-36778028681-job-{110100782824-kubernetes,110100783277-k3s,110100783391-docker}.log`.
 The candidate staged-node identity preservation and readiness diagnostics
 passed focused `nodemigrate` quick-check [36785046986](https://github.com/centerionware/not-k8s/actions/runs/36785046986)
