@@ -2,16 +2,49 @@
 
 Last updated: 2026-09-30
 
-## Active branch candidate
+## Restart-only diagnostic setup defect
 
-The next complete migration matrix is active as run
-[36700106403](https://github.com/centerionware/not-k8s/actions/runs/36700106403)
-at SHA `c77dc6fdc08bd67568f74091945ee4b5a544ccd9` with branch runtime,
-Cilium KPR, and both single-node lanes plus five-node migration enabled. K3s
-job `109837299550`, upstream Kubernetes job `109837299287`, and five-node job
-`109837299640` were in progress at last inspection. This captures probe
-diagnostics that were absent in the previous run. Wait for every lane to
-finish, then repair all confirmed failures together before a subsequent run.
+Workflow [36706135439](https://github.com/centerionware/not-k8s/actions/runs/36706135439)
+failed at SHA `deadc5eb729e2af4d9de0fc96f7217db031abf8b` in job
+`109856719929` before K3s installation. The restart-only root step lacked
+`GH_TOKEN` in its preserved environment, so its `gh release download` failed;
+the artifact confirms K3s was absent and no Cilium probe ran. The workflow
+change supplies the token to that step and through `sudo`. Rerun the
+non-migration diagnostic after that change; this run is not migration evidence.
+
+## Latest migration matrix: 36700106403
+
+[Run 36700106403](https://github.com/centerionware/not-k8s/actions/runs/36700106403)
+tested SHA `c77dc6fdc08bd67568f74091945ee4b5a544ccd9` with branch-built
+`nodemigrate` and `notk8s --features cri`, Cilium KPR, both single-node lanes,
+and the five-node kubeadm/Cilium lane. All three branch builds passed; the
+upstream, K3s, and five-node lanes failed. No general build or general e2e gate
+ran.
+
+Upstream Kubernetes job `109837299287` and five-node job `109837299640` failed
+their `nodestore` workload checkpoint. CoreDNS rollout timed out: Nodelet's
+HTTP readiness/liveness probes to CoreDNS Pod IPs timed out on the migrated
+node, and the five-node snapshot showed its three local CoreDNS Pods at `0/1`
+while CoreDNS Pods on other nodes were Ready. CoreDNS's ServiceAccount
+successfully watched Services, EndpointSlices, and Namespaces with HTTP 200 in
+the upstream audit log, and Cilium listed the local CoreDNS endpoints as
+Ready. This points to a host-to-local-Pod probe path issue after Cilium host
+state rebuild, but that cause is not confirmed. The `/run/xtables.lock` error
+did not recur in this matrix.
+
+K3s job `109837299550` completed forward and return migration and passed the
+returned-stage Node, Cilium, CoreDNS, API ClusterIP, CSI, workload, and
+StatefulSet checks. It then failed because the fixture expected logs from the
+already-completed `migration-job`. Migration removes the terminal Pod's CRI
+sandbox; the Job and Succeeded Pod remain in the API, but the container log is
+not durable API state. This is a fixture assertion defect, not evidence that
+the Job failed to execute. The verifier needs to check the retained Job/Pod
+terminal status and use a fresh per-stage Job when it needs to verify new
+execution.
+
+Review all three failures together. Do not launch another migration until the
+CoreDNS host-to-Pod path is diagnosed and the completed-Job fixture assertion
+is corrected and checked with focused CI.
 
 Migration run
 [36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745)

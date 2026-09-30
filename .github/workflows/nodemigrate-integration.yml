@@ -191,6 +191,7 @@ jobs:
 
       - name: Run restart probe
         env:
+          GH_TOKEN: ${{ github.token }}
           NODEMIGRATE_K3S_CILIUM_RESTART_PROBE: "true"
           NODEMIGRATE_CILIUM_KPR: "true"
           NODEMIGRATE_SOURCE_DIST: k3s
@@ -198,7 +199,7 @@ jobs:
           NODEMIGRATE_HOSTPATH_SETUP: ${{ runner.temp }}/nodemigrate-hostpath-setup.sh
         run: |
           set -euo pipefail
-          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,NODEMIGRATE_K3S_CILIUM_RESTART_PROBE,NODEMIGRATE_CILIUM_KPR,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG,NODEMIGRATE_HOSTPATH_SETUP \
+          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,GH_TOKEN,NODEMIGRATE_K3S_CILIUM_RESTART_PROBE,NODEMIGRATE_CILIUM_KPR,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG,NODEMIGRATE_HOSTPATH_SETUP \
             bash .github/scripts/nodemigrate-integration.sh
 
       - name: Upload probe log

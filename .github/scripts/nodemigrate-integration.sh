@@ -3372,10 +3372,47 @@ verify_stage() {
         return 1
     }
     kubectl wait -n migration-apps --for=condition=Complete job/migration-job --timeout=5m
-    kubectl logs -n migration-apps job/migration-job | grep migration-job-ran >/dev/null || {
-        echo "Job workload did not execute at stage $stage" >&2
+    kubectl get job -n migration-apps migration-job -o json | jq -e '
+        .status.succeeded == 1 and
+        any(.status.conditions[]?; .type == "Complete" and .status == "True")
+    ' >/dev/null || {
+        echo "migrated Job completion state was not preserved at stage $stage" >&2
         return 1
     }
+    kubectl get pods -n migration-apps -l job-name=migration-job -o json | jq -e '
+        any(.items[]; .status.phase == "Succeeded" and
+            any(.status.containerStatuses[]?; .state.terminated.exitCode == 0))
+    ' >/dev/null || {
+        echo "migrated Job Pod completion state was not preserved at stage $stage" >&2
+        return 1
+    }
+    local job_check="migration-job-check-$stage"
+    kubectl apply -f - <<YAML
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: $job_check
+  namespace: migration-apps
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: check
+        image: busybox:1.36.1
+        command: ["sh", "-c", "echo migration-job-ran"]
+        resources:
+          requests:
+            cpu: 1m
+            memory: 1Mi
+YAML
+    kubectl wait -n migration-apps --for=condition=Complete "job/$job_check" --timeout=5m
+    kubectl logs -n migration-apps "job/$job_check" | grep migration-job-ran >/dev/null || {
+        echo "fresh Job did not execute at stage $stage" >&2
+        return 1
+    }
+    kubectl delete job -n migration-apps "$job_check" --wait=true
     local cron_job="migration-cron-check-$stage"
     kubectl create job --from=cronjob/migration-cron "$cron_job" -n migration-apps
     kubectl wait -n migration-apps --for=condition=Complete "job/$cron_job" --timeout=5m

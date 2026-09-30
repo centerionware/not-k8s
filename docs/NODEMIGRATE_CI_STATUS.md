@@ -2,17 +2,37 @@
 
 Last updated: 2026-09-30
 
-## Current branch status
+## Restart-only diagnostic setup failure
 
-Full migration matrix
-[36700106403](https://github.com/centerionware/not-k8s/actions/runs/36700106403)
-is active on SHA `c77dc6fdc08bd67568f74091945ee4b5a544ccd9` with
+Workflow [36706135439](https://github.com/centerionware/not-k8s/actions/runs/36706135439)
+completed at branch SHA `deadc5eb729e2af4d9de0fc96f7217db031abf8b`; job
+`109856719929` failed before the diagnostic began. The root-run step did not
+preserve `GH_TOKEN`, so `gh release download` could not install K3s. The
+artifact shows K3s absent and `SOURCE_KUBECONFIG` unset; no Cilium or workload
+probe ran. This is a confirmed workflow setup defect, not evidence about the
+network failure. The workflow now supplies `GH_TOKEN` to the step and passes
+it through `sudo`. Rerun only the restart diagnostic to validate setup; no
+migration retry is authorized while the CoreDNS probe path remains unresolved.
+
+## Latest migration matrix
+
+Run [36700106403](https://github.com/centerionware/not-k8s/actions/runs/36700106403)
+completed at SHA `c77dc6fdc08bd67568f74091945ee4b5a544ccd9` with
 `runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
 Jobs `109837299287` (upstream Kubernetes), `109837299550` (K3s), and
-`109837299640` (five-node lane) were running at last inspection. The
-diagnostic Nodelet code is in this SHA and its focused quick-check passed at
-`b4647a9c`. Wait for the complete run and fix all new confirmed issues as one
-batch before dispatching another migration run.
+`109837299640` (five-node lane) all failed in runtime/workload checks. The
+`nodemigrate` and combined `notk8s --features cri` branch builds passed. No
+general build or general e2e workflow ran. Completed job logs and artifacts
+were saved once under `/tmp/nodemigrate-36700106403-*`.
+
+The upstream and five-node lanes failed at `nodestore` because Nodelet's
+HTTP probes to local CoreDNS Pod IPs timed out; Cilium reported their
+endpoints Ready, and upstream audit records show CoreDNS's service account
+successfully watched API resources. The exact host-to-Pod network failure is
+still unconfirmed. K3s completed the return migration and all earlier returned
+stage checks, then the fixture failed while checking logs from a completed Job
+whose runtime sandbox had been removed. Correct that fixture assertion and
+diagnose the probe path before any new migration dispatch.
 
 The run previously listed below as active, migration workflow
 [36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745),
