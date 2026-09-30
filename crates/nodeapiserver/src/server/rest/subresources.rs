@@ -7,6 +7,11 @@ pub enum BindOutcome {
     Invalid(Vec<String>),
 }
 
+enum BindPodAttempt {
+    Complete(BindOutcome),
+    StorageConflict,
+}
+
 #[derive(Debug, PartialEq)]
 pub enum EvictOutcome {
     Evicted,
@@ -177,8 +182,39 @@ pub async fn bind_pod(
     name: &str,
     body: &Value,
 ) -> Result<BindOutcome, Error> {
+    // A conflict from the write is only the internal MVCC compare-and-swap:
+    // caller UID/resourceVersion, deletion, and existing nodeName preconditions
+    // are checked against a fresh read inside `bind_pod_once`. Re-read and
+    // recompute the whole binding so concurrent status/metadata updates are
+    // preserved instead of returning a scheduler-visible 409.
+    for attempt in 0..8 {
+        match bind_pod_once(storage, namespace, name, body).await? {
+            BindPodAttempt::Complete(outcome) => return Ok(outcome),
+            BindPodAttempt::StorageConflict if attempt == 7 => {
+                tracing::warn!(
+                    namespace,
+                    name,
+                    attempts = attempt + 1,
+                    "Pod binding storage retries exhausted"
+                );
+                return Ok(BindOutcome::Conflict);
+            }
+            BindPodAttempt::StorageConflict => {
+                tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+            }
+        }
+    }
+    unreachable!("bounded Pod binding retry loop returns its last outcome")
+}
+
+async fn bind_pod_once(
+    storage: &mut StorageClient,
+    namespace: &str,
+    name: &str,
+    body: &Value,
+) -> Result<BindPodAttempt, Error> {
     let Some(resolved) = resolve_resource(storage, "", "v1", "pods").await? else {
-        return Ok(BindOutcome::UnknownResource);
+        return Ok(BindPodAttempt::Complete(BindOutcome::UnknownResource));
     };
     let key = keys::object_key("", "pods", Some(namespace), name);
     let existing_resp = storage
@@ -188,7 +224,7 @@ pub async fn bind_pod(
         })
         .await?;
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
-        return Ok(BindOutcome::ObjectNotFound);
+        return Ok(BindPodAttempt::Complete(BindOutcome::ObjectNotFound));
     };
     let existing_object =
         decrypt_and_decode(storage, "", "pods", &existing_kv.key, &existing_kv.value)?;
@@ -210,7 +246,7 @@ pub async fn bind_pod(
         .filter(|name| !name.is_empty())
     else {
         violations.push("target.name: Required value".to_string());
-        return Ok(BindOutcome::Invalid(violations));
+        return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(violations)));
     };
     if let Some(uid) = body.pointer("/metadata/uid").and_then(Value::as_str) {
         if existing_object
@@ -218,7 +254,7 @@ pub async fn bind_pod(
             .and_then(Value::as_str)
             != Some(uid)
         {
-            return Ok(BindOutcome::Conflict);
+            return Ok(BindPodAttempt::Complete(BindOutcome::Conflict));
         }
     }
     if let Some(resource_version) = body
@@ -226,21 +262,21 @@ pub async fn bind_pod(
         .and_then(Value::as_str)
     {
         if resource_version.parse::<i64>().ok() != Some(existing_kv.mod_revision) {
-            return Ok(BindOutcome::Conflict);
+            return Ok(BindPodAttempt::Complete(BindOutcome::Conflict));
         }
     }
     if existing_object
         .pointer("/metadata/deletionTimestamp")
         .is_some_and(|timestamp| !timestamp.is_null())
     {
-        return Ok(BindOutcome::Conflict);
+        return Ok(BindPodAttempt::Complete(BindOutcome::Conflict));
     }
     if existing_object
         .pointer("/spec/nodeName")
         .and_then(Value::as_str)
         .is_some_and(|node| !node.is_empty())
     {
-        return Ok(BindOutcome::Conflict);
+        return Ok(BindPodAttempt::Complete(BindOutcome::Conflict));
     }
     if existing_object
         .pointer("/spec/schedulingGates")
@@ -250,34 +286,34 @@ pub async fn bind_pod(
         violations.push("spec.schedulingGates: Pod has scheduling gates".to_string());
     }
     if !violations.is_empty() {
-        return Ok(BindOutcome::Invalid(violations));
+        return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(violations)));
     }
 
     let mut object = existing_object.clone();
     let Some(object_map) = object.as_object_mut() else {
-        return Ok(BindOutcome::Invalid(vec![
+        return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
             "Pod must be an object".to_string(),
-        ]));
+        ])));
     };
     {
         let metadata = object_map.entry("metadata").or_insert_with(|| json!({}));
         let Some(metadata) = metadata.as_object_mut() else {
-            return Ok(BindOutcome::Invalid(vec![
+            return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
                 "metadata must be an object".to_string(),
-            ]));
+            ])));
         };
         for field in ["annotations", "labels"] {
             if let Some(values) = body.pointer(&format!("/metadata/{field}")) {
                 let Some(values) = values.as_object() else {
-                    return Ok(BindOutcome::Invalid(vec![format!(
-                        "metadata.{field} must be an object"
-                    )]));
+                    return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
+                        format!("metadata.{field} must be an object"),
+                    ])));
                 };
                 let destination = metadata.entry(field).or_insert_with(|| json!({}));
                 let Some(destination) = destination.as_object_mut() else {
-                    return Ok(BindOutcome::Invalid(vec![format!(
-                        "metadata.{field} must be an object"
-                    )]));
+                    return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
+                        format!("metadata.{field} must be an object"),
+                    ])));
                 };
                 for (key, value) in values {
                     destination.insert(key.clone(), value.clone());
@@ -287,9 +323,9 @@ pub async fn bind_pod(
     }
     let spec = object_map.entry("spec").or_insert_with(|| json!({}));
     let Some(spec) = spec.as_object_mut() else {
-        return Ok(BindOutcome::Invalid(vec![
+        return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
             "spec must be an object".to_string(),
-        ]));
+        ])));
     };
     spec.insert(
         "nodeName".to_string(),
@@ -298,15 +334,15 @@ pub async fn bind_pod(
 
     let status = object_map.entry("status").or_insert_with(|| json!({}));
     let Some(status) = status.as_object_mut() else {
-        return Ok(BindOutcome::Invalid(vec![
+        return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
             "status must be an object".to_string(),
-        ]));
+        ])));
     };
     let conditions = status.entry("conditions").or_insert_with(|| json!([]));
     let Some(conditions) = conditions.as_array_mut() else {
-        return Ok(BindOutcome::Invalid(vec![
+        return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
             "status.conditions must be an array".to_string(),
-        ]));
+        ])));
     };
     let message = format!("Successfully assigned {namespace}/{name} to {target_name}");
     if let Some(condition) = conditions
@@ -350,17 +386,21 @@ pub async fn bind_pod(
     )
     .await?
     {
-        UpdateOutcome::Updated(_) => Ok(BindOutcome::Bound),
-        UpdateOutcome::Conflict => Ok(BindOutcome::Conflict),
-        UpdateOutcome::Invalid(violations) => Ok(BindOutcome::Invalid(violations)),
+        UpdateOutcome::Updated(_) => Ok(BindPodAttempt::Complete(BindOutcome::Bound)),
+        UpdateOutcome::Conflict => Ok(BindPodAttempt::StorageConflict),
+        UpdateOutcome::Invalid(violations) => {
+            Ok(BindPodAttempt::Complete(BindOutcome::Invalid(violations)))
+        }
         UpdateOutcome::UnknownResource | UpdateOutcome::ObjectNotFound => {
-            Ok(BindOutcome::ObjectNotFound)
+            Ok(BindPodAttempt::Complete(BindOutcome::ObjectNotFound))
         }
         UpdateOutcome::MissingResourceVersion
         | UpdateOutcome::NamespaceMismatch
-        | UpdateOutcome::UnsupportedPatchType => Ok(BindOutcome::Invalid(vec![
-            "binding could not be persisted".to_string(),
-        ])),
+        | UpdateOutcome::UnsupportedPatchType => {
+            Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
+                "binding could not be persisted".to_string(),
+            ])))
+        }
     }
 }
 

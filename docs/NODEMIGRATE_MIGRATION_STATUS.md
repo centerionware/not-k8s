@@ -1,6 +1,21 @@
 # nodemigrate implementation and integration status
 
-Last updated: 2026-09-29
+Last updated: 2026-09-30
+
+## Latest run: 36650426292
+
+At tested SHA `a8c791328a91976f76557d80701cea4a115d3bd1`, K3s completed both
+migration directions and all checkpoints in 25m49s with Cilium KPR. Upstream
+Kubernetes completed forward migration but the imported CSI Pod remained
+unscheduled; the log set contains 236 Pod binding HTTP 409s across 24 Pods.
+Docker five-node passed preflight and its nodestore checkpoint, then the
+returned-source standalone Pod remained Unknown while containerd reported its
+container name reserved by a still-running kubelet-created container. Branch
+fixes now retry internal binding CAS conflicts from fresh state and recognize
+standard kubelet CRI labels. Both need focused quick-check and another
+migration-specific run. Details are in [CI status](NODEMIGRATE_CI_STATUS.md)
+and the [bug tracker](NODEMIGRATE_BUGS.md). No general e2e or regular build
+gate ran.
 
 ## Latest run: 36627336634
 

@@ -686,7 +686,7 @@ impl CriRuntime {
             if c.state != running_v {
                 continue;
             }
-            let Some(name) = c.labels.get(CTR_NAME_LABEL) else { continue };
+            let Some(name) = container_name_from_labels(c) else { continue };
             if let Some(pre_stop) = spec_containers
                 .iter()
                 .chain(spec_init_containers.iter())
@@ -782,6 +782,45 @@ impl CriRuntime {
 /// CRI retains exited attempts until garbage collection. Prefer a running
 /// attempt for operations such as exec, and otherwise use the newest record
 /// so stale exited attempts cannot shadow the current container.
+pub(crate) fn container_name_from_labels(container: &v1::Container) -> Option<&str> {
+    container
+        .labels
+        .get(CTR_NAME_LABEL)
+        .or_else(|| container.labels.get("io.kubernetes.container.name"))
+        .map(String::as_str)
+}
+
+pub(crate) fn container_has_type(container: &v1::Container, label: &str) -> bool {
+    match label {
+        CTR_INIT_LABEL => {
+            container
+                .labels
+                .get(CTR_INIT_LABEL)
+                .is_some_and(|value| value == "true")
+                || container
+                    .labels
+                    .get("io.kubernetes.container.type")
+                    .is_some_and(|value| value == "init")
+        }
+        CTR_EPHEMERAL_LABEL => {
+            container
+                .labels
+                .get(CTR_EPHEMERAL_LABEL)
+                .is_some_and(|value| value == "true")
+                || container
+                    .labels
+                    .get("io.kubernetes.container.type")
+                    .is_some_and(|value| value == "ephemeral")
+        }
+        _ => container.labels.contains_key(label),
+    }
+}
+
+pub(crate) fn is_regular_container(container: &v1::Container) -> bool {
+    !container_has_type(container, CTR_INIT_LABEL)
+        && !container_has_type(container, CTR_EPHEMERAL_LABEL)
+}
+
 pub(crate) fn select_container_for_name<'a>(
     containers: &'a [v1::Container],
     container_name: &str,
@@ -789,7 +828,7 @@ pub(crate) fn select_container_for_name<'a>(
     let running = ContainerState::ContainerRunning as i32;
     containers
         .iter()
-        .filter(|container| container.labels.get(CTR_NAME_LABEL).is_some_and(|name| name == container_name))
+        .filter(|container| container_name_from_labels(container) == Some(container_name))
         .max_by_key(|container| (container.state == running, container.created_at))
 }
 
@@ -826,6 +865,46 @@ mod tests {
         ];
 
         assert_eq!(select_container_for_name(&containers, "write-test").map(|c| c.id.as_str()), Some("new-exited"));
+    }
+
+    #[test]
+    fn container_lookup_recognizes_kubelet_cri_labels_during_runtime_handoff() {
+        let legacy = v1::Container {
+            id: "kubelet-container".to_string(),
+            state: ContainerState::ContainerRunning as i32,
+            labels: HashMap::from([
+                ("io.kubernetes.container.name".to_string(), "app".to_string()),
+                ("io.kubernetes.container.type".to_string(), "container".to_string()),
+            ]),
+            ..Default::default()
+        };
+
+        assert_eq!(container_name_from_labels(&legacy), Some("app"));
+        assert!(is_regular_container(&legacy));
+        assert_eq!(
+            select_container_for_name(&[legacy], "app").map(|c| c.id.as_str()),
+            Some("kubelet-container")
+        );
+    }
+
+    #[test]
+    fn container_kind_lookup_recognizes_kubelet_init_and_ephemeral_labels() {
+        let init = v1::Container {
+            labels: HashMap::from([("io.kubernetes.container.type".to_string(), "init".to_string())]),
+            ..Default::default()
+        };
+        let ephemeral = v1::Container {
+            labels: HashMap::from([(
+                "io.kubernetes.container.type".to_string(),
+                "ephemeral".to_string(),
+            )]),
+            ..Default::default()
+        };
+
+        assert!(container_has_type(&init, CTR_INIT_LABEL));
+        assert!(!is_regular_container(&init));
+        assert!(container_has_type(&ephemeral, CTR_EPHEMERAL_LABEL));
+        assert!(!is_regular_container(&ephemeral));
     }
 
     #[test]

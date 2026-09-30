@@ -2,6 +2,42 @@
 
 Last updated: 2026-09-30
 
+## Findings from migration run 36650426292
+
+Run [36650426292](https://github.com/centerionware/not-k8s/actions/runs/36650426292)
+tested SHA `a8c791328a91976f76557d80701cea4a115d3bd1` with branch-built
+components, Cilium KPR, and the five-node migration path. Its completed job
+metadata shows K3s passed, upstream Kubernetes failed during the nodestore
+fixture, and Docker five-node failed during the return fixture. Logs are saved
+under `/tmp/nodemigrate-36650426292-{kubernetes,k3s,docker}.log`.
+
+- **Component: nodeapiserver Pod binding under concurrent writes.** Forward
+  migration completed, but the imported hostpath CSI Pod remained unscheduled.
+  The scheduler saw 236 binding HTTP 409 responses across 24 Pods. The binding
+  handler validates caller preconditions against fresh state, then persists
+  with a compare-and-swap; a concurrent status/metadata update can make that
+  storage CAS conflict even when the caller's UID/resourceVersion precondition
+  is still valid. This is the likely cause based on the repeated 409s and the
+  handler path, not explicit conflict telemetry. The branch now retries only
+  that internal storage conflict by re-reading and recomputing the binding;
+  caller precondition conflicts still return immediately. `nodeapiserver`
+  quick-check and a migration rerun are pending.
+- **Component: Nodelet CRI handoff from kubelet-owned containers.** The
+  five-node lane passed its preflight and nodestore checkpoint, then the
+  returned `migration-standalone` Pod remained Unknown. Containerd reported
+  the expected CRI container name reserved by a still-running container from
+  the old kubelet sandbox. The branch's lookup, status, and resource snapshot
+  paths now recognize standard `io.kubernetes.container.name` and
+  `io.kubernetes.container.type` labels alongside Nodelet's labels, so it can
+  find existing kubelet attempts rather than creating a duplicate. Focused
+  `nodelet` quick-check and a five-node migration rerun are pending.
+- **Timeout scope.** The Docker step is an aggregate five-node scenario with
+  multiple migrations. Each individual nodemigrate process is capped at 30
+  minutes; the aggregate step retains a larger window to finish all node and
+  return checkpoints. Single-node migration jobs have a 30-minute job and step
+  cap. No migration retry is queued until both component fixes pass focused
+  quick-check.
+
 ## Findings from migration run 36644181073
 
 Run [36644181073](https://github.com/centerionware/not-k8s/actions/runs/36644181073)
@@ -40,10 +76,10 @@ logs are saved once under `/tmp/nodemigrate-36644181073-*.log`.
   step limit for the entire five-node migration sequence. It completed cp-1
   and cp-2 migrations successfully before the overall step expired, so this
   did not prove that an individual migration exceeded 30 minutes. The script
-  now bounds each nodemigrate invocation to 30 minutes; the enclosing step is
-  also capped at 30 minutes, matching the expected healthy migration window.
-  This applies to future workflow runs; an already-dispatched run retains its
-  original 180-minute step limit.
+  now bounds each nodemigrate invocation to 30 minutes while the aggregate
+  Docker step keeps a 180-minute window for the multi-node sequence. This
+  applies to future workflow runs; an already-dispatched run retains its
+  original step limit.
 
 The `nodebootstrap,nodemigrate` quick-check passed for the run's SHA in
 [run 36643843760](https://github.com/centerionware/not-k8s/actions/runs/36643843760).

@@ -203,8 +203,8 @@ impl CriRuntime {
     ) -> Result<()> {
         let existing = self.list_pod_containers(sandbox_id).await?;
         let already_exists = existing.iter().any(|c| {
-            c.labels.get(CTR_NAME_LABEL).map(|n| n == &container.name).unwrap_or(false)
-                && c.labels.get(CTR_EPHEMERAL_LABEL).map(|v| v == "true").unwrap_or(false)
+            container_name_from_labels(c) == Some(container.name.as_str())
+                && container_has_type(c, CTR_EPHEMERAL_LABEL)
         });
         if already_exists {
             return Ok(());
@@ -829,8 +829,8 @@ impl CriRuntime {
                 .iter()
                 .map(|container| {
                     let state = existing.iter().find(|candidate| {
-                        candidate.labels.get(CTR_NAME_LABEL).is_some_and(|name| name == &container.name)
-                            && candidate.labels.get(CTR_INIT_LABEL).is_some_and(|value| value == "true")
+                        container_name_from_labels(candidate) == Some(container.name.as_str())
+                            && container_has_type(candidate, CTR_INIT_LABEL)
                     });
                     (container.name.as_str(), state.map(|container| container.state))
                 })
@@ -845,8 +845,8 @@ impl CriRuntime {
 
         for container in init_containers {
             let existing_ctr = existing.iter().find(|c| {
-                c.labels.get(CTR_NAME_LABEL).map(|n| n == &container.name).unwrap_or(false)
-                    && c.labels.get(CTR_INIT_LABEL).map(|v| v == "true").unwrap_or(false)
+                container_name_from_labels(c) == Some(container.name.as_str())
+                    && container_has_type(c, CTR_INIT_LABEL)
             });
 
             // Native sidecar container (round 36):

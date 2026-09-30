@@ -229,7 +229,7 @@ impl CriRuntime {
             .list_pod_containers(sandbox_id)
             .await?
             .into_iter()
-            .filter(|c| !c.labels.contains_key(CTR_INIT_LABEL) && !c.labels.contains_key(CTR_EPHEMERAL_LABEL))
+            .filter(is_regular_container)
             .collect();
         // Same ordering fix as build_labeled_container_statuses() below —
         // CRI's ListContainers makes no ordering guarantee, so
@@ -410,7 +410,7 @@ impl CriRuntime {
         containers.sort_by_key(|c| c.created_at);
         let sidecar_names = self.sidecar_names.lock().unwrap().get(sandbox_id).cloned().unwrap_or_default();
         let mut out = Vec::new();
-        for c in containers.into_iter().filter(|c| c.labels.contains_key(label)) {
+        for c in containers.into_iter().filter(|c| container_has_type(c, label)) {
                 let running = c.state == running_v;
                 let name = c.metadata.as_ref().map(|m| m.name.clone()).unwrap_or_default();
                 let is_restartable_sidecar = sidecar_names.contains(&name);

@@ -1,6 +1,6 @@
 # nodemigrate status dashboard
 
-Last updated: 2026-09-29
+Last updated: 2026-09-30
 
 This dashboard tracks the full nodemigrate goal in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). Detailed status is kept in the
@@ -8,7 +8,7 @@ separate living documents below.
 
 ## Current state
 
-The latest full migration run, [36591891203](https://github.com/centerionware/not-k8s/actions/runs/36591891203), tested branch `nodemigrate` and the combined branch runtime with Cilium KPR. K3s passed both migration directions. The upstream Kubernetes lane completed forward migration but its post-migration HostPath CSI pods could not schedule; the API server binding route now decodes protobuf `Binding` requests. Docker preflight passed and cp-1 migrated, but cp-2 failed applying the initial Raft learner change; fresh learners now seed the existing voter set reported by the live peer probe. The first targeted quick-check found a compile error in the new binding handler, now fixed; targeted `nodeapiserver,nodestore` quick-check [36597286663](https://github.com/centerionware/not-k8s/actions/runs/36597286663) passed. Both migration fixes are ready for a full migration-specific run. The run's artifacts are under `/tmp/nodemigrate-36591891203/`. The previous five-node copy-directory fix is included in the run but did not reach its checkpoint.
+The latest completed migration run, [36650426292](https://github.com/centerionware/not-k8s/actions/runs/36650426292), tested branch-built components, Cilium KPR, and the five-node path. K3s passed its bidirectional round trip in 25m49s. Upstream Kubernetes failed after forward migration when repeated internal Pod binding conflicts left the imported CSI Pod unscheduled. Docker five-node reached the nodestore checkpoint but failed its return workload check because Nodelet did not recognize a still-running kubelet-created container by its standard CRI labels. Branch fixes for both findings are pending focused `nodeapiserver,nodelet` quick-check. The next migration-specific run waits for those fixes to pass; no regular build or general e2e gate ran.
 
 The prior Docker failure in run [36578066781](https://github.com/centerionware/not-k8s/actions/runs/36578066781) exposed a two-second CRI removal timeout while stopping Cilium. The branch now gives sandbox stop/removal 60 seconds and removes the local Cilium agent last. Nodemigrate-only quick-check [36582679193](https://github.com/centerionware/not-k8s/actions/runs/36582679193) passed all 115 tests. The latest migration run confirms the timeout/order fix did not regress either single-node round trip.
 
@@ -18,9 +18,9 @@ No regular build gate or full e2e workflow ran. The nodemigrate-specific migrati
 
 | Area | State | Detail |
 | --- | --- | --- |
-| Full bidirectional migration implementation | K3s completed a Cilium KPR forward/return round trip in run 36591891203. The latest upstream forward path needs a protobuf binding fix; full five-node cp2 join and return remain unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
+| Full bidirectional migration implementation | K3s completed a Cilium KPR forward/return round trip in run 36650426292. Upstream forward migration and five-node return still have failures under repair; full five-node round trip remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The fixture includes the required workload, storage, Helm, routing, RBAC/admission, CRD, and discovered-resource checks. The two single-node round trips passed API parity and behavior checks. Five-node behavior and the existing-cluster join/replacement case have not passed. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| Bugs found and component fixes | Run 365918 exposed an upstream protobuf Pod binding failure and a fresh nodestore learner Raft configuration failure. Both fixes and clearer join failure output are in the branch; focused CI is pending. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
+| Bugs found and component fixes | Run 366504 exposed an internal Pod binding storage conflict and a kubelet-to-Nodelet CRI label handoff failure. Fixes are in the worktree and focused CI is pending. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement and new control-plane joins | Node replacement ordering and Raft learner catch-up/promotion logic are implemented. The existing-cluster join/replacement scenario remains unverified by a completed migration run. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried; paths avoid cluster-wide re-import and preserve node-local PV data. Multi-node worker replacement behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Configured CNI paths are detected and snapshotted/restored around explicit uninstall. Cilium migration without uninstall passed the single-node round trip; explicit K3s+Cilium uninstall remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |

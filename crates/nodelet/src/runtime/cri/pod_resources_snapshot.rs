@@ -14,7 +14,7 @@ impl CriRuntime {
             let Ok(containers) = self.list_pod_containers(&sandbox_id).await else { continue };
             let mut entries = Vec::with_capacity(containers.len());
             for c in containers {
-                let Some(container_name) = c.labels.get(CTR_NAME_LABEL) else { continue };
+                let Some(container_name) = container_name_from_labels(&c) else { continue };
                 let key = restart_count_key(&sandbox_id, container_name);
                 let cpu_ids = self
                     .cpu_manager

@@ -2,6 +2,21 @@
 
 Last updated: 2026-09-30
 
+## Current gate
+
+The latest completed migration run is [36650426292](https://github.com/centerionware/not-k8s/actions/runs/36650426292)
+at SHA `a8c791328a91976f76557d80701cea4a115d3bd1`. K3s passed its full
+bidirectional Cilium KPR round trip. Upstream Kubernetes failed after forward
+migration when the CSI Pod could not schedule amid repeated Pod binding HTTP
+409s. Docker five-node failed on the returned-source standalone Pod because
+containerd still had its kubelet-created container name reserved. The current
+branch fixes the internal Pod binding CAS retry and Nodelet's legacy kubelet
+CRI label lookup; both need focused quick-check before another migration run.
+The single-node matrix job and invocation are capped at 30 minutes. Each
+individual five-node migration is also capped at 30 minutes, while the full
+five-node sequence keeps its aggregate window. No general e2e or regular build
+gate ran.
+
 ## 2026-09-30 migration run 36644181073
 
 Run [36644181073](https://github.com/centerionware/not-k8s/actions/runs/36644181073)
@@ -51,17 +66,25 @@ e2e jobs remain excluded from this migration task.
 Run [36650426292](https://github.com/centerionware/not-k8s/actions/runs/36650426292)
 was dispatched against SHA `a8c791328a91976f76557d80701cea4a115d3bd1` with
 `runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
-It is currently running. This run tests the per-invocation 30-minute limits,
-the bounded Cilium cleanup requests, the K3s Cilium reset ordering, and the
-five-node migration sequence. No general e2e or regular build gate was
-dispatched.
+It tested the per-invocation 30-minute limits, bounded Cilium cleanup requests,
+K3s Cilium reset ordering, and the Docker 3-control-plane/2-worker sequence.
+K3s passed both directions and every checkpoint in 25m49s. Upstream completed
+forward migration but failed its nodestore fixture while the imported CSI Pod
+remained unscheduled; 236 binding requests across 24 Pods returned HTTP 409.
+Docker passed the five-node cluster/Cilium preflight and the nodestore
+checkpoint, but the return fixture timed out on `migration-standalone` while
+containerd reported its existing container name reserved. The full details
+and fixes are in [NODEMIGRATE_BUGS.md](NODEMIGRATE_BUGS.md). Logs are saved
+once under `/tmp/nodemigrate-36650426292-{kubernetes,k3s,docker}.log`.
 
-The upstream Kubernetes lane failed after 22m26s; K3s and Docker five-node
-were still running at the latest status check. The failure has not yet been
-diagnosed because the run is not complete and active logs are not inspected.
-The Docker `Probe kubeadm nodes` step had a 180-minute cap in this dispatched
-run. The workflow now caps that full five-node step at 30 minutes for future
-runs, matching the expected healthy migration window.
+The run's Docker step used its old 180-minute aggregate cap. Each individual
+`nodemigrate` invocation in the five-node sequence is now bounded at 30 minutes,
+while the aggregate step retains enough time for multiple node migrations and
+the final round-trip checks. The single-node matrix job and its migration step
+both have 30-minute caps, so a stuck single-node run cannot consume the former
+180-minute job window. No general e2e or regular build gate was dispatched. No
+migration retry is queued until the scheduler storage-conflict and kubelet-CRI
+handoff fixes pass focused quick-check.
 
 ## 2026-09-29 migration rerun 36633722194
 
