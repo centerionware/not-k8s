@@ -63,11 +63,11 @@ workloads and host-origin CoreDNS probes passed. After enabling Cilium
 CoreDNS Pod through the Kubernetes API triggered a fresh CNI ADD and Cilium
 logged successful endpoint creation for replacement IP `10.42.0.83`, but the
 replacement remained unready for over five minutes: CoreDNS could not reach
-the Kubernetes API ClusterIP `10.43.0.1:443`, and Cilium's BPF service map
-listed that ClusterIP as non-routable. Its readiness log reported the
-Kubernetes plugin not ready. This is evidence of service-datapath state not
-being restored after clean-state, even when a new Pod endpoint is added; the
-exact mechanism remains to be confirmed. The run did not invoke nodemigrate.
+the Kubernetes API ClusterIP `10.43.0.1:443`, and the pre-CNI BPF service map
+had no routable backend for that ClusterIP. Its readiness log reported the
+Kubernetes plugin not ready. This is evidence of service-datapath loss
+immediately after clean-state; a new Pod endpoint by itself did not restore
+it. The run did not invoke nodemigrate.
 Full workflow log and artifact are saved at
 `/tmp/nodemigrate-36716154527-k3s-probe-job.log` and
 `/tmp/nodemigrate-36716154527-artifact/nodemigrate-k3s-cilium-restart.log`.
@@ -75,27 +75,35 @@ PR validation
 [36716148475](https://github.com/centerionware/not-k8s/actions/runs/36716148475)
 passed on the same SHA. Migration, docker-preflight, and e2e jobs were skipped.
 
-The next no-migration probe will restart Cilium once more with
-`clean-cilium-state` restored, then test whether this repopulates the BPF
-service map and restores CoreDNS/API-Service traffic. Follow-up
+Follow-up
 [36719510988](https://github.com/centerionware/not-k8s/actions/runs/36719510988)
-passed setup and the `notk8s` build but failed after 20m13s in the focused
-probe. After the first clean-state reset, a newly recreated CoreDNS Pod's
-host `/health` probe returned 200 while `/ready` returned 503. The second
-Cilium agent restart became Ready, and the final Cilium service listing and
-BPF backend map showed the Kubernetes API Service routed to `10.1.0.10:6443`.
-Nevertheless, CoreDNS did not become Ready within five minutes, and its API
-watches continued to fail. The probe timed out waiting for CoreDNS rollout
-before running a direct Pod-origin TCP check to either `10.43.0.1:443` or its
-backend `10.1.0.10:6443`; this is a diagnostic ordering gap, not proof that
-those routes fail after the second restart. Next diagnostic will test both
-addresses before waiting on CoreDNS. No nodemigrate command ran. Logs and
-artifact are saved at `/tmp/nodemigrate-36719510988-k3s-probe-job.log` and
+passed setup and the `notk8s` build but failed after 20m13s. A newly recreated
+CoreDNS Pod's host `/health` probe returned 200 while `/ready` returned 503.
+The second Cilium agent restart became Ready, and the final service listing
+and BPF backend map showed the Kubernetes API Service routed to
+`10.1.0.10:6443`. CoreDNS still did not become Ready within five minutes. The
+probe timed out on its CoreDNS rollout before direct Pod-origin TCP probes to
+the ClusterIP or backend, so it did not establish if those routes worked.
+Logs are saved at `/tmp/nodemigrate-36719510988-k3s-probe-job.log` and
 `/tmp/nodemigrate-36719510988-artifact/nodemigrate-k3s-cilium-restart.log`.
 
-This tests recovery hypotheses only; it does not change nodemigrate. Do not
-dispatch migration until Pod-origin API access and the Nodelet host-probe path
-are verified after cleanup.
+The reordered Pod-route diagnostic
+[36722537619](https://github.com/centerionware/not-k8s/actions/runs/36722537619)
+failed after 15m18s at SHA `2b8d78b1`; the `notk8s` build passed. After the
+clean-state reset, a fresh CoreDNS Pod's host `/health` endpoint returned 200
+and `/ready` returned 503. A second Cilium agent restart became Ready, and
+the service listing/BPF map showed an active backend for `10.43.0.1:443` at
+`10.1.0.50:6443`. A generic Pod's TCP connection to the ClusterIP timed out,
+while its direct TCP connection to `10.1.0.50:6443` succeeded. This confirms
+the API backend and Pod-to-host routing work, while Kubernetes ClusterIP
+translation does not, despite the active service listing/map entry. The run
+did not invoke nodemigrate. The next diagnostic captures Cilium trace/drop
+events during the ClusterIP probe. Logs and artifact are saved at
+`/tmp/nodemigrate-36722537619-k3s-probe-job.log` and
+`/tmp/nodemigrate-36722537619-artifact/nodemigrate-k3s-cilium-restart.log`.
+
+Do not dispatch migration until the ClusterIP datapath is repaired or the
+cross-cluster cleanup/recovery sequence is shown to restore it.
 
 ## Latest migration matrix
 

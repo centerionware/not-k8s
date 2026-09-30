@@ -25,16 +25,21 @@ Follow-up no-migration diagnostic
 [36719510988](https://github.com/centerionware/not-k8s/actions/runs/36719510988)
 confirmed that a second Cilium agent restart with the clean-state flag
 restored did become Ready and its final BPF service map showed a backend for
-`10.43.0.1:443` at `10.1.0.10:6443`. This narrows the unresolved problem:
-the replacement CoreDNS Pod's host `/health` request succeeded, its `/ready`
-request returned 503, and its API watches still timed out; CoreDNS did not
-become Ready in the five-minute rollout window. The run stopped before its
-Pod-origin API TCP probe, so it does not establish whether the Kubernetes
-ClusterIP or direct backend was reachable after the second restart. The next
-diagnostic tests both routes before waiting for CoreDNS readiness. Cilium's
-agent restart and service-map recovery are observations, not a product fix.
-Do not retry migration until Pod-origin API access and Nodelet's host-probe
-path are verified after cleanup.
+`10.43.0.1:443` at `10.1.0.10:6443`. The replacement CoreDNS Pod's host
+`/health` request succeeded, but `/ready` returned 503 and its API watches
+failed. The run timed out waiting for CoreDNS before its Pod-origin TCP probe.
+The reordered diagnostic
+[36722537619](https://github.com/centerionware/not-k8s/actions/runs/36722537619)
+then established that a generic Pod's TCP connection to the Kubernetes API
+ClusterIP `10.43.0.1:443` times out, while direct access to its backend
+`10.1.0.50:6443` succeeds. The second Cilium agent restart was Ready, and
+service listing/BPF map showed an active backend, so the failure is in the
+ClusterIP translation path rather than API backend reachability or CNI
+creation. This confirms a Cilium Service datapath failure under the fixture's
+clean-state reset. The run did not invoke nodemigrate. The next diagnostic
+captures Cilium BPF trace/drop events during the failed ClusterIP request to
+locate where forwarding stops. Do not retry migration until this path is
+repaired or destination/rollback behavior is independently proven.
 
 Full logs are saved at
 `/tmp/nodemigrate-36716154527-k3s-probe-job.log` and

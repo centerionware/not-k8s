@@ -568,6 +568,32 @@ EOF
     return 1
 }
 
+probe_api_clusterip_with_cilium_monitor() {
+    local kubeconfig="${1:?missing probe kubeconfig}"
+    local stage="${2:?missing probe stage}"
+    local log_file="${NODEMIGRATE_TEST_LOG:-/tmp/nodemigrate}.cilium-api-monitor.log"
+    local cilium_pod monitor_pid probe_ok=true
+    cilium_pod="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+        -l k8s-app=cilium -o jsonpath='{.items[0].metadata.name}')" || return 1
+    [[ -n "$cilium_pod" ]] || {
+        echo "cannot capture Cilium datapath events: no Cilium agent Pod was found" >&2
+        return 1
+    }
+    mkdir -p "$(dirname "$log_file")"
+    echo "Starting Cilium trace/drop monitor for Pod-origin API ClusterIP probe at stage=$stage"
+    timeout --signal=INT 110s env KUBECONFIG="$kubeconfig" kubectl -n kube-system \
+        exec "$cilium_pod" -c cilium-agent -- cilium-dbg monitor \
+        --type trace --type drop --numeric >"$log_file" 2>&1 &
+    monitor_pid=$!
+    sleep 2
+    probe_api_clusterip_from_pod "$kubeconfig" "$stage" || probe_ok=false
+    kill -INT "$monitor_pid" 2>/dev/null || true
+    wait "$monitor_pid" 2>/dev/null || true
+    echo "Cilium trace/drop monitor output at stage=$stage:"
+    cat "$log_file" >&2 || true
+    [[ "$probe_ok" == true ]]
+}
+
 stop_source_cilium_sandboxes_for_probe() {
     local endpoint="${NODEMIGRATE_CRI_ENDPOINT:-unix:///run/k3s/containerd/containerd.sock}"
     local pod_json sandbox_ids container_json container_ids id
@@ -4589,7 +4615,7 @@ main() {
         echo "Cilium datapath after second agent restart with clean-cilium-state restored"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
         local post_restart_api_ok=true post_restart_backend_ok=true api_backend_ip
-        probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" clean-state-agent-restarted \
+        probe_api_clusterip_with_cilium_monitor "$SOURCE_KUBECONFIG" clean-state-agent-restarted \
             || post_restart_api_ok=false
         api_backend_ip="$(KUBECONFIG="$SOURCE_KUBECONFIG" kubectl get endpoints kubernetes \
             -n default -o jsonpath='{.subsets[0].addresses[0].ip}')"

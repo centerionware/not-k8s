@@ -42,11 +42,17 @@ because its Kubernetes plugin could not sync the API. After a second Cilium
 agent restart with `clean-cilium-state` restored, the agent became Ready and
 the final BPF service map showed the Kubernetes API backend at
 `10.1.0.10:6443`. CoreDNS still did not become Ready within five minutes. The
-diagnostic timed out on its CoreDNS rollout before probing Pod-origin TCP
-access to either the Kubernetes API ClusterIP or direct backend; it therefore
-does not prove those routes remained broken. The diagnostic is being changed
-to test both routes before waiting on CoreDNS readiness. Diagnose and repair
-or safely adjust cleanup sequencing before another migration run.
+reordered diagnostic
+[36722537619](https://github.com/centerionware/not-k8s/actions/runs/36722537619)
+then showed that a generic Pod can connect directly to API backend
+`10.1.0.50:6443`, but its connection to Kubernetes ClusterIP `10.43.0.1:443`
+times out after the second Cilium agent restart. Cilium's service listing and
+BPF map nevertheless showed an active backend. This isolates the observed
+failure to ClusterIP translation after the clean-state reset; it is not a
+CoreDNS-only readiness issue. The run did not invoke nodemigrate. The next
+diagnostic captures Cilium trace/drop events around the failed ClusterIP
+connection. Diagnose and repair this path or prove destination and rollback
+recovery before another migration run.
 
 ## Latest migration matrix: 36700106403
 
