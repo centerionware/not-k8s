@@ -842,7 +842,7 @@ fn verify_bootstrap_rbac(kubeconfig: &std::path::Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::nodeapiserver_bootstrap;
+    use super::{nodeapiserver_bootstrap, should_apply_nodeapiserver_bootstrap};
 
     #[test]
     fn nodeapiserver_bootstrap_contains_the_static_identities() {

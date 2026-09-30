@@ -1319,6 +1319,9 @@ enum PodAgentControl {
 
 fn local_pod_agent_controls(runtime_endpoint: &str) -> Result<Vec<PodAgentControl>> {
     let installations = crate::detect::inspect_all(&crate::detect::HostLayout::system())?;
+    let upstream_agent_matches = installations
+        .iter()
+        .any(|installation| pod_agent_uses_runtime(installation, runtime_endpoint));
     let mut controls = Vec::new();
     for installation in installations
         .iter()
@@ -1354,7 +1357,7 @@ fn local_pod_agent_controls(runtime_endpoint: &str) -> Result<Vec<PodAgentContro
         };
         controls.push(control);
     }
-    if controls.is_empty() {
+    if !upstream_agent_matches {
         if let Some(manager) = crate::detect::nodelet_service_manager() {
             if service_active(manager, "nodelet") {
                 controls.push(PodAgentControl::Service {

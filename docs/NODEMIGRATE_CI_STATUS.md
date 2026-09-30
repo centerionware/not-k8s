@@ -4375,3 +4375,14 @@ matrix until that candidate is checked and the 31-object comparison failure is
 resolved. Logs:
 `/tmp/nodemigrate-36754641851-{k3s,kubernetes,docker}-job.log` and artifacts
 under `/tmp/nodemigrate-36754641851-artifacts/`.
+
+Focused quick-check [36762934344](https://github.com/centerionware/not-k8s/actions/runs/36762934344)
+at pushed SHA `f039f3b738cd5817e821ed32f2e1608d47ba268d` failed compiling the
+new Nodebootstrap regression because the test module had not imported its
+private helper. The compiler reported that one error at three assertion sites;
+there were no runtime test failures. The helper import is now added. The same
+worktree also avoids falling back to Nodelet when an upstream agent matches the
+runtime but is inactive; that prevents pausing an unrelated agent. The
+snapshot-normalizer fixture check passes locally with the expanded CSI root
+volume/mount case. No migration matrix was dispatched from this failed run.
+Full log: `/tmp/nodemigrate-36762934344-quick-check.log`.
