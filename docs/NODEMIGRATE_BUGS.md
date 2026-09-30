@@ -23,8 +23,9 @@ five-node lanes. Logs are saved in `/tmp/nodemigrate-36778028681-job-*.log`.
   Node conditions and kubelet/Cilium diagnostics. The current worktree keeps
   the staged Node UID instead of deleting/re-registering it before import and
   includes condition details in readiness timeout errors. Verify this change
-  with focused CI; the K3s teardown and rollback issues still need a fix before
-  another migration matrix.
+  with focused CI; its first quick-check caught a missing test-module import,
+  now fixed in the worktree. The K3s teardown and rollback issues still need a
+  fix before another migration matrix.
 - **Component: `nodemigrate` upstream recovery.** The Kubernetes single-node
   migration round trip passed with the recent bounded CRI retries, Cilium
   Envoy restart, and standalone Pod recreation changes. This validates that

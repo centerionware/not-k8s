@@ -4764,6 +4764,7 @@ mod tests {
         custom_resource_gvks, is_running_standalone_nonrestartable_pod,
         is_source_custom_resource, kubeconfig_root_ca,
         namespace_ca_bundle_matches, node_is_ready_replacement, node_scheduling_patch, object_rank,
+        node_readiness_summary,
         container_ids_for_sandbox, is_local_cilium_envoy_pod, node_pod_uids_requiring_cni,
         pod_sandbox_ids_for_uids,
         node_uid_has_been_replaced, object_skip_reason, object_type_label,

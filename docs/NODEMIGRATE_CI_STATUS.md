@@ -36,6 +36,13 @@ deleting them before the API import, and includes UID/condition details in a
 Node-readiness timeout; targeted `nodemigrate` quick-check is pending. This
 candidate does not resolve the K3s teardown and rollback datapath failures.
 
+Focused quick-check
+[36784767990](https://github.com/centerionware/not-k8s/actions/runs/36784767990)
+failed at SHA `c3444c7811bf400d4f6dcd3c9351ff6698169452` because the new
+readiness-summary unit test had not imported its private helper. The import is
+fixed in the worktree; the follow-up targeted quick-check is pending. Captured
+job log: `/tmp/nodemigrate-quickcheck-36784767990-job-110123424128.log`.
+
 ## Branch migration matrix 36770365252
 
 Migration matrix
