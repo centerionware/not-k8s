@@ -19,11 +19,21 @@ Cilium KPR, and the five-node migration path. Full lane logs are saved under
   bound preconditions. The old 409 body incorrectly said `delete precondition
   failed` for every cause. The current branch returns a specific Conflict
   message for each precondition without dropping UID/resourceVersion checks.
+  Inspection confirms the active Rust scheduler sends JSON Binding requests
+  containing the Pod UID, so the earlier protobuf-decoding hypothesis does
+  not explain this run; its test-only UID edit was reverted. A likely
+  scheduler-side cause is same-name Pod replacement leaving the old UID in
+  the scheduling queue. The watch path now removes all old-UID state before
+  routing a replacement and ignores stale Deletes when updating the mirror.
+  A deterministic regression covers replacement and delayed Delete ordering;
+  targeted `nodescheduler` CI and migration runtime confirmation are pending.
   Focused `nodeapiserver` quick-check passed at SHA
   `ab4d1778ebed1f948e17614140b9a771543e3813` in
   [run 36661272533](https://github.com/centerionware/not-k8s/actions/runs/36661272533).
-  Migration runtime verification remains pending until all encountered
-  runtime issues have actionable fixes.
+  The stale-UID mechanism is plausible but has not yet been tied to every
+  409 recorded by this run. Migration runtime verification remains pending
+  until all encountered runtime issues have actionable fixes and focused
+  checks pass.
 - **Component: returned Cilium readiness during five-node workload checks.**
   The Docker five-node probe passed cluster bring-up and reached post-migration
   workload checks. On worker-2, a Cilium CNI ADD for `migration-daemon` ended

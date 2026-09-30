@@ -19,13 +19,16 @@ round trips. Run logs are in `/tmp/nodemigrate-36656072014-{kubernetes,k3s,docke
 
 The focused quick-check [36661272533](https://github.com/centerionware/not-k8s/actions/runs/36661272533)
 passed `nodeapiserver` at `ab4d1778`, including the binding-conflict
-diagnostic change; a new protobuf Binding UID regression is pending CI at the
-current branch head. The CSI StatefulSet patch retry is also pending shell
-validation. The worker-2 Cilium CNI error recovered in the final snapshot; the
-five-node lane's terminal failure was the CSI StatefulSet patch conflict. No
-general e2e or regular build gate ran. Further migration testing waits until
-the encountered runtime failures have actionable fixes and focused checks
-pass. See [CI status](NODEMIGRATE_CI_STATUS.md) and the
+diagnostic change. The active Rust scheduler sends JSON Bindings with the Pod
+UID, so the protobuf theory was inapplicable and its test-only UID edit has
+been reverted. A likely scheduler-side same-name/new-UID stale-queue cause is
+now fixed with a regression; its focused quick-check is pending. The CSI
+StatefulSet patch retry is also pending shell validation. The worker-2 Cilium
+CNI error recovered in the final snapshot; the five-node lane's terminal
+failure was the CSI StatefulSet patch conflict. No general e2e or regular
+build gate ran. Further migration testing waits until the encountered runtime
+failures have actionable fixes and focused checks pass. See
+[CI status](NODEMIGRATE_CI_STATUS.md) and the
 [bug tracker](NODEMIGRATE_BUGS.md).
 
 The first focused quick-check [36654928410](https://github.com/centerionware/not-k8s/actions/runs/36654928410)

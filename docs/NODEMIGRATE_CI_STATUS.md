@@ -42,11 +42,15 @@ patched the imported HostPath CSI StatefulSet during a concurrent controller
 status update. A retry that rereads the StatefulSet is now in the script; shell
 validation is pending. Its worker-2 Cilium CNI ADD failure recovered by the
 final diagnostic snapshot (`migration-daemon` was `1/1 Running`). The upstream
-Binding 409 cause remains unknown: the run predates reason-specific responses,
-and storage retry exhaustion was absent. A focused protobuf Binding test now
-checks that the scheduler's UID survives request decoding. Do not start a
-migration rerun until the CI evidence and remaining runtime diagnosis support
-the whole fix batch.
+The exact 409 cause remains unverified because the run predates the
+reason-specific responses. Inspection confirms the active `nodescheduler`
+Binding client sends JSON with the Pod UID, so the protobuf-decoding hypothesis
+does not explain this run; its test-only UID edit has been reverted. A likely
+producer-side defect is now covered in `nodescheduler`: same-name/new-UID Pod
+replacement could leave the old UID queued, and a delayed Delete could evict
+the replacement from the mirror. A focused replacement regression and
+`nodescheduler` quick-check are pending. Do not start another migration run
+until the known issue batch has actionable fixes and focused checks pass.
 
 ## 2026-09-30 migration run 36656072014
 

@@ -18,7 +18,7 @@ mod tests {
                 "Binding",
                 "io.k8s.api.core.v1.Binding",
                 serde_json::json!({
-                    "metadata": {"name": "scheduled", "namespace": "default", "uid": "pod-uid"},
+                    "metadata": {"name": "scheduled", "namespace": "default"},
                     "target": {"apiVersion": "v1", "kind": "Node", "name": "worker-1"}
                 }),
             ),
