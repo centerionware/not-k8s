@@ -25,13 +25,17 @@ The worktree now makes CRI sandbox/container cleanup idempotent for explicit
 NotFound responses and routes partial nodestore rollback cleanup to the
 destination containerd endpoint, including the worker rollback path. A focused
 regression test covers NotFound versus other CRI errors. `git diff --check`
-passes. Focused quick-check and Docker CSI root-cause verification are pending;
-do not rerun the migration workflow until the complete failure batch is fixed.
+passed before commit. Focused quick-check
+[36696369212](https://github.com/centerionware/not-k8s/actions/runs/36696369212)
+passed for `nodemigrate` at SHA
+`548e31a423e24222eef0a4f3751fb957d2742f08` (job `109825202615`). Docker
+CSI/CoreDNS root-cause verification remains open; do not rerun the migration
+workflow until that failure is fixed.
 
 The selected checkout is `/workspace/not-k8s`, branch
 `feat/nodemigrate-migration`, with open [PR #591](https://github.com/centerionware/not-k8s/pull/591)
 against `main`. The pushed PR head is
-`60ab55a5508f028c529c1acea18e76e02259272a`. Focused quick-check for
+`548e31a423e24222eef0a4f3751fb957d2742f08`. Focused quick-check for
 `nodeapiserver,nodemigrate` passed for code SHA
 `5da7ade07343e93fe783502f5e4c6ed09c8b361d` in
 [36689888324](https://github.com/centerionware/not-k8s/actions/runs/36689888324)

@@ -20,9 +20,12 @@ The Docker five-node lane migrated all five nodes and reached the nodestore
 hostpath CSI recovery step, but timed out waiting for the imported
 `csi-hostpathplugin` StatefulSet after changing its hostPath state volume. Its
 saved final snapshot shows Ready Nodes, running CRI tasks, and Kubernetes Pod
-status Unknown for many workloads, including the CSI StatefulSet. The precise
-reason the updated CSI Pod did not become Ready remains under investigation.
-Worker kubelet RBAC and missing-object messages in the artifact precede those
+status Unknown for many workloads, including the CSI StatefulSet. The same
+snapshot shows all five CoreDNS Pods Running with Pod IPs but `0/1` Ready;
+Nodelet remained in its CoreDNS startup gate, and its journal reports one
+CoreDNS liveness failure/restart at the end of the CSI rollout wait. The probe
+failure's network or health cause is unresolved and may be upstream of the CSI
+rollout. Worker kubelet RBAC and missing-object messages in the artifact precede those
 workers joining nodestore, while the original kubelet clients still target the
 replacement API; they are transient handoff diagnostics, not yet a proven
 node-authorizer defect. Artifacts already exist under
@@ -31,7 +34,10 @@ the current cleanup/rollback fixes are pending, and no new migration run should
 start until the Docker recovery failure is also addressed.
 
 PR #591 remains open on `feat/nodemigrate-migration`, now at
-`60ab55a5508f028c529c1acea18e76e02259272a`. The pushed batch includes
+`548e31a423e24222eef0a4f3751fb957d2742f08`. Focused `nodemigrate`
+quick-check passed on this SHA in
+[36696369212](https://github.com/centerionware/not-k8s/actions/runs/36696369212)
+(job `109825202615`). The pushed batch includes
 local non-host-network sandbox recreation after Cilium datapath cleanup and
 the five-node fixture image/probe fixes. PR script validation passed at this
 SHA in [36683529226](https://github.com/centerionware/not-k8s/actions/runs/36683529226);

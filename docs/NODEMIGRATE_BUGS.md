@@ -22,16 +22,23 @@ operations completed and the lane reached the nodestore CSI restore step, but
 the imported `csi-hostpathplugin` StatefulSet rollout timed out after the
 test patched its durable state volume. Final diagnostics show Ready Nodes,
 CRI tasks running, but the plugin and many workload Pods Unknown. This is not
-yet diagnosed or fixed, so it blocks another migration run. The worker kubelet
+yet diagnosed or fixed, so it blocks another migration run. The snapshot also
+shows five CoreDNS Pods Running with IPs but all `0/1` Ready; Nodelet logs one
+CoreDNS liveness probe restart at the end of the CSI rollout wait. The failed
+CoreDNS health/readiness gate may be upstream of the CSI Pod, but its probe
+failure's network or health cause is not in the captured logs. The worker kubelet
 RBAC and missing Pod/Node errors in the same artifact occurred before each
 worker joined the target; source kubelet traffic was still reaching the
 replacement API during handoff, so do not treat those lines as a confirmed
 target authorization defect. Captured evidence is under
 `/tmp/nodemigrate-36690929745*` and is already available locally. Focused CI
-for the current worktree changes is pending.
+for the current changes passed in
+[36696369212](https://github.com/centerionware/not-k8s/actions/runs/36696369212)
+on SHA `548e31a423e24222eef0a4f3751fb957d2742f08`. The Docker CSI/CoreDNS
+root cause remains unverified and still blocks another migration run.
 
 Open PR #591 now includes commit
-`60ab55a5508f028c529c1acea18e76e02259272a` on
+`548e31a423e24222eef0a4f3751fb957d2742f08` on
 `feat/nodemigrate-migration`. Focused quick-check
 [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
 failed while compiling `nodemigrate`; Nodelet passed 390 non-CRI and 1216
