@@ -23,17 +23,18 @@ messages, so a follow-up can identify whether UID, resourceVersion, deletion,
 already-bound state, or storage retries are producing the 409s. PR head
 `c9ced284` capped both the single-node job and its migration step at 30
 minutes; run 36656072014 showed the job cap was too short because it also
-includes toolchain setup and both branch builds. The job cap is now 60 minutes
-and the migration step retains its own 30-minute cap. Each five-node
+includes toolchain setup and both branch builds. The job cap is now 90 minutes
+and the migration step has a 60-minute cap. Each five-node
 nodemigrate invocation remains capped at 30 minutes, with a longer aggregate
 scenario window. No general e2e or regular build gate ran. Do not
 dispatch another migration run until the encountered runtime failures have
 actionable fixes.
 
-Focused quick-check [36655430632](https://github.com/centerionware/not-k8s/actions/runs/36655430632)
-passed `nodeapiserver,nodelet` at SHA `f6e7e4d6`, including CRI-enabled
-Nodelet. The conflict-status changes are newer and still need a focused
-`nodeapiserver` quick-check.
+Focused quick-check [36661272533](https://github.com/centerionware/not-k8s/actions/runs/36661272533)
+passed `nodeapiserver` at SHA `ab4d1778ebed1f948e17614140b9a771543e3813`.
+It includes the reason-specific Pod Binding Conflict responses and regression
+test. Earlier quick-check [36655430632](https://github.com/centerionware/not-k8s/actions/runs/36655430632)
+passed `nodeapiserver,nodelet` at `f6e7e4d6`, including CRI-enabled Nodelet.
 
 ## 2026-09-30 migration run 36656072014
 
@@ -55,7 +56,8 @@ fixture checks. Its overall 30-minute job timeout stopped the run at
 completed. Traefik still showed 0/1 at the time, so this is an incomplete
 check rather than a confirmed migration failure. GitHub reports
 `cancelled_by: null`; the elapsed job duration matches the configured job
-timeout. The job-level limit is now 60 minutes. The Docker
+timeout. Commit `ab4d1778` raised the job-level limit to 60 minutes; it is now
+90 minutes, and the migration step limit is now 60 minutes. The Docker
 five-node lane reached post-migration workload checks, then worker-2's Cilium
 CNI ADD for `migration-daemon` failed with `signal: killed`. Nodelet logged a
 reconcile timeout while the replacement Cilium Pod's `clean-cilium-state`

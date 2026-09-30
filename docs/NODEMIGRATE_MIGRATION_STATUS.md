@@ -10,17 +10,19 @@ did not address the repeated caller-visible conflicts. K3s completed both
 migration directions and most returned-fixture checks, then hit the overall
 30-minute job timeout while Traefik remained 0/1 available. The timeout
 stopped the migration step after about 19 minutes, before its own 30-minute
-limit. Docker five-node reached workload checks
+limit. The current workflow allows 60 minutes for migration and 90 minutes for
+the full single-node job. Docker five-node reached workload checks
 but a worker-2 Cilium CNI ADD failed with `signal: killed` while its replacement
 agent was initializing. These are unresolved/incomplete results, not passing
 round trips. Run logs are in `/tmp/nodemigrate-36656072014-{kubernetes,k3s,docker}.log`.
 
-The latest focused quick-check, [36655430632](https://github.com/centerionware/not-k8s/actions/runs/36655430632),
-passed `nodeapiserver,nodelet` at `f6e7e4d6`; the newer binding-conflict
-diagnostic change still needs a `nodeapiserver` quick-check. No general e2e or
-regular build gate ran. Further migration testing waits until encountered
-runtime failures have actionable fixes. See [CI status](NODEMIGRATE_CI_STATUS.md)
-and the [bug tracker](NODEMIGRATE_BUGS.md).
+The latest focused quick-check, [36661272533](https://github.com/centerionware/not-k8s/actions/runs/36661272533),
+passed `nodeapiserver` at `ab4d1778`, including the binding-conflict
+diagnostic change. Earlier [run 36655430632](https://github.com/centerionware/not-k8s/actions/runs/36655430632)
+passed `nodeapiserver,nodelet` at `f6e7e4d6`. No general e2e or regular build
+gate ran. Further migration testing waits until encountered runtime failures
+have actionable fixes. See [CI status](NODEMIGRATE_CI_STATUS.md) and the
+[bug tracker](NODEMIGRATE_BUGS.md).
 
 The first focused quick-check [36654928410](https://github.com/centerionware/not-k8s/actions/runs/36654928410)
 found an ownership mismatch in the new Nodelet resource snapshot helper after

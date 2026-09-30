@@ -19,8 +19,11 @@ Cilium KPR, and the five-node migration path. Full lane logs are saved under
   bound preconditions. The old 409 body incorrectly said `delete precondition
   failed` for every cause. The current branch returns a specific Conflict
   message for each precondition without dropping UID/resourceVersion checks.
-  Focused `nodeapiserver` quick-check and migration runtime verification remain
-  pending.
+  Focused `nodeapiserver` quick-check passed at SHA
+  `ab4d1778ebed1f948e17614140b9a771543e3813` in
+  [run 36661272533](https://github.com/centerionware/not-k8s/actions/runs/36661272533).
+  Migration runtime verification remains pending until all encountered
+  runtime issues have actionable fixes.
 - **Component: returned Cilium readiness during five-node workload checks.**
   The Docker five-node probe passed cluster bring-up and reached post-migration
   workload checks. On worker-2, a Cilium CNI ADD for `migration-daemon` ended
@@ -40,8 +43,9 @@ Cilium KPR, and the five-node migration path. Full lane logs are saved under
   after about 19 minutes, before its own 30-minute timeout or the rollout
   command's five-minute deadline. Run metadata has `cancelled_by: null`. This
   is a job-timeout truncation, not evidence of a Traefik regression. The job
-  timeout is now 60 minutes; this lane remains incomplete and must be rerun
-  after the actionable runtime issues are resolved.
+  timeout was raised to 60 minutes in commit `ab4d1778` and is now 90 minutes;
+  the migration step is now capped at 60 minutes. This lane remains incomplete
+  and must be rerun after the actionable runtime issues are resolved.
 
 The run's job IDs were Docker 109700594144, K3s 109700594250, and upstream
 Kubernetes 109700594260. Its five-node build/preflight succeeded before the

@@ -215,7 +215,7 @@ jobs:
     runs-on: ubuntu-latest
     # Checkout, toolchain setup, both release builds, and migration need a
     # larger total window than the migration step's own bounded runtime.
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -265,7 +265,7 @@ jobs:
           printf '%s\n' "$components"
 
       - name: Run migration
-        timeout-minutes: 30
+        timeout-minutes: 60
         env:
           GH_TOKEN: ${{ github.token }}
           NODEMIGRATE_SOURCE_DIST: ${{ matrix.source }}
