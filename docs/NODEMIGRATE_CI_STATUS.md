@@ -4,6 +4,27 @@ Last updated: 2026-09-30
 
 ## Clean-state Cilium diagnostic
 
+Pinned-link diagnostic [36738848742](https://github.com/centerionware/not-k8s/actions/runs/36738848742)
+failed at SHA `1010bd8774242c9d45b81a6302791fb39a179cb2` after 17m59s (job
+`109967569427`). The combined `notk8s` build and CSI setup passed; migration,
+Docker preflight, and general validation were skipped. Before cleanup, every
+pinned Socket LB link targeted cgroup ID `1`; the configured cgroup mount root
+was `/../../../..`, and Pod-origin API ClusterIP routing passed. After
+`clean-cilium-state`, the links targeted cgroup ID `23507`, the configured
+mount root was `/`, and ClusterIP routing failed despite those programs being
+listed at that path. After a second ordinary agent restart, the mount root
+returned to `/../../../..`, but pinned links still targeted cgroup ID `23507`
+and the API route remained broken. Cilium restored its prior endpoints and
+created the diagnostic Pod endpoint with its BPF program loaded. The 60-second
+probe recorded repeated SYNs traversing `stack` untranslated; direct API
+backend access remained successful. This ties the datapath regression to a
+changed cgroup link target across all-state cleanup, rather than endpoint
+readiness. The next probe now maps each link's cgroup ID through
+`/sys/fs/cgroup` and records the Cilium agent and Pod cgroup paths.
+Shell/checker validation passed locally; focused rerun pending. Logs:
+`/tmp/nodemigrate-36738848742-k3s-probe-job.log` and
+`/tmp/nodemigrate-36738848742-artifact/nodemigrate-k3s-cilium-restart-36738848742/nodemigrate-k3s-cilium-restart.log`.
+
 Focused follow-up [36736279009](https://github.com/centerionware/not-k8s/actions/runs/36736279009)
 failed at SHA `2ab4d15c61274233d68414a18483cec706a8142f` after 15m58s (job
 `109958731722`). The `notk8s` build and CSI setup passed; migration, Docker

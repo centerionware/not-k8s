@@ -533,7 +533,7 @@ spec:
   - name: probe
     image: busybox:1.36.1
     imagePullPolicy: IfNotPresent
-    command: ["sh", "-ec", "attempt=0; while [ \"\$attempt\" -lt 20 ]; do if nc -z -w 2 $target_ip $target_port; then exit 0; fi; attempt=\$((attempt + 1)); sleep 1; done; exit 1"]
+    command: ["sh", "-ec", "echo probe-cgroup=; cat /proc/self/cgroup; attempt=0; while [ \"\$attempt\" -lt 20 ]; do if nc -z -w 2 $target_ip $target_port; then exit 0; fi; attempt=\$((attempt + 1)); sleep 1; done; exit 1"]
     resources:
       requests:
         cpu: 1m
@@ -586,15 +586,27 @@ capture_cilium_socket_lb_attachment() {
         -c cilium-agent -- sh -c '
             echo "cgroup2 mounts:";
             grep " - cgroup2 " /proc/self/mountinfo || true;
+            echo "Cilium agent cgroup:";
+            cat /proc/self/cgroup || true;
+            stat -c "configured-cgroup-mount inode=%i path=%n" "$1" 2>/dev/null || true;
             echo "Programs attached directly to the cgroup root:";
             if command -v bpftool >/dev/null 2>&1; then
                 bpftool cgroup show "$1" || true;
                 echo "Pinned Socket LB link metadata:";
+                socketlb_cgroup_id="";
                 for link in /sys/fs/bpf/cilium/socketlb/links/cgroup/cil_sock*; do
                     [ -e "$link" ] || continue;
                     echo "pinned_link=$link";
-                    bpftool link show pinned "$link" || true;
+                    link_info="$(bpftool link show pinned "$link" 2>&1 || true)";
+                    printf "%s\\n" "$link_info";
+                    if [ -z "$socketlb_cgroup_id" ]; then
+                        socketlb_cgroup_id="$(printf "%s\\n" "$link_info" | awk "/cgroup_id/ { print \$2; exit }")";
+                    fi;
                 done;
+                if [ -n "$socketlb_cgroup_id" ]; then
+                    echo "Socket LB target cgroup ID=$socketlb_cgroup_id paths in /sys/fs/cgroup:";
+                    find /sys/fs/cgroup -xdev -inum "$socketlb_cgroup_id" -print 2>/dev/null | head -n 20 || true;
+                fi;
             else
                 echo "bpftool is not present in the Cilium image";
             fi

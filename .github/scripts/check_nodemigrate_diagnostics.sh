@@ -404,6 +404,16 @@ grep -Fq 'bpftool link show pinned "$link"' "$ROOT/.github/scripts/nodemigrate-i
     echo "restart diagnostic does not inspect pinned Socket LB link cgroup identities" >&2
     exit 1
 }
+grep -Fq 'find /sys/fs/cgroup -xdev -inum "$socketlb_cgroup_id"' \
+    "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
+    echo "restart diagnostic does not resolve the Socket LB target cgroup ID" >&2
+    exit 1
+}
+grep -Fq 'echo probe-cgroup=; cat /proc/self/cgroup' \
+    "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
+    echo "Pod-origin probe does not report its workload cgroup path" >&2
+    exit 1
+}
 grep -Fq 'probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" clean-state-before-second-agent-restart' \
     "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
     echo "restart diagnostic does not test ClusterIP between the clean-state and second-agent restart" >&2

@@ -86,23 +86,29 @@ showed existing endpoints `regenerating`; the fresh CoreDNS endpoint later
 showed `waiting-to-regenerate`. Therefore the probe ran before complete endpoint
 recovery, and does not establish a persistent post-recovery route failure. The
 second restart checkpoint also failed and had no Socket LB programs attached
-at the configured cgroup root. Follow-up
+at the configured cgroup root. Run
 [36736279009](https://github.com/centerionware/not-k8s/actions/runs/36736279009)
-still failed after the new probe retried TCP for up to 60 seconds. Cilium logged
-all restored endpoints regenerated and then loaded the probe endpoint's BPF
-program, but all observed API ClusterIP SYNs remained untranslated through the
-end of the retry window. The service map showed an active API backend, and
-direct TCP to that backend succeeded. This confirms a persistent Cilium KPR
-path failure after clean-state cleanup, not merely a short endpoint
-regeneration delay. The cgroup-root listing showed Socket LB programs
-immediately after cleanup but no programs at the configured root after the
-second restart, where mountinfo reported root `/../../../..`. The next
-diagnostic records pinned Socket LB link metadata and cgroup IDs at the
-ordinary baseline, after cleanup, and after restart to determine whether links
-attach to the cgroup hierarchy used by workloads. Migration was disabled; no
-migration behavior was tested. Full logs:
-`/tmp/nodemigrate-36736279009-k3s-probe-job.log` and
-`/tmp/nodemigrate-36736279009-artifact/nodemigrate-k3s-cilium-restart-36736279009/nodemigrate-k3s-cilium-restart.log`.
+confirmed the failure persists after a 60-second retry: Cilium restored its
+endpoints and loaded the probe endpoint's BPF program, but API ClusterIP SYNs
+remained untranslated. The service map showed an active API backend, and direct
+TCP to that backend succeeded.
+
+Pinned-link follow-up
+[36738848742](https://github.com/centerionware/not-k8s/actions/runs/36738848742)
+identified a strong cgroup attachment regression. Before cleanup, all Socket
+LB links targeted cgroup ID `1` while the configured cgroup mount root showed
+`/../../../..`; the baseline Pod-origin ClusterIP probe passed. After
+`clean-cilium-state`, the links targeted cgroup ID `23507`, the mount root
+showed `/`, and the Pod-origin probe failed. After the ordinary second agent
+restart, the mount root returned to `/../../../..`, but link target `23507`
+persisted and the route remained broken. Thus cgroup ID `23507` is now the
+leading cause, though its location relative to the host and workload cgroups
+still needs direct mapping. The next probe now resolves each link's cgroup ID
+under `/sys/fs/cgroup` and records the Cilium agent and Pod cgroup paths.
+Shell/checker validation passed locally; focused rerun pending. Migration was
+disabled. Logs:
+`/tmp/nodemigrate-36738848742-k3s-probe-job.log` and
+`/tmp/nodemigrate-36738848742-artifact/nodemigrate-k3s-cilium-restart-36738848742/nodemigrate-k3s-cilium-restart.log`.
 
 Full logs for the preceding run:
 `/tmp/nodemigrate-36733704748-k3s-probe-job.log` and
