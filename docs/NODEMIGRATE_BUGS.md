@@ -41,7 +41,9 @@ logs are saved once under `/tmp/nodemigrate-36644181073-*.log`.
   and cp-2 migrations successfully before the overall step expired, so this
   did not prove that an individual migration exceeded 30 minutes. The script
   now bounds each nodemigrate invocation to 30 minutes; the enclosing step is
-  extended to allow all five nodes and fixture checks to complete.
+  also capped at 30 minutes, matching the expected healthy migration window.
+  This applies to future workflow runs; an already-dispatched run retains its
+  original 180-minute step limit.
 
 The `nodebootstrap,nodemigrate` quick-check passed for the run's SHA in
 [run 36643843760](https://github.com/centerionware/not-k8s/actions/runs/36643843760).

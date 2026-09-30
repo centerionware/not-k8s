@@ -56,6 +56,13 @@ the bounded Cilium cleanup requests, the K3s Cilium reset ordering, and the
 five-node migration sequence. No general e2e or regular build gate was
 dispatched.
 
+The upstream Kubernetes lane failed after 22m26s; K3s and Docker five-node
+were still running at the latest status check. The failure has not yet been
+diagnosed because the run is not complete and active logs are not inspected.
+The Docker `Probe kubeadm nodes` step had a 180-minute cap in this dispatched
+run. The workflow now caps that full five-node step at 30 minutes for future
+runs, matching the expected healthy migration window.
+
 ## 2026-09-29 migration rerun 36633722194
 
 Run [36633722194](https://github.com/centerionware/not-k8s/actions/runs/36633722194)

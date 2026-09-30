@@ -133,7 +133,7 @@ jobs:
         run: docker build --pull --file .github/nodemigrate/five-node.Dockerfile --tag nodemigrate-ci-node:ubuntu-24.04 .github/nodemigrate
 
       - name: Probe kubeadm nodes
-        timeout-minutes: 180
+        timeout-minutes: 30
         env:
           NODEMIGRATE_NODE_IMAGE: nodemigrate-ci-node:ubuntu-24.04
           NODEMIGRATE_PREFLIGHT_LOG: ${{ runner.temp }}/nodemigrate-docker-preflight.log
