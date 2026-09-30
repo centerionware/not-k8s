@@ -4,14 +4,16 @@ Last updated: 2026-09-30
 
 ## Active worktree candidate
 
-PR #591 remains open on `feat/nodemigrate-migration`, with PR head
-`f1956b4e0bbcdad51cd237790f6c3a1fc215f729`. A working-tree batch now
-addresses the Cilium cleanup wait, CSI registration wakeups and metadata
+PR #591 remains open on `feat/nodemigrate-migration`, now at
+`f8bfc0254bf8aa97ac6a630f75c6b93e7bb9e0e9`. The pushed batch addresses the
+Cilium cleanup wait, CSI registration wakeups and metadata
 retries, retry UID/cancellation safety, and hostpath fixture node placement.
-The source has not yet passed focused CI, and none of these changes has been
-exercised by migration runtime. Local shell syntax and `git diff --check`
-passed. The migration rerun remains gated on focused CI for `nodelet` and
-`nodemigrate`; then run the authorized migration workflow with the branch
+Focused quick-check [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
+passed both Nodelet test configurations (390 non-CRI, 1216 CRI) but failed
+compiling `nodemigrate`; the compile errors are corrected in the working tree.
+None of the changes has been exercised by migration runtime. Local shell
+syntax and `git diff --check` passed. The migration rerun remains gated on a
+green focused check; then run the authorized workflow with the branch
 runtime, Cilium KPR, and five-node migration enabled. No general e2e or
 regular build gate is requested.
 

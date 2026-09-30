@@ -4,9 +4,18 @@ Last updated: 2026-09-30
 
 ## Active fix batch (working tree, not yet CI-verified)
 
-The branch head is still `f1956b4e0bbcdad51cd237790f6c3a1fc215f729` on open
-PR #591. The current uncommitted batch addresses the failure mechanisms
-recorded below:
+Open PR #591 now includes commit
+`f8bfc0254bf8aa97ac6a630f75c6b93e7bb9e0e9` on
+`feat/nodemigrate-migration`. Focused quick-check
+[36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
+failed while compiling `nodemigrate`; Nodelet passed 390 non-CRI and 1216
+CRI-enabled tests. The complete job log is
+`/tmp/nodemigrate-quick-check-36673247341.log`. Rust found a `String`/`str`
+comparison mismatch and the cleanup wrapper accepted an already-completed
+`Result` as a future, plus the test needed an explicit result type. These
+compile issues are fixed in the working tree but are not yet CI-verified. No
+migration runtime has been dispatched for this commit. The current batch
+addresses the failure mechanisms recorded below:
 
 - Cilium cleanup now tracks the replacement Pod UID, cleanup-init exit code,
   and a continuous Ready interval for that same Pod. Each loop checks its

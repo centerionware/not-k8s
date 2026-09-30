@@ -6,18 +6,23 @@ Last updated: 2026-09-30
 
 The selected checkout is `/workspace/not-k8s`, branch
 `feat/nodemigrate-migration`, with open [PR #591](https://github.com/centerionware/not-k8s/pull/591)
-against `main`. The PR head remains
-`f1956b4e0bbcdad51cd237790f6c3a1fc215f729`; a new, uncommitted fix batch
-covers Cilium replacement readiness and diagnostics, Nodelet dynamic CSI
-reconciliation/retries, and five-node hostpath placement. `bash -n` on the
+against `main`. The pushed PR head is
+`f8bfc0254bf8aa97ac6a630f75c6b93e7bb9e0e9`; it covers Cilium replacement
+readiness and diagnostics, Nodelet dynamic CSI reconciliation/retries, and
+five-node hostpath placement. Focused quick-check
+[36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
+failed compiling `nodemigrate`; its log is
+`/tmp/nodemigrate-quick-check-36673247341.log`. Nodelet passed both test
+configurations: 390 without CRI and 1216 with CRI. The compiler errors in the
+Cilium cleanup result wrapper and its test are corrected in the working tree
+and need another focused check. `bash -n` on the
 changed integration scripts and `git diff --check` pass. A package-wide
 `cargo fmt --check` reports formatting differences across the existing
 `nodelet` and `nodemigrate` trees, so it is not a clean formatting signal for
-this patch and no repository-wide formatting churn was applied. No quick-check
-or migration workflow has been dispatched for the current changes. There are
-no active branch runs. Commit and push the complete fix batch, then run the
-focused `nodelet,nodemigrate` quick-check before another migration workflow.
-Do not run the regular build gate or general e2e suite for this task.
+this patch and no repository-wide formatting churn was applied. Do not start
+another migration workflow until a focused quick-check passes and the
+push-triggered migration script validation finishes successfully. Do not run the regular build
+gate or general e2e suite for this task.
 
 ## Current gate
 

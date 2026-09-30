@@ -460,8 +460,9 @@ acceptance criteria above; it does not claim the migration is fixed.
 
 Work in `/workspace/not-k8s`, branch `feat/nodemigrate-migration`, [PR
 #591](https://github.com/centerionware/not-k8s/pull/591), open against `main`.
-The reviewed branch head is `f1956b4e0bbcdad51cd237790f6c3a1fc215f729`.
-Preserve unrelated untracked directories in the checkout.
+The previously reviewed head was `f1956b4e0bbcdad51cd237790f6c3a1fc215f729`.
+The current pushed head is `f8bfc0254bf8aa97ac6a630f75c6b93e7bb9e0e9`;
+preserve unrelated untracked directories in the checkout.
 
 The latest completed migration run is
 [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690),
@@ -480,8 +481,11 @@ passed nodemigrate crate tests. Integration validation
 passed shell/jq checks, but all cluster migration jobs were skipped because
 that was the push-triggered validation path. Focused `quick-check` run
 [36670741332](https://github.com/centerionware/not-k8s/actions/runs/36670741332)
-also passed for `nodemigrate`. These results do not verify the Cilium or CSI
-runtime fixes. Older entries below or in the status documents that call
+also passed for `nodemigrate`. Follow-up quick-check
+[36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
+on `f8bfc025` passed both Nodelet test configurations (390 non-CRI and 1216
+CRI-enabled tests) but failed compiling `nodemigrate`; the exact failures and
+working-tree corrections are recorded in the bug tracker. Older entries below or in the status documents that call
 36664092690 active or describe its checks as pending are historical.
 
 ### Cilium recovery and missing failure evidence

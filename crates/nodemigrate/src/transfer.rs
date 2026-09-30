@@ -1233,7 +1233,7 @@ impl KubeApi {
                             "uid={current_uid} rv={} ready={ready} conditions=[{conditions}] init=[{init_summary}]",
                             current.metadata.resource_version.as_deref().unwrap_or("<none>")
                         );
-                        if last_observed_state.as_deref() != Some(&observed_state) {
+                        if last_observed_state.as_deref() != Some(observed_state.as_str()) {
                             eprintln!("nodemigrate: Cilium replacement state on {node_name}: {observed_state}");
                             last_observed_state = Some(observed_state);
                         }
@@ -1849,12 +1849,10 @@ where
         .with_context(|| format!("Cilium API request {description} failed"))
 }
 
-async fn run_with_cilium_flag_restore<T, O, R>(operation: O, restore: R) -> Result<T>
+async fn run_with_cilium_flag_restore<T, R>(operation: Result<T>, restore: R) -> Result<T>
 where
-    O: Future<Output = Result<T>>,
     R: Future<Output = Result<()>>,
 {
-    let operation = operation.await;
     let restore = restore.await;
     match (operation, restore) {
         (Ok(value), Ok(())) => Ok(value),
@@ -4150,8 +4148,9 @@ mod tests {
     async fn cilium_clean_state_flag_restoration_runs_after_operation_failure() {
         let restored = Arc::new(AtomicBool::new(false));
         let restored_by_cleanup = restored.clone();
+        let operation: anyhow::Result<()> = Err(anyhow::anyhow!("cleanup failed"));
         let result = run_with_cilium_flag_restore(
-            async { anyhow::bail!("cleanup failed") },
+            operation,
             async move {
                 restored_by_cleanup.store(true, Ordering::SeqCst);
                 Ok(())
