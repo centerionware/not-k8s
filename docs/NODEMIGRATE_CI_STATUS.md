@@ -19,8 +19,10 @@ The current source candidate moves reverse protected API import after Node
 replacement/readiness and local Cilium reset, waits for a stable Kubernetes
 API ClusterIP TCP route before Cilium-triggered CRI sandbox cleanup, and keeps
 the existing rollback path if the route fails to recover. Focused
-`nodemigrate` quick-check is pending; the next migration run must exercise all
-three lanes. No general build or full e2e ran.
+`nodemigrate` quick-check passed at SHA `7bda107d` in
+[run 36791941985](https://github.com/centerionware/not-k8s/actions/runs/36791941985),
+including its new Service-route target and stability tests. The next migration
+run must exercise all three lanes. No general build or full e2e ran.
 
 ## Branch migration matrix 36778028681
 

@@ -40,7 +40,11 @@ builds passed. Full job logs are saved at
   before CRI cleanup if service routing does not stabilize.
 
 Focused `nodemigrate` quick-check and migration rerun are pending for the
-candidate. No general build or full e2e ran.
+candidate. Quick-check passed at SHA `7bda107d` in
+[36791941985](https://github.com/centerionware/not-k8s/actions/runs/36791941985),
+including the new Service-route target and stability tests. The three-lane
+migration rerun is now the next runtime check. No general build or full e2e
+ran.
 
 ## Migration matrix 36778028681 failures
 

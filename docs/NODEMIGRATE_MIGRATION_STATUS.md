@@ -21,8 +21,11 @@ The current candidate repairs the confirmed reverse-path ordering gap by
 waiting for the returned Node and Cilium recovery before importing protected
 workload/admission resources. It also requires the Kubernetes API Service
 ClusterIP to stay TCP reachable for 10 seconds before local sandbox cleanup,
-with a five-minute bounded recovery window. Quick-check and runtime behavior
-are pending. Logs are saved at:
+with a five-minute bounded recovery window. Focused `nodemigrate` quick-check
+passed at SHA `7bda107d` in
+[36791941985](https://github.com/centerionware/not-k8s/actions/runs/36791941985),
+including the new target parsing and stability behavior tests. Runtime behavior
+is pending. Logs are saved at:
 
 - `/tmp/nodemigrate-36786000022-job-110127421783.log` (upstream)
 - `/tmp/nodemigrate-36786000022-job-110127421966.log` (K3s)
