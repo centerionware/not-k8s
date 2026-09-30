@@ -35,15 +35,28 @@ ClusterIP `10.43.0.1:443` times out, while direct access to its backend
 `10.1.0.50:6443` succeeds. The second Cilium agent restart was Ready, and
 service listing/BPF map showed an active backend, so the failure is in the
 ClusterIP translation path rather than API backend reachability or CNI
-creation. This confirms a Cilium Service datapath failure under the fixture's
-clean-state reset. The run did not invoke nodemigrate. The next diagnostic
-captures Cilium BPF trace/drop events during the failed ClusterIP request to
-locate where forwarding stops. Do not retry migration until this path is
-repaired or destination/rollback behavior is independently proven.
+creation. Focused diagnostic
+[36725184073](https://github.com/centerionware/not-k8s/actions/runs/36725184073)
+then captured the failed flow. A fresh diagnostic Pod got IP `10.42.0.162`,
+and Cilium logged successful endpoint creation and BPF program reload. Its
+SYN to `10.43.0.1:443` was observed `to stack`; the service map still listed
+active backend `10.1.0.160:6443`, and the direct-backend probe passed. Cilium
+also dropped replies addressed to old CoreDNS IP `10.42.0.139` as `Stale or
+unroutable IP`; this stale traffic is separate from the diagnostic Pod's
+`.162` flow and is not established as its cause. Thus the failing ClusterIP
+flow is now observed at the endpoint-to-stack handoff, but why Cilium skips or
+fails ClusterIP translation remains unresolved. The run did not invoke
+nodemigrate. Inspect Cilium's service lookup and socket-LB configuration/path
+before changing the migration recovery procedure. Do not retry migration until
+this path is repaired or destination/rollback behavior is independently
+proven.
 
 Full logs are saved at
 `/tmp/nodemigrate-36716154527-k3s-probe-job.log` and
 `/tmp/nodemigrate-36716154527-artifact/nodemigrate-k3s-cilium-restart.log`.
+Run 36725184073 logs are saved at
+`/tmp/nodemigrate-36725184073-k3s-probe-job.log` and
+`/tmp/nodemigrate-36725184073-artifact/nodemigrate-k3s-cilium-restart.log`.
 The diagnostic runs emitted repeated K3s probe-manager "already exists"
 messages during the unready interval; these are observed secondary symptoms,
 not yet established as an independent cause.

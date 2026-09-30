@@ -2,7 +2,23 @@
 
 Last updated: 2026-09-30
 
-## Restart-only diagnostic setup failure
+## Clean-state Cilium diagnostic
+
+Focused Cilium packet diagnostic [36725184073](https://github.com/centerionware/not-k8s/actions/runs/36725184073)
+failed at SHA `03deefc8da64cb635a5ef87616b0788958e21e63` after 15m43s (job
+`109920132880`). The `notk8s` build and CSI setup passed; the restart probe
+failed. A fresh diagnostic Pod received IP `10.42.0.162`, and Cilium logged
+successful endpoint creation and BPF-program reload. Its SYN to API ClusterIP
+`10.43.0.1:443` appeared in the Cilium monitor as `to stack`; meanwhile the
+Cilium service map listed active backend `10.1.0.160:6443`, and the direct
+backend probe passed. The monitor also logged `Stale or unroutable IP` drops
+for replies to old CoreDNS IP `10.42.0.139`, not the diagnostic Pod's IP. This
+narrows the failure to the ClusterIP flow after endpoint creation, but the
+trace does not yet identify why the service lookup/translation is bypassed or
+fails. Migration, Docker preflight, and general validation were skipped. Logs:
+`/tmp/nodemigrate-36725184073-k3s-probe-job.log` and
+`/tmp/nodemigrate-36725184073-artifact/nodemigrate-k3s-cilium-restart.log`.
+Do not dispatch migration while this remains unresolved.
 
 Workflow [36706135439](https://github.com/centerionware/not-k8s/actions/runs/36706135439)
 completed at branch SHA `deadc5eb729e2af4d9de0fc96f7217db031abf8b`; job
