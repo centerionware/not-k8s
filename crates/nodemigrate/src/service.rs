@@ -28,6 +28,8 @@ pub(crate) struct SourceCiliumIdentity {
 // cri-tools defaults CRI calls to a two second deadline. Removing a stopped
 // sandbox can take longer while the runtime tears down its network namespace.
 const CRICTL_CLEANUP_TIMEOUT: &str = "60s";
+const CRICTL_CLEANUP_TRANSITION_ATTEMPTS: usize = 16;
+const CRICTL_CLEANUP_DEADLINE_ATTEMPTS: usize = 2;
 
 #[derive(Debug, Clone)]
 struct ServiceState {
@@ -1819,28 +1821,54 @@ fn checked(program: &str, args: &[&str]) -> Result<()> {
 }
 
 pub(crate) fn checked_cri_cleanup(endpoint: &str, action: &str, id: &str) -> Result<bool> {
-    let output = command(
-        "crictl",
-        &[
-            "--timeout",
-            CRICTL_CLEANUP_TIMEOUT,
-            "--runtime-endpoint",
-            endpoint,
-            action,
-            id,
-        ],
-    )?;
-    ensure!(
-        cri_cleanup_succeeded(output.status.success(), &output.stderr),
-        "crictl {} failed for {id} at {endpoint}: {}",
-        action,
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    Ok(output.status.success())
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let output = command(
+            "crictl",
+            &[
+                "--timeout",
+                CRICTL_CLEANUP_TIMEOUT,
+                "--runtime-endpoint",
+                endpoint,
+                action,
+                id,
+            ],
+        )?;
+        if cri_cleanup_succeeded(output.status.success(), &output.stderr) {
+            return Ok(output.status.success());
+        }
+        let attempt_limit = cri_cleanup_attempt_limit(action, &output.stderr);
+        if attempts >= attempt_limit {
+            bail!(
+                "crictl {action} failed for {id} at {endpoint}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
 }
 
 fn cri_cleanup_succeeded(exit_success: bool, stderr: &[u8]) -> bool {
     exit_success || cri_not_found(stderr)
+}
+
+fn cri_cleanup_retryable(action: &str, stderr: &[u8]) -> bool {
+    let message = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    let deadline_expired = message.contains("deadlineexceeded")
+        || message.contains("context deadline exceeded");
+    (matches!(action, "stopp" | "rmp") && deadline_expired)
+        || (action == "rm" && message.contains("container is in starting state"))
+}
+
+fn cri_cleanup_attempt_limit(action: &str, stderr: &[u8]) -> usize {
+    if !cri_cleanup_retryable(action, stderr) {
+        1
+    } else if action == "rm" {
+        CRICTL_CLEANUP_TRANSITION_ATTEMPTS
+    } else {
+        CRICTL_CLEANUP_DEADLINE_ATTEMPTS
+    }
 }
 
 fn cri_not_found(stderr: &[u8]) -> bool {
@@ -1862,7 +1890,8 @@ fn command(program: &str, args: &[&str]) -> Result<Output> {
 mod tests {
     use super::{
         SourceCiliumIdentity, cilium_host_container_ids, cilium_source_sandbox_ids,
-        cri_cleanup_succeeded, is_k3s_executable, nodelet_source_sandbox_ids, pod_agent_uses_runtime,
+        cri_cleanup_attempt_limit, cri_cleanup_retryable, cri_cleanup_succeeded, is_k3s_executable,
+        nodelet_source_sandbox_ids, pod_agent_uses_runtime,
         should_pause_nodelet_fallback,
         runtime_service_name, static_pod_sandbox_ids, with_service_paused,
     };
@@ -2023,6 +2052,36 @@ mod tests {
             b"rpc error: code = Unavailable desc = connection refused"
         ));
         assert!(!cri_cleanup_succeeded(false, b"permission denied"));
+    }
+
+    #[test]
+    fn retries_only_cri_cleanup_state_transitions_and_deadlines() {
+        assert!(cri_cleanup_retryable(
+            "stopp",
+            b"rpc error: code = DeadlineExceeded desc = context deadline exceeded"
+        ));
+        assert!(cri_cleanup_retryable(
+            "rmp",
+            b"rpc error: code = DeadlineExceeded desc = context deadline exceeded"
+        ));
+        assert!(cri_cleanup_retryable(
+            "rm",
+            b"container is in starting state, can't be removed"
+        ));
+        assert!(!cri_cleanup_retryable(
+            "rm",
+            b"rpc error: code = DeadlineExceeded desc = context deadline exceeded"
+        ));
+        assert!(!cri_cleanup_retryable("stopp", b"permission denied"));
+        assert_eq!(
+            cri_cleanup_attempt_limit("rm", b"container is in starting state"),
+            16
+        );
+        assert_eq!(
+            cri_cleanup_attempt_limit("stopp", b"context deadline exceeded"),
+            2
+        );
+        assert_eq!(cri_cleanup_attempt_limit("stopp", b"permission denied"), 1);
     }
 
     #[test]

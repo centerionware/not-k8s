@@ -2,6 +2,19 @@
 
 Last updated: 2026-09-30
 
+## Latest branch migration matrix: 36770365252
+
+[Run 36770365252](https://github.com/centerionware/not-k8s/actions/runs/36770365252)
+tested SHA `983468de50bf95bcb35f3c848879eef43b7b4647` with branch-built
+`nodemigrate` and combined `notk8s --features cri`, Cilium KPR, and all three
+authorized migration paths. Utility and combined-runtime builds passed in all
+lanes. K3s return migration hit a CRI sandbox-stop deadline; upstream return
+migration left the host-network Cilium Envoy Pod unhealthy after datapath
+cleanup; Docker five-node preflight saw containerd reject removal of a CSI
+container still in its starting state. The candidate recovery changes are in
+the worktree; their focused quick-check and migration rerun remain pending.
+This run does not pass migration parity. No general build or full e2e ran.
+
 ## Latest branch migration matrix: 36764002800
 
 [Run 36764002800](https://github.com/centerionware/not-k8s/actions/runs/36764002800)

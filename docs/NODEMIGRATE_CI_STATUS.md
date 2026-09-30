@@ -2,6 +2,29 @@
 
 Last updated: 2026-09-30
 
+## Branch migration matrix 36770365252
+
+Migration matrix
+[36770365252](https://github.com/centerionware/not-k8s/actions/runs/36770365252)
+finished at SHA `983468de50bf95bcb35f3c848879eef43b7b4647` with
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+All three lanes built the utility and combined runtime. K3s return recovery
+failed when `StopPodSandbox` exceeded its CRI deadline; the upstream return
+lane failed a workload checkpoint: external `cilium-envoy` was unready with its
+admin socket absent, CoreDNS logged an invalid/expired token and lost API
+Service reachability, and the live `restartPolicy: Never` standalone Pod ended
+in `ContainerStatusUnknown` after its CRI sandbox was removed. Docker five-node
+preflight failed removing a CSI attacher container while containerd reported
+it as starting.
+Artifacts are saved under `/tmp/nodemigrate-36770365252-artifacts/` and job
+logs under `/tmp/nodemigrate-36770365252-job-*.log`. A candidate fix in the
+worktree retries only those observed transient CRI cleanup states, restarts the
+local external Cilium Envoy DaemonSet Pod after Cilium host-state cleanup, and
+recreates live ownerless `restartPolicy: Never` Pods after their sandbox is
+removed. The final CoreDNS token/network symptoms remain unverified against
+these recovery changes. Focused quick-check and a migration rerun are pending.
+No general build or full e2e ran.
+
 ## Branch migration matrix 36764002800
 
 Migration matrix

@@ -2,6 +2,42 @@
 
 Last updated: 2026-09-30
 
+## Migration matrix 36770365252 failures
+
+Branch-built matrix
+[36770365252](https://github.com/centerionware/not-k8s/actions/runs/36770365252)
+passed the nodemigrate and combined-runtime builds in all lanes, then exposed
+three recovery issues. Full logs and artifacts are in
+`/tmp/nodemigrate-36770365252-job-*.log` and
+`/tmp/nodemigrate-36770365252-artifacts/`.
+
+- **Component: `nodemigrate` CRI cleanup transitions.** K3s return migration
+  failed on a `StopPodSandbox` `DeadlineExceeded`; the five-node Docker
+  preflight failed removing a CSI attacher container while containerd said it
+  was still starting. The candidate retries those specific cleanup states with
+  bounded attempts; other CRI errors remain immediate failures. Focused CI and
+  a new migration matrix are pending.
+- **Component: `nodemigrate` Cilium Envoy recovery.** Upstream Kubernetes
+  return migration rebuilt the Cilium agent and Socket LB links but left the
+  host-network `cilium-envoy` DaemonSet Pod running. The saved diagnostics show
+  repeated Envoy readiness/liveness 503s and the Cilium agent failing to reach
+  `/var/run/cilium/envoy/sockets/admin.sock`. The candidate restarts only the
+  local DaemonSet-owned Envoy Pod and waits for its replacement to stay Ready.
+  Focused CI and migration verification are pending.
+- **Component: `nodemigrate` standalone Pod recovery.** In that same upstream
+  return lane, sandbox removal left the live `migration-standalone` Pod in
+  `ContainerStatusUnknown`. Since it has `restartPolicy: Never` and no
+  controller owner, kubelet does not create a replacement Pod after its
+  sandbox disappears. The candidate recreates such live ownerless Pods with a
+  fresh UID after their local CRI sandboxes are removed. Focused CI and
+  migration verification are pending.
+- **Component: upstream workload recovery — unresolved symptom.** CoreDNS
+  logged an invalid/expired ServiceAccount token and lost API Service access in
+  the same return lane. The evidence does not yet prove whether Cilium Envoy
+  recovery, token refresh, or another migration effect caused this. Recheck
+  CoreDNS token authentication and API Service reachability in the next
+  migration run; do not treat the candidate fixes as resolving this symptom.
+
 ## Migration matrix 36764002800 failures
 
 Branch-built matrix

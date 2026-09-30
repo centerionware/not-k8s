@@ -13,7 +13,10 @@ use std::{
 
 use anyhow::{bail, ensure, Context, Result};
 use base64::Engine;
-use k8s_openapi::api::core::v1::{ConfigMap, Event, Namespace, Pod};
+use k8s_openapi::api::{
+    apps::v1::DaemonSet,
+    core::v1::{ConfigMap, Event, Namespace, Pod},
+};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{
     api::{
@@ -368,11 +371,146 @@ fn owner_reference_repair_patch(
     patch
 }
 
+/// `clean-cilium-state` removes host-mounted Envoy socket state. Cilium's
+/// external Envoy DaemonSet uses host networking, so the general non-host
+/// network sandbox refresh below cannot recreate its Pod. Restart that local
+/// DaemonSet Pod after the agent has rebuilt its host state.
+async fn restart_local_cilium_envoy(
+    client: &Client,
+    pods: &Api<Pod>,
+    node_name: &str,
+) -> Result<()> {
+    let daemonsets: Api<DaemonSet> = Api::namespaced(client.clone(), "kube-system");
+    if daemonsets
+        .get_opt("cilium-envoy")
+        .await
+        .context("checking for the Cilium Envoy DaemonSet")?
+        .is_none()
+    {
+        return Ok(());
+    }
+    let list_params = ListParams::default().labels("k8s-app=cilium-envoy");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+    let current = loop {
+        let current_pods = pods
+            .list(&list_params)
+            .await
+            .context("listing Cilium Envoy Pods before local restart")?;
+        if let Some(current) = current_pods
+            .items
+            .into_iter()
+            .find(|pod| is_local_cilium_envoy_pod(pod, node_name))
+        {
+            break current;
+        }
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "Cilium Envoy DaemonSet has no Pod on node {node_name} within 300 seconds"
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    };
+    let name = current
+        .metadata
+        .name
+        .as_deref()
+        .context("local Cilium Envoy Pod has no name")?;
+    let uid = current
+        .metadata
+        .uid
+        .as_deref()
+        .context("local Cilium Envoy Pod has no UID")?
+        .to_owned();
+    let delete_params = DeleteParams {
+        grace_period_seconds: Some(0),
+        preconditions: Some(Preconditions {
+            uid: Some(uid.clone()),
+            resource_version: None,
+        }),
+        ..Default::default()
+    };
+    match pods.delete(name, &delete_params).await {
+        Ok(_) => {}
+        Err(kube::Error::Api(response)) if response.code == 404 => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("restarting Cilium Envoy Pod {name} on node {node_name}"));
+        }
+    }
+    eprintln!(
+        "nodemigrate: restarted Cilium Envoy Pod {name} (UID {uid}) after host-state cleanup"
+    );
+
+    let mut ready_since = None;
+    let mut replacement_uid = None;
+    loop {
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "replacement Cilium Envoy Pod on node {node_name} did not remain Ready within 300 seconds"
+        );
+        let current_pods = pods
+            .list(&list_params)
+            .await
+            .context("waiting for replacement Cilium Envoy Pod")?;
+        let replacement = current_pods.items.into_iter().find(|pod| {
+            is_local_cilium_envoy_pod(pod, node_name)
+                && pod.metadata.uid.as_deref().is_some_and(|pod_uid| pod_uid != uid)
+        });
+        if let Some(replacement) = replacement {
+            let uid = replacement
+                .metadata
+                .uid
+                .as_deref()
+                .context("replacement Cilium Envoy Pod has no UID")?;
+            if replacement_uid.as_deref() != Some(uid) {
+                replacement_uid = Some(uid.to_owned());
+                ready_since = None;
+            }
+            let ready = replacement.status.as_ref().is_some_and(|status| {
+                status.conditions.as_ref().is_some_and(|conditions| {
+                    conditions.iter().any(|condition| {
+                        condition.type_ == "Ready" && condition.status == "True"
+                    })
+                })
+            });
+            if ready {
+                let since = ready_since.get_or_insert_with(tokio::time::Instant::now);
+                if since.elapsed() >= Duration::from_secs(10) {
+                    eprintln!(
+                        "nodemigrate: replacement Cilium Envoy Pod {} (UID {uid}) remained Ready for 10 seconds on node {node_name}",
+                        replacement.metadata.name.as_deref().unwrap_or("<unnamed>")
+                    );
+                    return Ok(());
+                }
+            } else {
+                ready_since = None;
+            }
+        } else {
+            replacement_uid = None;
+            ready_since = None;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+fn is_local_cilium_envoy_pod(pod: &Pod, node_name: &str) -> bool {
+    pod.metadata.deletion_timestamp.is_none()
+        && pod
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.node_name.as_deref())
+            == Some(node_name)
+        && pod
+            .metadata
+            .owner_references
+            .as_ref()
+            .is_some_and(|owners| owners.iter().any(|owner| owner.kind == "DaemonSet"))
+}
+
 async fn recreate_node_pod_sandboxes(
     client: &Client,
     node_name: &str,
     runtime_endpoint: &str,
-) -> Result<()> {
+) -> Result<Vec<Pod>> {
     let pods: Api<Pod> = Api::all(client.clone());
     let params = ListParams::default().fields(&format!("spec.nodeName={node_name}"));
     let node_pods = pods
@@ -381,8 +519,13 @@ async fn recreate_node_pod_sandboxes(
         .with_context(|| format!("listing Pods assigned to node {node_name}"))?;
     let pod_uids = node_pod_uids_requiring_cni(&node_pods.items, node_name);
     if pod_uids.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
+    let standalone_pods = node_pods
+        .items
+        .into_iter()
+        .filter(|pod| is_running_standalone_nonrestartable_pod(pod, node_name))
+        .collect();
 
     let runtime_endpoint = runtime_endpoint.to_owned();
     let node_name = node_name.to_owned();
@@ -397,6 +540,108 @@ async fn recreate_node_pod_sandboxes(
     eprintln!(
         "nodemigrate: removed {sandbox_count} non-host-network Pod sandbox(es) and {container_count} container record(s) on node {log_node_name} so the runtime can rerun CNI setup against the cleaned Cilium datapath"
     );
+    Ok(standalone_pods)
+}
+
+fn is_running_standalone_nonrestartable_pod(pod: &Pod, node_name: &str) -> bool {
+    pod.metadata.deletion_timestamp.is_none()
+        && pod.metadata.owner_references.as_ref().is_none_or(Vec::is_empty)
+        && pod
+            .spec
+            .as_ref()
+            .is_some_and(|spec| {
+                spec.node_name.as_deref() == Some(node_name)
+                    && spec.host_network != Some(true)
+                    && spec.restart_policy.as_deref() == Some("Never")
+            })
+        && pod
+            .status
+            .as_ref()
+            .and_then(|status| status.phase.as_deref())
+            == Some("Running")
+}
+
+fn pod_for_migration_restart(pod: &Pod) -> Pod {
+    let mut restarted = pod.clone();
+    restarted.metadata.uid = None;
+    restarted.metadata.resource_version = None;
+    restarted.metadata.creation_timestamp = None;
+    restarted.metadata.deletion_timestamp = None;
+    restarted.metadata.deletion_grace_period_seconds = None;
+    restarted.metadata.generation = None;
+    restarted.metadata.managed_fields = None;
+    restarted.status = None;
+    restarted
+}
+
+async fn recreate_running_standalone_pods(
+    client: &Client,
+    standalone_pods: Vec<Pod>,
+) -> Result<()> {
+    for mut pod in standalone_pods {
+        let name = pod
+            .metadata
+            .name
+            .as_deref()
+            .context("running standalone Pod has no name")?
+            .to_owned();
+        let namespace = pod
+            .metadata
+            .namespace
+            .as_deref()
+            .context("running standalone Pod has no namespace")?
+            .to_owned();
+        let uid = pod
+            .metadata
+            .uid
+            .as_deref()
+            .context("running standalone Pod has no UID")?
+            .to_owned();
+        let namespaced_pods = Api::<Pod>::namespaced(client.clone(), &namespace);
+        let delete_params = DeleteParams {
+            grace_period_seconds: Some(0),
+            preconditions: Some(Preconditions {
+                uid: Some(uid.clone()),
+                resource_version: None,
+            }),
+            ..Default::default()
+        };
+        match namespaced_pods.delete(&name, &delete_params).await {
+            Ok(_) => {}
+            Err(kube::Error::Api(response)) if response.code == 404 => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("deleting running standalone Pod {namespace}/{name} before restart")
+                });
+            }
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            match namespaced_pods.get_opt(&name).await.with_context(|| {
+                format!("waiting for running standalone Pod {namespace}/{name} deletion")
+            })? {
+                None => break,
+                Some(current) if current.metadata.uid.as_deref() != Some(uid.as_str()) => {
+                    bail!("standalone Pod {namespace}/{name} was replaced before its migration restart");
+                }
+                Some(_) => {
+                    ensure!(
+                        tokio::time::Instant::now() < deadline,
+                        "running standalone Pod {namespace}/{name} remained after deletion for 60 seconds"
+                    );
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            }
+        }
+        pod = pod_for_migration_restart(&pod);
+        namespaced_pods
+            .create(&PostParams::default(), &pod)
+            .await
+            .with_context(|| format!("recreating standalone Pod {namespace}/{name} after Cilium cleanup"))?;
+        eprintln!(
+            "nodemigrate: recreated running standalone Pod {namespace}/{name} with a fresh UID after CRI sandbox cleanup"
+        );
+    }
     Ok(())
 }
 
@@ -1418,13 +1663,19 @@ impl KubeApi {
                                 &bpf_root,
                             )
                             .await?;
-                            recreate_node_pod_sandboxes(
+                            restart_local_cilium_envoy(&client, &pods, node_name)
+                                .await
+                                .context("restarting the local Cilium Envoy Pod after host-state cleanup")?;
+                            let standalone_pods = recreate_node_pod_sandboxes(
                                 &client,
                                 node_name,
                                 &runtime_endpoint,
                             )
                             .await
                             .context("recreating node Pod sandboxes after Cilium datapath cleanup")?;
+                            recreate_running_standalone_pods(&client, standalone_pods)
+                                .await
+                                .context("recreating running standalone Pods after Cilium datapath cleanup")?;
                             return Ok(());
                         }
                     } else {
@@ -4471,11 +4722,14 @@ fn export_directory() -> Result<PathBuf> {
 mod tests {
     use super::{
         can_preserve_existing_crd, crd_metadata_merge_patch, crd_schema_matches,
-        custom_resource_gvks, is_source_custom_resource, kubeconfig_root_ca,
+        custom_resource_gvks, is_running_standalone_nonrestartable_pod,
+        is_source_custom_resource, kubeconfig_root_ca,
         namespace_ca_bundle_matches, node_is_ready_replacement, node_scheduling_patch, object_rank,
-        container_ids_for_sandbox, node_pod_uids_requiring_cni, pod_sandbox_ids_for_uids,
+        container_ids_for_sandbox, is_local_cilium_envoy_pod, node_pod_uids_requiring_cni,
+        pod_sandbox_ids_for_uids,
         node_uid_has_been_replaced, object_skip_reason, object_type_label,
         owner_reference_repair_patch, parse_cilium_kube_proxy_replacement,
+        pod_for_migration_restart,
         persistent_host_paths, pod_status_is_terminal_or_exited, prepare_initial_import_object,
         preserve_discovered_type_meta, remapped_node_owner_references, restore_cni_path_backups,
         retryable_import_error, same_group_kind, sanitize, service_account_token_secret_patch,
@@ -5740,6 +5994,84 @@ current-context: test
             pod_sandbox_ids_for_uids(&sandboxes, &pod_uids),
             vec!["web-sandbox".to_owned()]
         );
+    }
+
+    #[test]
+    fn cilium_envoy_restart_selects_only_the_local_daemonset_pod() {
+        let local = serde_json::from_value::<Pod>(serde_json::json!({
+            "metadata": {
+                "name": "cilium-envoy-worker-1",
+                "uid": "local-envoy",
+                "ownerReferences": [{"kind": "DaemonSet", "name": "cilium-envoy"}]
+            },
+            "spec": {"nodeName": "worker-1", "hostNetwork": true}
+        }))
+        .unwrap();
+        let other_node = serde_json::from_value::<Pod>(serde_json::json!({
+            "metadata": {
+                "name": "cilium-envoy-worker-2",
+                "uid": "other-envoy",
+                "ownerReferences": [{"kind": "DaemonSet", "name": "cilium-envoy"}]
+            },
+            "spec": {"nodeName": "worker-2", "hostNetwork": true}
+        }))
+        .unwrap();
+        let standalone = serde_json::from_value::<Pod>(serde_json::json!({
+            "metadata": {"name": "cilium-envoy-manual", "uid": "manual-envoy"},
+            "spec": {"nodeName": "worker-1", "hostNetwork": true}
+        }))
+        .unwrap();
+
+        assert!(is_local_cilium_envoy_pod(&local, "worker-1"));
+        assert!(!is_local_cilium_envoy_pod(&other_node, "worker-1"));
+        assert!(!is_local_cilium_envoy_pod(&standalone, "worker-1"));
+    }
+
+    #[test]
+    fn migration_restarts_only_live_ownerless_never_pods_with_fresh_identity() {
+        let running = serde_json::from_value::<Pod>(serde_json::json!({
+            "metadata": {
+                "name": "migration-standalone",
+                "namespace": "migration-apps",
+                "uid": "old-uid",
+                "resourceVersion": "42",
+                "creationTimestamp": "2026-09-30T20:00:00Z",
+                "managedFields": [{"manager": "kubelet"}]
+            },
+            "spec": {
+                "nodeName": "worker-1",
+                "restartPolicy": "Never",
+                "containers": [{"name": "app", "image": "busybox"}]
+            },
+            "status": {"phase": "Running"}
+        }))
+        .unwrap();
+        assert!(is_running_standalone_nonrestartable_pod(&running, "worker-1"));
+        let restarted = pod_for_migration_restart(&running);
+        assert_eq!(restarted.metadata.name.as_deref(), Some("migration-standalone"));
+        assert!(restarted.metadata.uid.is_none());
+        assert!(restarted.metadata.resource_version.is_none());
+        assert!(restarted.metadata.managed_fields.is_none());
+        assert!(restarted.status.is_none());
+
+        let completed = serde_json::from_value::<Pod>(serde_json::json!({
+            "metadata": {"name": "completed", "namespace": "migration-apps"},
+            "spec": {"nodeName": "worker-1", "restartPolicy": "Never"},
+            "status": {"phase": "Succeeded"}
+        }))
+        .unwrap();
+        let job_owned = serde_json::from_value::<Pod>(serde_json::json!({
+            "metadata": {
+                "name": "job-pod",
+                "namespace": "migration-apps",
+                "ownerReferences": [{"kind": "Job", "name": "job", "controller": true}]
+            },
+            "spec": {"nodeName": "worker-1", "restartPolicy": "Never"},
+            "status": {"phase": "Running"}
+        }))
+        .unwrap();
+        assert!(!is_running_standalone_nonrestartable_pod(&completed, "worker-1"));
+        assert!(!is_running_standalone_nonrestartable_pod(&job_owned, "worker-1"));
     }
 
     #[test]
