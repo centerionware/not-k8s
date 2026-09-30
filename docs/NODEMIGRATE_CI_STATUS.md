@@ -19,22 +19,25 @@ after five minutes waiting for staged Node `cp-1` to become Ready. The
 available log does not include its Node conditions or kubelet/Cilium state,
 so the cause is not yet established.
 
-K3s rollback restored the nodestore services, but the subsequent workload
-checkpoint showed no-route-to-host errors for the Kubernetes API ClusterIP
-and local Pod IPs. Cilium's API Service map and BPF LB backend were active, so
-the failing host/Pod datapath path is not identified. The saved run logs are:
+K3s rollback restored nodestore; its post-rollback `nodestore` checkpoint and
+Pod-origin API ClusterIP probe passed. A diagnostic snapshot taken during the
+recovery window showed transient no-route-to-host errors and
+`KubeletNotReady: container runtime is down`; these cleared before the final
+checkpoint. The persistent K3s failure is the timed-out sandbox stop. The
+current worktree checks `crictl inspectp` after a StopPodSandbox deadline and
+continues only if CRI confirms the sandbox is already `SANDBOX_NOTREADY`; the
+focused quick-check for this recovery is pending. The saved run logs are:
 
 - `/tmp/nodemigrate-36778028681-job-110100782824-kubernetes.log`
 - `/tmp/nodemigrate-36778028681-job-110100783277-k3s.log`
 - `/tmp/nodemigrate-36778028681-job-110100783391-docker.log`
 
-No general build or full e2e ran. The exact K3s sandbox teardown failure and
-rollback datapath recovery, plus the staged `cp-1` readiness failure, need a
-combined fix/diagnostic pass before another migration matrix. The current
-worktree preserves existing staged control-plane Node identities instead of
-deleting them before the API import, and includes UID/condition details in a
-Node-readiness timeout; targeted `nodemigrate` quick-check is pending. This
-candidate does not resolve the K3s teardown and rollback datapath failures.
+No general build or full e2e ran. The current worktree also preserves existing
+staged control-plane Node identities instead of deleting them before API
+import, and includes UID/condition details in a readiness timeout. Its focused
+quick-check passed at [36785046986](https://github.com/centerionware/not-k8s/actions/runs/36785046986).
+Do not rerun the migration matrix until the K3s sandbox-state recovery check
+passes its focused quick-check.
 
 Focused quick-check
 [36784767990](https://github.com/centerionware/not-k8s/actions/runs/36784767990)
@@ -42,6 +45,11 @@ failed at SHA `c3444c7811bf400d4f6dcd3c9351ff6698169452` because the new
 readiness-summary unit test had not imported its private helper. The import is
 fixed in the worktree; the follow-up targeted quick-check is pending. Captured
 job log: `/tmp/nodemigrate-quickcheck-36784767990-job-110123424128.log`.
+Follow-up quick-check
+[36785046986](https://github.com/centerionware/not-k8s/actions/runs/36785046986)
+passed at SHA `3d353277` for `components=nodemigrate`, including its unit tests.
+This verifies the staged-node preservation path compiles and the readiness
+diagnostic helper test passes; it does not resolve the K3s runtime failure.
 
 ## Branch migration matrix 36770365252
 

@@ -1838,6 +1838,15 @@ pub(crate) fn checked_cri_cleanup(endpoint: &str, action: &str, id: &str) -> Res
         if cri_cleanup_succeeded(output.status.success(), &output.stderr) {
             return Ok(output.status.success());
         }
+        if action == "stopp"
+            && cri_cleanup_retryable(action, &output.stderr)
+            && cri_pod_sandbox_stopped(endpoint, id)
+        {
+            eprintln!(
+                "nodemigrate: StopPodSandbox timed out for {id}, but CRI confirms the sandbox is already SANDBOX_NOTREADY; continuing cleanup"
+            );
+            return Ok(true);
+        }
         let attempt_limit = cri_cleanup_attempt_limit(action, &output.stderr);
         if attempts >= attempt_limit {
             bail!(
@@ -1847,6 +1856,35 @@ pub(crate) fn checked_cri_cleanup(endpoint: &str, action: &str, id: &str) -> Res
         }
         std::thread::sleep(Duration::from_secs(1));
     }
+}
+
+fn cri_pod_sandbox_stopped(endpoint: &str, id: &str) -> bool {
+    let Ok(output) = command(
+        "crictl",
+        &[
+            "--timeout",
+            "10s",
+            "--runtime-endpoint",
+            endpoint,
+            "inspectp",
+            "-o",
+            "json",
+            id,
+        ],
+    ) else {
+        return false;
+    };
+    output.status.success() && cri_pod_sandbox_status_is_stopped(&output.stdout)
+}
+
+fn cri_pod_sandbox_status_is_stopped(status: &[u8]) -> bool {
+    let Ok(status) = serde_json::from_slice::<serde_json::Value>(status) else {
+        return false;
+    };
+    matches!(
+        status.pointer("/status/state"),
+        Some(serde_json::Value::String(state)) if state == "SANDBOX_NOTREADY"
+    ) || matches!(status.pointer("/status/state"), Some(serde_json::Value::Number(state)) if state.as_i64() == Some(1))
 }
 
 fn cri_cleanup_succeeded(exit_success: bool, stderr: &[u8]) -> bool {
@@ -1891,6 +1929,7 @@ mod tests {
     use super::{
         SourceCiliumIdentity, cilium_host_container_ids, cilium_source_sandbox_ids,
         cri_cleanup_attempt_limit, cri_cleanup_retryable, cri_cleanup_succeeded, is_k3s_executable,
+        cri_pod_sandbox_status_is_stopped,
         nodelet_source_sandbox_ids, pod_agent_uses_runtime,
         should_pause_nodelet_fallback,
         runtime_service_name, static_pod_sandbox_ids, with_service_paused,
@@ -2082,6 +2121,20 @@ mod tests {
             2
         );
         assert_eq!(cri_cleanup_attempt_limit("stopp", b"permission denied"), 1);
+    }
+
+    #[test]
+    fn accepts_cri_stop_timeout_only_when_inspection_confirms_notready() {
+        assert!(cri_pod_sandbox_status_is_stopped(
+            br#"{"status":{"state":"SANDBOX_NOTREADY"}}"#
+        ));
+        assert!(cri_pod_sandbox_status_is_stopped(
+            br#"{"status":{"state":1}}"#
+        ));
+        assert!(!cri_pod_sandbox_status_is_stopped(
+            br#"{"status":{"state":"SANDBOX_READY"}}"#
+        ));
+        assert!(!cri_pod_sandbox_status_is_stopped(b"not json"));
     }
 
     #[test]

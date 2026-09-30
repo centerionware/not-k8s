@@ -12,11 +12,12 @@ five-node lanes. Logs are saved in `/tmp/nodemigrate-36778028681-job-*.log`.
 - **Component: `nodemigrate` K3s CRI/Cilium recovery.** Return migration
   exhausted two 60-second `StopPodSandbox` attempts for a local workload
   sandbox after rebuilding Cilium state. The CRI returned `DeadlineExceeded`
-  and `RST_STREAM ... CANCEL`. Rollback restored nodestore services, but the
-  subsequent checkpoint observed no-route-to-host errors for the API
-  ClusterIP and local Pods despite active Cilium service/BPF backend entries.
-  The teardown and rollback datapath causes are unresolved; do not treat the
-  passing Cilium map entries as proof that packet forwarding works.
+  and `RST_STREAM ... CANCEL`. Rollback restored nodestore; its final workload
+  checkpoint and Pod-origin API ClusterIP probe passed. A snapshot during
+  recovery showed transient no-route errors and `KubeletNotReady` which cleared
+  before that checkpoint. The worktree now inspects the CRI sandbox after a
+  StopPodSandbox deadline and proceeds only if it reports `SANDBOX_NOTREADY`;
+  focused CI is pending.
 - **Component: `nodemigrate` staged kubeadm control-plane return.** The
   five-node run staged all three retained control planes, then protected API
   import failed waiting for `cp-1` to become Ready. The captured log lacks its
@@ -24,8 +25,10 @@ five-node lanes. Logs are saved in `/tmp/nodemigrate-36778028681-job-*.log`.
   the staged Node UID instead of deleting/re-registering it before import and
   includes condition details in readiness timeout errors. Verify this change
   with focused CI; its first quick-check caught a missing test-module import,
-  now fixed in the worktree. The K3s teardown and rollback issues still need a
-  fix before another migration matrix.
+  now fixed. Follow-up `nodemigrate` quick-check passed at SHA `3d353277` in
+  [36785046986](https://github.com/centerionware/not-k8s/actions/runs/36785046986).
+  The K3s teardown and rollback issues still need a fix before another
+  migration matrix.
 - **Component: `nodemigrate` upstream recovery.** The Kubernetes single-node
   migration round trip passed with the recent bounded CRI retries, Cilium
   Envoy restart, and standalone Pod recreation changes. This validates that

@@ -10,10 +10,12 @@ single-node round trip passed, including clean Cilium Envoy recovery and
 standalone workload Pod recreation. K3s forward migration passed, but reverse
 migration failed while stopping CRI sandbox `d348aace...`: two 60-second
 `StopPodSandbox` calls returned `DeadlineExceeded` with a gRPC
-`RST_STREAM ... CANCEL`. Migration safely restored nodestore, but the following
-checkpoint found no-route-to-host failures to `10.43.0.1:443` and local Pod
-IPs. Cilium listed the API ClusterIP backend active in its service and BPF LB
-maps, so the actual packet-path failure remains unconfirmed.
+`RST_STREAM ... CANCEL`. The utility restored nodestore and its final
+post-rollback fixture checkpoint, including Pod-origin API ClusterIP access,
+passed. A snapshot during the recovery window showed transient no-route errors
+and a Nodelet `container runtime is down` condition; both cleared before the
+final checkpoint. The return migration itself remains failed at CRI sandbox
+cleanup.
 
 The Docker kubeadm lane migrated the three-control-plane/two-worker cluster to
 nodestore and staged all three kubeadm control planes on return. The final
@@ -21,9 +23,13 @@ protected API import stopped at `waiting for staged control-plane Node cp-1`;
 the Node was not Ready after five minutes. The captured output does not include
 Node conditions or kubelet/Cilium diagnostics for `cp-1`, so no root cause is
 confirmed. Avoid another migration attempt until the K3s teardown/rollback path
-and multi-control-plane readiness failure are addressed together. Logs are in
+and multi-control-plane readiness failure are addressed. The current worktree
+checks CRI sandbox state after a stop deadline and continues only when CRI
+confirms `SANDBOX_NOTREADY`; its focused quick-check is pending. Logs are in
 `/tmp/nodemigrate-36778028681-job-{110100782824-kubernetes,110100783277-k3s,110100783391-docker}.log`.
-No standard build or full e2e ran.
+The candidate staged-node identity preservation and readiness diagnostics
+passed focused `nodemigrate` quick-check [36785046986](https://github.com/centerionware/not-k8s/actions/runs/36785046986)
+at SHA `3d353277`. No standard build or full e2e ran.
 
 ## Latest branch migration matrix: 36770365252
 
