@@ -44,8 +44,14 @@ it again. The remaining CoreDNS failure needs diagnosis before migration
 verification continues.
 
 Open PR #591 now includes commits through
-`b4647a9c9c0bd001d53c8bef1821d4bb484e5a76` on
-`feat/nodemigrate-migration`. Focused quick-check
+`2c4bf9030c4446d480af28b9ebe83b33474abfed` on
+`feat/nodemigrate-migration`. Nodelet quick-check passed on code SHA `b4647a9c`
+in [36698119270](https://github.com/centerionware/not-k8s/actions/runs/36698119270).
+Migration-specific crate/packaging checks passed on this PR tip in
+[36698894529](https://github.com/centerionware/not-k8s/actions/runs/36698894529),
+and nodemigrate tests passed in
+[36698894559](https://github.com/centerionware/not-k8s/actions/runs/36698894559).
+Neither workflow exercised a live migration. Focused quick-check
 [36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
 failed while compiling `nodemigrate`; Nodelet passed 390 non-CRI and 1216
 CRI-enabled tests. The complete job log is

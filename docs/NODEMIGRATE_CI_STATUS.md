@@ -34,6 +34,14 @@ probe crosses its failure threshold; probe decisions are unchanged. The
 underlying CoreDNS readiness failure remains unknown, so no migration rerun
 has been dispatched.
 
+The current PR tip's migration-specific crate/packaging checks passed in
+[36698894529](https://github.com/centerionware/not-k8s/actions/runs/36698894529),
+and the nodemigrate test workflow passed in
+[36698894559](https://github.com/centerionware/not-k8s/actions/runs/36698894559).
+The non-release checks in the nodemigrate release workflow also passed in
+[36698894645](https://github.com/centerionware/not-k8s/actions/runs/36698894645);
+no release was published. None of these runs exercised a live migration.
+
 The branch makes CRI sandbox/container cleanup idempotent for explicit
 NotFound responses and routes partial nodestore rollback cleanup to the
 destination containerd endpoint, including the worker rollback path. A focused
@@ -48,7 +56,7 @@ workflow until that failure is fixed.
 The selected checkout is `/workspace/not-k8s`, branch
 `feat/nodemigrate-migration`, with open [PR #591](https://github.com/centerionware/not-k8s/pull/591)
 against `main`. The pushed PR head is
-`b4647a9c9c0bd001d53c8bef1821d4bb484e5a76`. Focused quick-check for
+`2c4bf9030c4446d480af28b9ebe83b33474abfed`. Focused quick-check for
 `nodeapiserver,nodemigrate` passed for code SHA
 `5da7ade07343e93fe783502f5e4c6ed09c8b361d` in
 [36689888324](https://github.com/centerionware/not-k8s/actions/runs/36689888324)
