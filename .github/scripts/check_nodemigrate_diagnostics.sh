@@ -404,6 +404,13 @@ grep -Fq 'bpftool link show pinned "$link"' "$ROOT/.github/scripts/nodemigrate-i
     echo "restart diagnostic does not inspect pinned Socket LB link cgroup identities" >&2
     exit 1
 }
+grep -Fq 'remove_cilium_socket_lb_links_for_probe "$SOURCE_KUBECONFIG"' \
+    "$ROOT/.github/scripts/nodemigrate-integration.sh" \
+    && grep -Fq 'clean-state-after-stale-link-unpin' \
+        "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
+    echo "restart diagnostic does not test recovery after stale Socket LB links are unpinned" >&2
+    exit 1
+}
 grep -Fq 'find /sys/fs/cgroup -xdev -inum "$socketlb_cgroup_id"' \
     "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
     echo "restart diagnostic does not resolve the Socket LB target cgroup ID" >&2

@@ -613,6 +613,29 @@ capture_cilium_socket_lb_attachment() {
         ' sh "$cgroup_root" 2>&1 || true
 }
 
+remove_cilium_socket_lb_links_for_probe() {
+    local kubeconfig="${1:?missing probe kubeconfig}"
+    local cilium_pod
+    cilium_pod="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+        -l k8s-app=cilium -o jsonpath='{.items[0].metadata.name}')" || return 1
+    [[ -n "$cilium_pod" ]] || {
+        echo "cannot unpin Cilium Socket LB links: no agent Pod was found" >&2
+        return 1
+    }
+    echo "Unpinning Cilium Socket LB cgroup links from pod/$cilium_pod before a controlled agent restart"
+    KUBECONFIG="$kubeconfig" kubectl -n kube-system exec "$cilium_pod" \
+        -c cilium-agent -- sh -c '
+            found=false;
+            for link in /sys/fs/bpf/cilium/socketlb/links/cgroup/cil_sock*; do
+                [ -e "$link" ] || continue;
+                found=true;
+                echo "unpinning=$link";
+                rm -f -- "$link" || exit 1;
+            done;
+            [ "$found" = true ] || { echo "no pinned Socket LB links found" >&2; exit 1; }
+        ' || return 1
+}
+
 probe_api_clusterip_with_cilium_monitor() {
     local kubeconfig="${1:?missing probe kubeconfig}"
     local stage="${2:?missing probe stage}"
@@ -867,7 +890,7 @@ restart_cilium_agent_for_probe() {
         sleep 1
     done
     [[ -n "$replacement_json" ]] || {
-        echo "Cilium agent did not become Ready with a new UID after its second API-managed restart" >&2
+        echo "Cilium agent did not become Ready with a new UID after its API-managed restart" >&2
         KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
             -l k8s-app=cilium -o wide >&2 || true
         return 1
@@ -4677,11 +4700,23 @@ main() {
             echo "Kubernetes API Service has no valid endpoint address after Cilium restart: $api_backend_ip" >&2
             post_restart_backend_ok=false
         fi
-        if [[ "$post_clean_state_api_ok" != true || "$post_restart_api_ok" != true \
-            || "$post_restart_backend_ok" != true ]]; then
-            echo "FAIL post-reset Pod-origin Kubernetes API probes: before_second_restart=$post_clean_state_api_ok after_second_restart=$post_restart_api_ok backend=$post_restart_backend_ok" >&2
+        if [[ "$post_restart_backend_ok" != true ]]; then
+            echo "FAIL direct Pod-origin Kubernetes API backend probe after reset/restart" >&2
             capture_cilium_datapath "$SOURCE_KUBECONFIG"
             return 1
+        fi
+        if [[ "$post_clean_state_api_ok" != true || "$post_restart_api_ok" != true ]]; then
+            echo "ClusterIP recovery experiment: before_second_restart=$post_clean_state_api_ok after_second_restart=$post_restart_api_ok backend=$post_restart_backend_ok"
+            remove_cilium_socket_lb_links_for_probe "$SOURCE_KUBECONFIG" || return 1
+            restart_cilium_agent_for_probe "$SOURCE_KUBECONFIG" || return 1
+            KUBECONFIG="$SOURCE_KUBECONFIG" kubectl rollout status daemonset/cilium \
+                -n kube-system --timeout=5m
+            capture_cilium_socket_lb_attachment "$SOURCE_KUBECONFIG" after-stale-link-unpin
+            probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" clean-state-after-stale-link-unpin || {
+                capture_cilium_datapath "$SOURCE_KUBECONFIG"
+                return 1
+            }
+            echo "PASS API Service routing recovered after stale Socket LB link unpin and clean agent reattachment"
         fi
         KUBECONFIG="$SOURCE_KUBECONFIG" kubectl rollout status deployment/coredns \
             -n kube-system --timeout=5m

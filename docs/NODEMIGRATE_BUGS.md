@@ -103,12 +103,23 @@ showed `/`, and the Pod-origin probe failed. After the ordinary second agent
 restart, the mount root returned to `/../../../..`, but link target `23507`
 persisted and the route remained broken. Thus cgroup ID `23507` is now the
 leading cause, though its location relative to the host and workload cgroups
-still needs direct mapping. The next probe now resolves each link's cgroup ID
-under `/sys/fs/cgroup` and records the Cilium agent and Pod cgroup paths.
-Shell/checker validation passed locally; focused rerun pending. Migration was
-disabled. Logs:
-`/tmp/nodemigrate-36738848742-k3s-probe-job.log` and
-`/tmp/nodemigrate-36738848742-artifact/nodemigrate-k3s-cilium-restart-36738848742/nodemigrate-k3s-cilium-restart.log`.
+still needs direct mapping. The mapping follow-up is recorded below.
+
+Run [36741671607](https://github.com/centerionware/not-k8s/actions/runs/36741671607)
+resolved cgroup ID `23751` to `/sys/fs/cgroup` in the hierarchy visible to the
+post-cleanup Cilium Pod. Its pinned Socket LB links and cgroup mount root both
+had ID `23751`; after an ordinary Cilium Pod restart, the mount root returned
+to ID `1` but the links still targeted `23751`, which no longer resolved in the
+visible hierarchy. Both the Cilium agent and probe reported `0::/`, so this
+does not prove their host ancestry. The evidence does show pinned links target
+a cgroup no longer visible after restart. Cilium's `v1.20.2` `attachCgroup`
+updates an existing pinned link in place and only unpins it when update returns
+`ENOLINK` ([source](https://github.com/cilium/cilium/blob/v1.20.2/pkg/socketlb/cgroup.go#L70-L105)); this is consistent with the agent's `Updated link`
+logs while link ID `23751` persisted. The next isolated experiment unpins the
+stale links and restarts the agent, then checks whether it attaches to the
+current root and restores Service routing. Migration remains disabled. Logs:
+`/tmp/nodemigrate-36741671607-k3s-probe-job.log` and
+`/tmp/nodemigrate-36741671607-artifact/nodemigrate-k3s-cilium-restart-36741671607/nodemigrate-k3s-cilium-restart.log`.
 
 Full logs for the preceding run:
 `/tmp/nodemigrate-36733704748-k3s-probe-job.log` and

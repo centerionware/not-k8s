@@ -4,6 +4,23 @@ Last updated: 2026-09-30
 
 ## Clean-state Cilium diagnostic
 
+Mapped-link experiment [36741671607](https://github.com/centerionware/not-k8s/actions/runs/36741671607)
+failed at SHA `ff8505650c36019783a480c17887922a130dafd5` after 16m49s (job
+`109977343792`). The `notk8s` build and CSI setup passed; migration, Docker
+preflight, and general validation were skipped. Before cleanup the configured
+cgroup root had inode/link target ID `1`, and API ClusterIP routing passed.
+After `clean-cilium-state`, both the mount root and pinned Socket LB links
+changed to ID `23751`; the cgroup ID resolved to `/sys/fs/cgroup` inside the
+agent's visible hierarchy. After restart, the configured mount root was back
+to inode `1`, while links still targeted `23751` and no longer resolved in the
+current hierarchy. Cilium and probe processes each reported `0::/`; this does
+not distinguish their host cgroup ancestry. ClusterIP routing remained broken
+after endpoint regeneration, while direct backend access passed. The focused
+probe now tests whether unpinning those stale Socket LB links and restarting
+Cilium causes fresh attachment to the current cgroup root. Logs:
+`/tmp/nodemigrate-36741671607-k3s-probe-job.log` and
+`/tmp/nodemigrate-36741671607-artifact/nodemigrate-k3s-cilium-restart-36741671607/nodemigrate-k3s-cilium-restart.log`.
+
 Pinned-link diagnostic [36738848742](https://github.com/centerionware/not-k8s/actions/runs/36738848742)
 failed at SHA `1010bd8774242c9d45b81a6302791fb39a179cb2` after 17m59s (job
 `109967569427`). The combined `notk8s` build and CSI setup passed; migration,
@@ -19,9 +36,7 @@ created the diagnostic Pod endpoint with its BPF program loaded. The 60-second
 probe recorded repeated SYNs traversing `stack` untranslated; direct API
 backend access remained successful. This ties the datapath regression to a
 changed cgroup link target across all-state cleanup, rather than endpoint
-readiness. The next probe now maps each link's cgroup ID through
-`/sys/fs/cgroup` and records the Cilium agent and Pod cgroup paths.
-Shell/checker validation passed locally; focused rerun pending. Logs:
+readiness. The mapped-link follow-up is recorded above. Logs:
 `/tmp/nodemigrate-36738848742-k3s-probe-job.log` and
 `/tmp/nodemigrate-36738848742-artifact/nodemigrate-k3s-cilium-restart-36738848742/nodemigrate-k3s-cilium-restart.log`.
 
