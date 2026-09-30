@@ -4,6 +4,32 @@ Last updated: 2026-09-30
 
 ## Active fix batch (migration defects under repair)
 
+Migration run
+[36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745)
+has completed with all three lanes failed. **Component: nodemigrate CRI
+cleanup.** Both single-node jobs captured Nodelet removing a sandbox/container
+between nodemigrate's CRI list and `rm`/`rmp`; treating explicit `NotFound` as
+success makes the cleanup idempotent while connection, permission, and other
+errors remain fatal. A focused classifier regression is now in the worktree.
+**Component: nodemigrate rollback endpoint selection.** K3s rollback captured
+destination Cilium sandbox IDs from `/run/containerd/containerd.sock` but
+used `NODEMIGRATE_CRI_ENDPOINT`, which still named the stopped source K3s
+runtime. Control-plane and worker rollback now carry the destination endpoint
+explicitly.
+
+**Component: Docker five-node hostpath CSI recovery.** All five migration
+operations completed and the lane reached the nodestore CSI restore step, but
+the imported `csi-hostpathplugin` StatefulSet rollout timed out after the
+test patched its durable state volume. Final diagnostics show Ready Nodes,
+CRI tasks running, but the plugin and many workload Pods Unknown. This is not
+yet diagnosed or fixed, so it blocks another migration run. The worker kubelet
+RBAC and missing Pod/Node errors in the same artifact occurred before each
+worker joined the target; source kubelet traffic was still reaching the
+replacement API during handoff, so do not treat those lines as a confirmed
+target authorization defect. Captured evidence is under
+`/tmp/nodemigrate-36690929745*` and is already available locally. Focused CI
+for the current worktree changes is pending.
+
 Open PR #591 now includes commit
 `60ab55a5508f028c529c1acea18e76e02259272a` on
 `feat/nodemigrate-migration`. Focused quick-check

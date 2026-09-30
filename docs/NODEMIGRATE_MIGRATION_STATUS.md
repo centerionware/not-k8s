@@ -4,6 +4,32 @@ Last updated: 2026-09-30
 
 ## Active worktree candidate
 
+Migration run
+[36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745)
+is terminal and failed all lanes. Upstream and K3s both safely rolled back
+after Cilium datapath cleanup because nodemigrate's external CRI cleanup raced
+Nodelet, which had already removed selected containers/sandboxes; cleanup
+incorrectly treated CRI `NotFound` as fatal. K3s rollback then failed because
+the partial destination nodestore Cilium sandbox IDs were passed to the
+stopped K3s source CRI endpoint, leaving source disabled. The current worktree
+accepts only explicit CRI NotFound cleanup races and passes the destination
+containerd endpoint for destination rollback cleanup in both control-plane and
+worker rollback paths.
+
+The Docker five-node lane migrated all five nodes and reached the nodestore
+hostpath CSI recovery step, but timed out waiting for the imported
+`csi-hostpathplugin` StatefulSet after changing its hostPath state volume. Its
+saved final snapshot shows Ready Nodes, running CRI tasks, and Kubernetes Pod
+status Unknown for many workloads, including the CSI StatefulSet. The precise
+reason the updated CSI Pod did not become Ready remains under investigation.
+Worker kubelet RBAC and missing-object messages in the artifact precede those
+workers joining nodestore, while the original kubelet clients still target the
+replacement API; they are transient handoff diagnostics, not yet a proven
+node-authorizer defect. Artifacts already exist under
+`/tmp/nodemigrate-36690929745*`; do not fetch them again. Focused checks for
+the current cleanup/rollback fixes are pending, and no new migration run should
+start until the Docker recovery failure is also addressed.
+
 PR #591 remains open on `feat/nodemigrate-migration`, now at
 `60ab55a5508f028c529c1acea18e76e02259272a`. The pushed batch includes
 local non-host-network sandbox recreation after Cilium datapath cleanup and

@@ -416,17 +416,11 @@ fn recreate_pod_sandboxes_for_uids(
         .context("parsing local CRI Pod sandboxes after Cilium datapath cleanup")?;
     let ids = pod_sandbox_ids_for_uids(&sandboxes, pod_uids);
 
+    let mut removed_sandboxes = 0;
     let mut removed_containers = 0;
     for id in &ids {
-        let stop = Command::new("crictl")
-            .args(["--runtime-endpoint", runtime_endpoint, "stopp", id])
-            .output()
+        crate::service::checked_cri_cleanup(runtime_endpoint, "stopp", id)
             .with_context(|| format!("stopping Pod sandbox {id} on node {node_name}"))?;
-        ensure!(
-            stop.status.success(),
-            "crictl stopp failed for Pod sandbox {id} on node {node_name}: {}",
-            String::from_utf8_lossy(&stop.stderr).trim()
-        );
 
         // CRI implementations may keep the sandbox name reserved until its
         // containers have been removed. StopPodSandbox does not remove those
@@ -451,31 +445,18 @@ fn recreate_pod_sandboxes_for_uids(
         let containers: Value = serde_json::from_slice(&containers_output.stdout)
             .context("parsing local CRI containers after stopping a Pod sandbox")?;
         for container_id in container_ids_for_sandbox(&containers, id) {
-            let remove = Command::new("crictl")
-                .args(["--runtime-endpoint", runtime_endpoint, "rm", &container_id])
-                .output()
+            let removed = crate::service::checked_cri_cleanup(runtime_endpoint, "rm", &container_id)
                 .with_context(|| {
-                    format!("removing container {container_id} from Pod sandbox {id}")
+                    format!("removing container {container_id} from Pod sandbox {id} on node {node_name}")
                 })?;
-            ensure!(
-                remove.status.success(),
-                "crictl rm failed for container {container_id} in Pod sandbox {id} on node {node_name}: {}",
-                String::from_utf8_lossy(&remove.stderr).trim()
-            );
-            removed_containers += 1;
+            removed_containers += usize::from(removed);
         }
 
-        let remove = Command::new("crictl")
-            .args(["--runtime-endpoint", runtime_endpoint, "rmp", id])
-            .output()
+        let removed = crate::service::checked_cri_cleanup(runtime_endpoint, "rmp", id)
             .with_context(|| format!("removing Pod sandbox {id} on node {node_name}"))?;
-        ensure!(
-            remove.status.success(),
-            "crictl rmp failed for Pod sandbox {id} on node {node_name}: {}",
-            String::from_utf8_lossy(&remove.stderr).trim()
-        );
+        removed_sandboxes += usize::from(removed);
     }
-    Ok((ids.len(), removed_containers))
+    Ok((removed_sandboxes, removed_containers))
 }
 
 fn container_ids_for_sandbox(containers: &Value, sandbox_id: &str) -> Vec<String> {

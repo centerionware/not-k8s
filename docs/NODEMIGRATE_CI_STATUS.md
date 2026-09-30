@@ -4,6 +4,30 @@ Last updated: 2026-09-30
 
 ## Current worktree status
 
+The run previously listed below as active, migration workflow
+[36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745),
+is terminal with all three jobs failed. K3s job `109807711150` and upstream
+Kubernetes job `109807710734` both rolled back after local CRI sandbox cleanup
+failed when Nodelet concurrently removed the same container/sandbox. K3s
+rollback then exposed a second safety defect: partial destination Cilium IDs
+were sent to the stopped source CRI endpoint. The Docker five-node job
+`109807711110` migrated all five nodes and reached the nodestore hostpath CSI
+rollout, where patching `csi-hostpathplugin` timed out after five minutes.
+The saved final snapshot has Ready Nodes but many Pods Unknown, including the
+CSI StatefulSet Pod. Kubelet RBAC/NotFound messages on workers occurred before
+each worker's migration/join while its source kubelet was still addressing the
+replacement API; they stopped being evidence of a target Node authorizer bug.
+The remaining Docker CSI rollout cause is not yet established. Full job logs
+and artifacts are already saved under `/tmp/nodemigrate-36690929745*`; do not
+download them again.
+
+The worktree now makes CRI sandbox/container cleanup idempotent for explicit
+NotFound responses and routes partial nodestore rollback cleanup to the
+destination containerd endpoint, including the worker rollback path. A focused
+regression test covers NotFound versus other CRI errors. `git diff --check`
+passes. Focused quick-check and Docker CSI root-cause verification are pending;
+do not rerun the migration workflow until the complete failure batch is fixed.
+
 The selected checkout is `/workspace/not-k8s`, branch
 `feat/nodemigrate-migration`, with open [PR #591](https://github.com/centerionware/not-k8s/pull/591)
 against `main`. The pushed PR head is
@@ -44,12 +68,10 @@ Binding errors seen in CoreDNS; no independent CSI mechanism is confirmed.
 The whole fix batch passes focused CI. The follow-up migration run will verify
 that both the CoreDNS and Docker workload recovery symptoms are resolved.
 
-Migration runtime verification is now running as
-[36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745)
-at branch `feat/nodemigrate-migration`, with `runtime_source=branch`, Cilium
-KPR enabled, and the five-node migration enabled. The workflow builds
-`nodemigrate` and the combined `notk8s --features cri` binary from this branch;
-the regular build gate and general e2e remain skipped.
+Run 36690929745 built `nodemigrate` and combined `notk8s --features cri` from
+the branch with Cilium KPR and the five-node lane enabled; regular build and
+general e2e remained skipped. Its failures and current fixes are recorded
+above.
 
 Earlier migration history: the pushed PR head was
 `f514e61af89451771dc4616aa88b98977f4a69c2`; it covered Cilium replacement

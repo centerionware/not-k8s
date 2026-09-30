@@ -307,19 +307,24 @@ fn stop_cilium_source_sandboxes(
     installation: &Installation,
     identity: &SourceCiliumIdentity,
 ) -> Result<()> {
-    if identity.sandbox_ids.is_empty() {
-        return Ok(());
-    }
     let endpoint = std::env::var("NODEMIGRATE_CRI_ENDPOINT")
         .ok()
         .filter(|value| !value.is_empty())
         .or_else(|| installation.runtime_endpoint.clone())
         .unwrap_or_else(|| "unix:///run/containerd/containerd.sock".to_string());
+    stop_cilium_sandboxes_at(&endpoint, identity, "source")
+}
+
+fn stop_cilium_sandboxes_at(
+    endpoint: &str,
+    identity: &SourceCiliumIdentity,
+    description: &str,
+) -> Result<()> {
     for id in &identity.sandbox_ids {
-        checked_cri_cleanup(&endpoint, "stopp", id)
-            .with_context(|| format!("stopping source Cilium pod sandbox {id}"))?;
-        checked_cri_cleanup(&endpoint, "rmp", id)
-            .with_context(|| format!("removing source Cilium pod sandbox {id}"))?;
+        checked_cri_cleanup(endpoint, "stopp", id)
+            .with_context(|| format!("stopping {description} Cilium pod sandbox {id}"))?;
+        checked_cri_cleanup(endpoint, "rmp", id)
+            .with_context(|| format!("removing {description} Cilium pod sandbox {id}"))?;
     }
     Ok(())
 }
@@ -1110,7 +1115,12 @@ pub fn stop_nodestore_for_rollback(installation: &Installation) -> Result<()> {
         SourceCiliumIdentity::default()
     };
     stop_nodestore_stack(manager, false)?;
-    stop_nodestore_runtime_for_rollback(installation, manager, &cilium_identity)?;
+    stop_nodestore_runtime_for_rollback(
+        installation,
+        manager,
+        &cilium_identity,
+        "unix:///run/containerd/containerd.sock",
+    )?;
     Ok(())
 }
 
@@ -1118,8 +1128,9 @@ fn stop_nodestore_runtime_for_rollback(
     installation: &Installation,
     manager: ServiceManager,
     cilium_identity: &SourceCiliumIdentity,
+    runtime_endpoint: &str,
 ) -> Result<()> {
-    stop_cilium_source_sandboxes(installation, cilium_identity)
+    stop_cilium_sandboxes_at(runtime_endpoint, cilium_identity, "partial nodestore")
         .context("stopping partial nodestore Cilium sandboxes")?;
     if service_exists(manager, "containerd") && service_active(manager, "containerd") {
         stop_and_disable(manager, "containerd")
@@ -1137,15 +1148,27 @@ pub fn stop_nodestore_worker_for_rollback(installation: &Installation) -> Result
     let manager = installation
         .service_manager
         .context("service manager is unknown; cannot stop the partial nodestore worker")?;
-    let cilium_identity = capture_source_cilium_identity(installation)
-        .context("capturing partial nodestore worker Cilium identities for rollback")?;
+    let destination_endpoint = "unix:///run/containerd/containerd.sock";
+    let cilium_identity = if service_active(manager, "containerd")
+        && std::path::Path::new("/run/containerd/containerd.sock").exists()
+    {
+        capture_cilium_identity_at(installation, destination_endpoint)
+            .context("capturing partial nodestore worker Cilium identities for rollback")?
+    } else {
+        SourceCiliumIdentity::default()
+    };
     for service in ["nodelet", "nodeproxy", "flanneld"] {
         if service_exists(manager, service) && service_active(manager, service) {
             stop_and_disable(manager, service)
                 .with_context(|| format!("stopping partial nodestore worker service {service}"))?;
         }
     }
-    stop_nodestore_runtime_for_rollback(installation, manager, &cilium_identity)
+    stop_nodestore_runtime_for_rollback(
+        installation,
+        manager,
+        &cilium_identity,
+        destination_endpoint,
+    )
 }
 
 fn stop_nodestore_stack(
@@ -1512,8 +1535,8 @@ fn checked(program: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn checked_cri_cleanup(endpoint: &str, action: &str, sandbox_id: &str) -> Result<()> {
-    checked(
+pub(crate) fn checked_cri_cleanup(endpoint: &str, action: &str, id: &str) -> Result<bool> {
+    let output = command(
         "crictl",
         &[
             "--timeout",
@@ -1521,9 +1544,28 @@ fn checked_cri_cleanup(endpoint: &str, action: &str, sandbox_id: &str) -> Result
             "--runtime-endpoint",
             endpoint,
             action,
-            sandbox_id,
+            id,
         ],
-    )
+    )?;
+    ensure!(
+        cri_cleanup_succeeded(output.status.success(), &output.stderr),
+        "crictl {} failed for {id} at {endpoint}: {}",
+        action,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(output.status.success())
+}
+
+fn cri_cleanup_succeeded(exit_success: bool, stderr: &[u8]) -> bool {
+    exit_success || cri_not_found(stderr)
+}
+
+fn cri_not_found(stderr: &[u8]) -> bool {
+    let message = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    message.contains("code = notfound")
+        || message.contains("code = not found")
+        || (message.contains("not found")
+            && (message.contains("container") || message.contains("sandbox")))
 }
 
 fn command(program: &str, args: &[&str]) -> Result<Output> {
@@ -1537,11 +1579,30 @@ fn command(program: &str, args: &[&str]) -> Result<Output> {
 mod tests {
     use super::{
         SourceCiliumIdentity, cilium_host_container_ids, cilium_source_sandbox_ids,
-        nodelet_source_sandbox_ids, runtime_service_name, static_pod_sandbox_ids,
+        cri_cleanup_succeeded, nodelet_source_sandbox_ids, runtime_service_name,
+        static_pod_sandbox_ids,
     };
 
     const SOURCE_CONTAINER_ID: &str =
         "ef96e5cf937fed840c1bfcc03df0ef667927c7f666ba4963da35faaa9f80f39a";
+
+    #[test]
+    fn treats_concurrent_cri_removal_as_success_but_preserves_other_errors() {
+        assert!(cri_cleanup_succeeded(true, b""));
+        assert!(cri_cleanup_succeeded(
+            false,
+            b"rpc error: code = NotFound desc = container not found"
+        ));
+        assert!(cri_cleanup_succeeded(
+            false,
+            b"getting sandbox status: sandbox: not found"
+        ));
+        assert!(!cri_cleanup_succeeded(
+            false,
+            b"rpc error: code = Unavailable desc = connection refused"
+        ));
+        assert!(!cri_cleanup_succeeded(false, b"permission denied"));
+    }
 
     #[test]
     fn maps_supported_cri_endpoints_to_their_host_service() {
