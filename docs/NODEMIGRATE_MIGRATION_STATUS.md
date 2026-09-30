@@ -2428,3 +2428,34 @@ UID resolution, imported CSI driver preservation, bounded Cilium scheduling
 wait, and strict cleanup of stale nodelet sandboxes are in the worktree. CI and
 migration verification are pending; no migration retry has started. Logs are saved at
 `/tmp/nodemigrate-36598031291/`.
+
+## Current candidate and migration rerun: 19ac3a5a
+
+The latest failure batch from run
+[36754641851](https://github.com/centerionware/not-k8s/actions/runs/36754641851)
+is addressed in pushed SHA `19ac3a5a91417cb1b238bd5356ea6c16dc0ab433`:
+
+- CRI sandbox removal is coordinated with the active K3s/kubelet agent that
+  uses the runtime endpoint under cleanup. Embedded K3s containerd stays live
+  while the verified K3s main process is paused. The upstream kubelet or
+  Nodelet resumes even if cleanup returns an error or panics.
+- Control-plane joins no longer reapply cluster-wide NodeApiserver RBAC and
+  PriorityClass bootstrap defaults over imported source objects. Initial
+  cluster creation still seeds those defaults; joins verify existing policy
+  and add only target-owned supplemental grants.
+- The five-node CSI fixture comparison ignores only its exact extra Nodelet
+  root volume and bidirectional mount. The fixture check asserts both entries
+  exist at `/var/lib/nodelet`, and a changed path remains a strict diff.
+
+Focused `nodemigrate,nodebootstrap` quick-check passed in
+[36763558588](https://github.com/centerionware/not-k8s/actions/runs/36763558588).
+Migration workflow PR validation passed in
+[36763555375](https://github.com/centerionware/not-k8s/actions/runs/36763555375).
+Both runs tested this SHA; no general build or full e2e ran. The dedicated
+branch-built migration matrix
+[36764002800](https://github.com/centerionware/not-k8s/actions/runs/36764002800)
+is currently running with Cilium KPR and the five-node lane. It builds
+`nodemigrate` and combined `notk8s --features cri`. Current job IDs are Docker
+preflight `110053438774`, upstream Kubernetes `110053438953`, and K3s
+`110053438954`. Results are pending; do not mark any migration lane passed
+until its full source-to-target-to-source checks finish.

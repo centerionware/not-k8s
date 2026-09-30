@@ -4377,12 +4377,24 @@ resolved. Logs:
 under `/tmp/nodemigrate-36754641851-artifacts/`.
 
 Focused quick-check [36762934344](https://github.com/centerionware/not-k8s/actions/runs/36762934344)
-at pushed SHA `f039f3b738cd5817e821ed32f2e1608d47ba268d` failed compiling the
-new Nodebootstrap regression because the test module had not imported its
-private helper. The compiler reported that one error at three assertion sites;
-there were no runtime test failures. The helper import is now added. The same
-worktree also avoids falling back to Nodelet when an upstream agent matches the
-runtime but is inactive; that prevents pausing an unrelated agent. The
-snapshot-normalizer fixture check passes locally with the expanded CSI root
-volume/mount case. No migration matrix was dispatched from this failed run.
-Full log: `/tmp/nodemigrate-36762934344-quick-check.log`.
+at SHA `f039f3b738cd5817e821ed32f2e1608d47ba268d` failed compiling the new
+Nodebootstrap regression because the test module had not imported its private
+helper. The compiler reported that one error at three assertion sites; there
+were no runtime test failures. The helper import and a coordinator fallback
+correction are in `19ac3a5a`. Focused quick-check
+[36763558588](https://github.com/centerionware/not-k8s/actions/runs/36763558588)
+passed for `nodemigrate,nodebootstrap` at SHA
+`19ac3a5a91417cb1b238bd5356ea6c16dc0ab433`; PR validation
+[36763555375](https://github.com/centerionware/not-k8s/actions/runs/36763555375)
+also passed shell syntax, snapshot jq, Helm state, API inventory, and
+diagnostics on that SHA. The snapshot-normalizer fixture check passed locally
+with the expanded CSI root volume/mount case. No general build or full e2e ran.
+Full failed-check log: `/tmp/nodemigrate-36762934344-quick-check.log`.
+
+Migration matrix [36764002800](https://github.com/centerionware/not-k8s/actions/runs/36764002800)
+is now running SHA `19ac3a5a91417cb1b238bd5356ea6c16dc0ab433` with
+`runtime_source=branch`, `cilium_kpr=true`, and
+`five_node_migration=true`. It builds both `nodemigrate` and the combined
+`notk8s --features cri` runtime in the five-node and single-node lanes. Active
+jobs: Docker preflight `110053438774`, upstream Kubernetes
+`110053438953`, K3s `110053438954`. No outcomes are claimed yet.

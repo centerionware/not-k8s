@@ -3365,8 +3365,14 @@ The branch changed APIService route resolution and group discovery to read APISe
   exposes that runtime, it falls back to the installed Nodelet service. For
   embedded K3s containerd, it pauses only the verified K3s main process and
   confirms CRI remains available before proceeding. A focused regression checks
-  that unrelated K3s installations are not selected. This candidate is not yet
-  checked by CI. Do not stop the K3s service before embedded-CRI cleanup. The
+  that unrelated K3s installations are not selected. The focused
+  `nodemigrate,nodebootstrap` quick-check passed at `19ac3a5a` in
+  [36763558588](https://github.com/centerionware/not-k8s/actions/runs/36763558588),
+  and migration script validation passed at the same SHA in
+  [36763555375](https://github.com/centerionware/not-k8s/actions/runs/36763555375).
+  Live behavior is being exercised in matrix run
+  [36764002800](https://github.com/centerionware/not-k8s/actions/runs/36764002800).
+  Do not stop the K3s service before embedded-CRI cleanup. The
   K3s rollback restored nodestore but its final job check timed out; that check
   is downstream until distinguished from a separate readiness defect. Evidence:
   [run 36754641851](https://github.com/centerionware/not-k8s/actions/runs/36754641851),
@@ -3393,12 +3399,13 @@ The branch changed APIService route resolution and group discovery to read APISe
   bootstrap defaults over the API objects already imported from the source.
   Bootstrap seeding is now limited to initial cluster creation, while joins
   verify the existing policy and apply only the supplemental target-owned
-  grants. A focused `nodebootstrap` regression is added; CI validation is
-  pending. The snapshot normalizer now excludes only the exact fixture-added
+  grants. The focused `nodebootstrap` regression passed in quick-check
+  [36763558588](https://github.com/centerionware/not-k8s/actions/runs/36763558588).
+  The snapshot normalizer now excludes only the exact fixture-added
   `nodemigrate-nodelet-root` volume and bidirectional mount, whose presence and
   host path remain directly asserted. All other StatefulSet fields and RBAC
-  data remain strict. Do not rerun the migration matrix until these changes
-  pass focused CI and the active-agent cleanup candidate is validated.
+  data remain strict. Strict five-node comparison and return behavior are being
+  checked in matrix run [36764002800](https://github.com/centerionware/not-k8s/actions/runs/36764002800).
   Evidence: five-node job `110021665907`, run
   [36754641851](https://github.com/centerionware/not-k8s/actions/runs/36754641851);
   artifact log `/tmp/nodemigrate-36754641851-artifacts/nodemigrate-docker-preflight-36754641851/nodemigrate-docker-preflight.log`.
