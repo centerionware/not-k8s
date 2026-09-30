@@ -3342,6 +3342,8 @@ The branch changed APIService route resolution and group discovery to read APISe
   immediately before the failed removal; K3s and five-node logs report the same
   removal race. The worktree now pauses an active local Nodelet service only
   around this cleanup and starts it again on both success and failure without
-  changing its enabled state. Nodemigrate quick-check must pass before another
-  migration retry. The three lanes rolled back and retained their protected
-  exports; no general build or full e2e ran.
+  changing its enabled state. Quick-check `36753849376` caught missing result
+  type annotations in two new failure-path tests; the annotations are fixed,
+  with the focused retry pending before another migration attempt. The three
+  lanes rolled back and retained their protected exports; no general build or
+  full e2e ran. Log: `/tmp/nodemigrate-36753849376-quick-check.log`.

@@ -4320,8 +4320,12 @@ passed; the general build and full e2e gates were not run.
 
 The worktree now temporarily stops an active local Nodelet service while the
 CRI sandbox cleanup runs, then starts it again without changing its enabled
-state, including when cleanup fails. Focused nodemigrate quick-check is pending;
-do not retry migration until it passes. Cilium Socket LB recovery has runtime
-evidence through agent readiness and link reattachment, but end-to-end workload
-recovery remains unverified because cleanup then failed at this race. Saved
-logs and artifacts: `/tmp/nodemigrate-36749494255-*`.
+state, including when cleanup fails. Quick-check
+[36753849376](https://github.com/centerionware/not-k8s/actions/runs/36753849376)
+failed compiling the new tests because two generic `Result` values needed
+explicit `()` result types; those annotations are now added and a focused retry
+is pending. Do not retry migration until quick-check passes. Cilium Socket LB
+recovery has runtime evidence through agent readiness and link reattachment,
+but end-to-end workload recovery remains unverified because cleanup then failed
+at this race. Saved logs: `/tmp/nodemigrate-36749494255-*` and
+`/tmp/nodemigrate-36753849376-quick-check.log`.

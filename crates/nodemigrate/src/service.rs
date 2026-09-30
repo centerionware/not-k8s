@@ -1667,7 +1667,7 @@ mod tests {
 
         let stopped = Cell::new(false);
         let restarted = Cell::new(false);
-        let result = with_service_paused(
+        let result: anyhow::Result<()> = with_service_paused(
             true,
             || {
                 stopped.set(true);
@@ -1691,7 +1691,7 @@ mod tests {
 
         let operation_ran = Cell::new(false);
         let restarted = Cell::new(false);
-        let result = with_service_paused(
+        let result: anyhow::Result<()> = with_service_paused(
             true,
             || anyhow::bail!("stop failed"),
             || {
