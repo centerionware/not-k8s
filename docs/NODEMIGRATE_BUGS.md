@@ -30,8 +30,11 @@ The logs are saved under `/tmp/nodemigrate-36764002800-artifacts/` and
   stores the supervisor target IP and replaces its tasks when that IP changes;
   a focused regression covers the changed-target case.
 
-The `nodelet,nodemigrate` quick-check must pass before another migration
-matrix is dispatched. No general build or full e2e ran for 36764002800.
+The `nodelet,nodemigrate` quick-check passed at SHA
+`b501aa682ebc5edb0ebec99d34c23c5c83f789cf` in
+[36769436388](https://github.com/centerionware/not-k8s/actions/runs/36769436388).
+Migration runtime verification is still required. No general build or full e2e
+ran for 36764002800.
 
 ## Confirmed Cilium clean-state service-datapath failure
 

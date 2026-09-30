@@ -16,9 +16,11 @@ executable based on a rewritten process title. The five-node stage failed
 CoreDNS readiness because probe diagnostics targeted stale IPs after CNI
 reassigned Pod addresses. Full job logs and downloaded artifacts are saved at
 `/tmp/nodemigrate-36764002800-{docker,k3s,kubernetes}-job.log` and
-`/tmp/nodemigrate-36764002800-artifacts/`. The worktree contains a candidate
-fix batch and focused regressions for all three causes; `nodelet,nodemigrate`
-quick-check is the next gate. No general build or full e2e ran.
+`/tmp/nodemigrate-36764002800-artifacts/`. The candidate fix batch and focused
+regressions passed `nodelet,nodemigrate` quick-check
+[36769436388](https://github.com/centerionware/not-k8s/actions/runs/36769436388)
+at SHA `b501aa682ebc5edb0ebec99d34c23c5c83f789cf`; the migration matrix is
+the next runtime gate. No general build or full e2e ran.
 
 ## Cilium stale-link recovery fix
 

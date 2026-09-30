@@ -24,8 +24,16 @@ recovery.
 The candidate batch now falls back to active Nodelet if no active matching
 upstream agent was selected, validates K3s through `/proc/<pid>/exe`, and
 replaces a Pod's probe supervisor when its runtime Pod IP changes. Focused
-regressions cover each decision. Do not rerun migration until the changed
-`nodelet,nodemigrate` crates pass quick-check. Logs and artifacts are saved in
+regressions cover each decision. The changed `nodelet,nodemigrate` crates
+passed quick-check [36769436388](https://github.com/centerionware/not-k8s/actions/runs/36769436388)
+at SHA `b501aa682ebc5edb0ebec99d34c23c5c83f789cf`. The K3s lane's later
+rollback verification also timed out waiting for a fresh check Job, although
+its Pod eventually appeared `Completed`; Cilium's clean-state init had a
+transient failed attempt before succeeding. This happened after the migration
+already failed at K3s process validation, and the saved snapshot lacks the Job
+condition needed to classify it. Keep it recorded as downstream rollback
+behavior; a successful return path will determine whether it recurs. Logs and
+artifacts are saved in
 `/tmp/nodemigrate-36764002800-artifacts/` and
 `/tmp/nodemigrate-36764002800-{docker,k3s,kubernetes}-job.log`.
 
