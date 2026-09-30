@@ -33,13 +33,18 @@ and PR validation passed. The migration lanes have not been rerun.
 
 The current follow-up bounds each Cilium API request to 30 seconds while
 keeping the existing five-minute Pod scheduling and cleanup deadlines. This
-closes the unbounded API wait path in Cilium cleanup; a focused quick-check and
-migration recheck are pending.
+closes the unbounded API wait path in Cilium cleanup. The focused
+`nodemigrate` quick-check passed at SHA
+`3d152cab6ad1f92eb2eb6be78d9742870f334a12` in
+[run 36650152894](https://github.com/centerionware/not-k8s/actions/runs/36650152894).
 
 Focused quick-check [36649877749](https://github.com/centerionware/not-k8s/actions/runs/36649877749)
 failed to compile because the new bounded request futures borrowed temporary
 Kubernetes parameters. The parameters and patch values are now bound through
-the awaited requests; the corrected quick-check is pending.
+the awaited requests; the corrected quick-check passed as recorded above.
+
+The migration-specific retest is now eligible. The regular build and general
+e2e jobs remain excluded from this migration task.
 
 ## 2026-09-29 migration rerun 36633722194
 

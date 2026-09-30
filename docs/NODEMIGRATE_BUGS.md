@@ -20,8 +20,9 @@ logs are saved once under `/tmp/nodemigrate-36644181073-*.log`.
   confirmed yet; the migration lane must verify success or bounded failure.
   The first quick-check for the request bounds failed to compile because the
   async requests borrowed temporary Kubernetes parameter objects. Those
-  parameters now live through each awaited request; corrected quick-check is
-  pending.
+  parameters now live through each awaited request. The corrected focused
+  quick-check passed at SHA `3d152cab6ad1f92eb2eb6be78d9742870f334a12` in
+  [run 36650152894](https://github.com/centerionware/not-k8s/actions/runs/36650152894).
 - **Component: returned K3s Cilium/CSI path.** Forward and return migration
   completed, Cilium's replacement agent remained Ready, and the returned K3s
   audit and preserved CSI volume assertion passed. Reinstalling the upstream
@@ -44,13 +45,13 @@ logs are saved once under `/tmp/nodemigrate-36644181073-*.log`.
 
 The `nodebootstrap,nodemigrate` quick-check passed for the run's SHA in
 [run 36643843760](https://github.com/centerionware/not-k8s/actions/runs/36643843760).
-After the follow-up timeout, ordering, and diagnostic changes, the focused
-`nodemigrate` quick-check passed at SHA
-`c1782c654597b335965b793a6ef2afe4ea5f5d67` in
-[run 36649148406](https://github.com/centerionware/not-k8s/actions/runs/36649148406).
+After the follow-up timeout, ordering, diagnostic, and bounded-request changes,
+the focused `nodemigrate` quick-check passed at SHA
+`3d152cab6ad1f92eb2eb6be78d9742870f334a12` in
+[run 36650152894](https://github.com/centerionware/not-k8s/actions/runs/36650152894).
 PR validation also passed. No regular build or general e2e gate ran. The next
-migration retry remains held until the upstream Cilium recovery stall is
-addressed.
+migration-specific run is now eligible; it must verify the upstream recovery
+and returned K3s datapath paths.
 
 ## Findings from migration run 36633722194
 
