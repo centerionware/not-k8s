@@ -1291,6 +1291,81 @@ fn restart_named(manager: ServiceManager, name: &str) -> Result<()> {
     }
 }
 
+/// Pause the local Nodelet reconciler while CRI sandboxes are removed. A live
+/// Nodelet can recreate a container between StopPodSandbox and RemoveContainer,
+/// making the cleanup race the same reconciler whose sandboxes it is resetting.
+/// Stop/start preserves each service manager's enabled state.
+pub(crate) fn with_nodelet_paused<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    let Some(manager) = crate::detect::nodelet_service_manager() else {
+        return operation();
+    };
+    let should_pause = service_active(manager, "nodelet");
+    with_service_paused(
+        should_pause,
+        || {
+            eprintln!("nodemigrate: pausing local nodelet service during CRI sandbox cleanup");
+            stop_named(manager, "nodelet")
+                .context("pausing local nodelet before CRI sandbox cleanup")
+        },
+        operation,
+        || {
+            start_named(manager, "nodelet")
+                .context("restarting local nodelet after CRI sandbox cleanup")
+        },
+    )
+}
+
+fn with_service_paused<T>(
+    should_pause: bool,
+    stop: impl FnOnce() -> Result<()>,
+    operation: impl FnOnce() -> Result<T>,
+    start: impl FnOnce() -> Result<()>,
+) -> Result<T> {
+    if !should_pause {
+        return operation();
+    }
+    stop()?;
+    let operation_result = operation();
+    let start_result = start();
+    match (operation_result, start_result) {
+        (Ok(value), Ok(())) => {
+            eprintln!("nodemigrate: resumed local nodelet service after CRI sandbox cleanup");
+            Ok(value)
+        }
+        (Err(operation_error), Ok(())) => Err(operation_error),
+        (Ok(_), Err(start_error)) => Err(start_error),
+        (Err(operation_error), Err(start_error)) => Err(operation_error).context(format!(
+            "local nodelet restart also failed: {start_error:#}"
+        )),
+    }
+}
+
+fn stop_named(manager: ServiceManager, name: &str) -> Result<()> {
+    match manager {
+        ServiceManager::Systemd => checked("systemctl", &["stop", &format!("{name}.service")]),
+        ServiceManager::OpenRc => checked("rc-service", &[name, "stop"]),
+        ServiceManager::SysVInit => checked("service", &[name, "stop"]),
+        ServiceManager::Runit => {
+            let dir = runit_service_dir(name)
+                .with_context(|| format!("could not find runit service directory for {name}"))?;
+            checked("sv", &["down", &dir.to_string_lossy()])
+        }
+    }
+}
+
+fn start_named(manager: ServiceManager, name: &str) -> Result<()> {
+    match manager {
+        ServiceManager::Systemd => checked("systemctl", &["start", &format!("{name}.service")]),
+        ServiceManager::OpenRc => checked("rc-service", &[name, "start"]),
+        ServiceManager::SysVInit => checked("service", &[name, "start"]),
+        ServiceManager::Runit => {
+            let dir = runit_service_dir(name)
+                .with_context(|| format!("could not find runit service directory for {name}"))?;
+            checked("sv", &["up", &dir.to_string_lossy()])
+        }
+    }
+}
+
 fn restore_named(manager: ServiceManager, service: &ServiceState) -> Result<()> {
     let name = service.name.as_str();
     match manager {
@@ -1580,11 +1655,82 @@ mod tests {
     use super::{
         SourceCiliumIdentity, cilium_host_container_ids, cilium_source_sandbox_ids,
         cri_cleanup_succeeded, nodelet_source_sandbox_ids, runtime_service_name,
-        static_pod_sandbox_ids,
+        static_pod_sandbox_ids, with_service_paused,
     };
 
     const SOURCE_CONTAINER_ID: &str =
         "ef96e5cf937fed840c1bfcc03df0ef667927c7f666ba4963da35faaa9f80f39a";
+
+    #[test]
+    fn resumes_service_after_paused_operation_fails() {
+        use std::cell::Cell;
+
+        let stopped = Cell::new(false);
+        let restarted = Cell::new(false);
+        let result = with_service_paused(
+            true,
+            || {
+                stopped.set(true);
+                Ok(())
+            },
+            || anyhow::bail!("cleanup failed"),
+            || {
+                assert!(stopped.get());
+                restarted.set(true);
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(restarted.get());
+    }
+
+    #[test]
+    fn failed_service_stop_prevents_paused_operation() {
+        use std::cell::Cell;
+
+        let operation_ran = Cell::new(false);
+        let restarted = Cell::new(false);
+        let result = with_service_paused(
+            true,
+            || anyhow::bail!("stop failed"),
+            || {
+                operation_ran.set(true);
+                Ok(())
+            },
+            || {
+                restarted.set(true);
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(!operation_ran.get());
+        assert!(!restarted.get());
+    }
+
+    #[test]
+    fn leaves_inactive_service_untouched() {
+        use std::cell::Cell;
+
+        let service_commands_ran = Cell::new(false);
+        let result = with_service_paused(
+            false,
+            || {
+                service_commands_ran.set(true);
+                Ok(())
+            },
+            || Ok(42),
+            || {
+                service_commands_ran.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result, 42);
+        assert!(!service_commands_ran.get());
+    }
 
     #[test]
     fn treats_concurrent_cri_removal_as_success_but_preserves_other_errors() {

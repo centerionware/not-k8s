@@ -19,7 +19,11 @@ temporary-lifetime compile error in the replacement-Pod list request. The
 binding was fixed in SHA `72845a8d762e94a8cf0d8de7f00949c7a9aa50f5`; focused
 nodemigrate quick-check [36748550052](https://github.com/centerionware/not-k8s/actions/runs/36748550052)
 passed, including the nodemigrate library tests. This confirms compilation and
-unit behavior only; no migration ran. Logs:
+unit behavior only; no migration ran. PR validation
+[36748961972](https://github.com/centerionware/not-k8s/actions/runs/36748961972)
+passed on documentation SHA `ad0d734d7755d9dff998272b0c942b3d961a9615`:
+shell syntax, jq snapshots, Helm-state, API-inventory, and diagnostic JSON
+checks passed; migration and Cilium probe jobs were skipped. Logs:
 `/tmp/nodemigrate-36744527476-k3s-probe-job.log` and
 `/tmp/nodemigrate-36744527476-artifact/nodemigrate-k3s-cilium-restart-36744527476/nodemigrate-k3s-cilium-restart.log`.
 
@@ -4300,3 +4304,24 @@ verifies the old sandbox ID is gone before creating a replacement. This is
 intended to release the source CoreDNS name reservation; CI and migration
 verification remain pending. No general build or full e2e gate ran. Saved logs:
 `/tmp/nodemigrate-36598031291/`.
+
+## 2026-09-30 Cilium sandbox cleanup race
+
+Branch-runtime migration run [36749494255](https://github.com/centerionware/not-k8s/actions/runs/36749494255)
+tested SHA `ad0d734d7755d9dff998272b0c942b3d961a9615` with branch-built
+`nodemigrate` and combined `notk8s --features cri`, Cilium kube-proxy
+replacement, and the five-node Docker lane. All three migration lanes failed
+after Cilium's cleanup init and Socket LB relink succeeded: Nodelet recreated
+containers while nodemigrate was removing the old CRI sandboxes. Kubernetes
+logged a replacement container starting before `crictl rm`; K3s and the
+five-node lane reported containers already running or being removed. Each lane
+rolled back and retained its protected export. The branch component builds
+passed; the general build and full e2e gates were not run.
+
+The worktree now temporarily stops an active local Nodelet service while the
+CRI sandbox cleanup runs, then starts it again without changing its enabled
+state, including when cleanup fails. Focused nodemigrate quick-check is pending;
+do not retry migration until it passes. Cilium Socket LB recovery has runtime
+evidence through agent readiness and link reattachment, but end-to-end workload
+recovery remains unverified because cleanup then failed at this race. Saved
+logs and artifacts: `/tmp/nodemigrate-36749494255-*`.

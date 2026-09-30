@@ -75,8 +75,10 @@ at SHA `30627f9720b2d9196f2bf9918b981156479117c6` caught an `E0716`
 temporary-lifetime compile error in the replacement-Pod list request. SHA
 `72845a8d762e94a8cf0d8de7f00949c7a9aa50f5` binds a named `ListParams`, and
 focused nodemigrate quick-check [36748550052](https://github.com/centerionware/not-k8s/actions/runs/36748550052)
-passed. Migration remains unverified and should not be retried while the other
-known migration blockers remain open.
+passed. PR script validation [36748961972](https://github.com/centerionware/not-k8s/actions/runs/36748961972)
+also passed shell, fixture, and diagnostic checks on SHA
+`ad0d734d7755d9dff998272b0c942b3d961a9615`. Migration remains unverified and
+should not be retried while the other known migration blockers remain open.
 
 Run 36728443584 did not reach the cgroup capture: immediately after Cilium
 clean-state, the probe treated a temporary lack of a Running CoreDNS Pod as a
@@ -233,13 +235,16 @@ branch builds passed; all three runtime lanes failed.
   because `kubectl logs job/migration-job` no longer contained the original
   output. The Pod remained `Succeeded` and its Job remained `Complete`, but
   migration had removed its terminal CRI sandbox. Runtime logs are not durable
-  Kubernetes API state. Change the assertion to verify retained Job/Pod
-  terminal status and use a fresh per-stage Job for execution checks; do not
-  require migrated container logs.
+  Kubernetes API state. The current fixture verifies the retained Job/Pod
+  terminal status and launches a fresh per-stage Job for execution checks.
+  Shell, fixture, and diagnostic validation passed in
+  [36748961972](https://github.com/centerionware/not-k8s/actions/runs/36748961972),
+  but the updated assertions still need a live migration round trip.
 
-Do not dispatch another migration until the probe path is diagnosed and the
-fixture assertion is corrected. These two failures are grouped in one fix
-batch; do not treat a repeated migration run as a diagnostic.
+The fixture assertion correction passed static validation and still needs a
+live round trip. Do not retry migration until the separately observed Nodelet
+versus CRI sandbox-removal race is fixed and its focused nodemigrate quick-check
+passes; a repeated matrix run is not a diagnostic.
 
 Migration run
 [36690929745](https://github.com/centerionware/not-k8s/actions/runs/36690929745)
@@ -3328,3 +3333,15 @@ The branch changed APIService route resolution and group discovery to read APISe
   otherwise retained; if the negotiated-codec fix does not resolve the next
   focused migration attempt, capture bounded wire diagnostics without logging
   issued credentials.
+
+- **Component:** `nodemigrate` local Nodelet/CRI sandbox cleanup. All three
+  branch-runtime lanes in [run 36749494255](https://github.com/centerionware/not-k8s/actions/runs/36749494255)
+  restored Cilium's Socket LB links, then failed because Nodelet reconciled and
+  started containers while `crictl rm` was removing containers from old
+  sandboxes. The Kubernetes log captures the replacement container starting
+  immediately before the failed removal; K3s and five-node logs report the same
+  removal race. The worktree now pauses an active local Nodelet service only
+  around this cleanup and starts it again on both success and failure without
+  changing its enabled state. Nodemigrate quick-check must pass before another
+  migration retry. The three lanes rolled back and retained their protected
+  exports; no general build or full e2e ran.

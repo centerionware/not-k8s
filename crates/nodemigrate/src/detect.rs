@@ -95,6 +95,13 @@ pub fn inspect_host(layout: &HostLayout) -> Result<Option<Installation>> {
     Ok(inspect_all(layout)?.into_iter().next())
 }
 
+pub(crate) fn nodelet_service_manager() -> Option<ServiceManager> {
+    inspect_nodestore_worker(&HostLayout::system())
+        .ok()
+        .flatten()
+        .and_then(|installation| installation.service_manager)
+}
+
 pub fn inspect_all(layout: &HostLayout) -> Result<Vec<Installation>> {
     let mut installations = Vec::new();
     for distribution in [

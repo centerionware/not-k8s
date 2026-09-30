@@ -388,7 +388,9 @@ async fn recreate_node_pod_sandboxes(
     let node_name = node_name.to_owned();
     let log_node_name = node_name.clone();
     let (sandbox_count, container_count) = tokio::task::spawn_blocking(move || {
-        recreate_pod_sandboxes_for_uids(&runtime_endpoint, &node_name, &pod_uids)
+        crate::service::with_nodelet_paused(|| {
+            recreate_pod_sandboxes_for_uids(&runtime_endpoint, &node_name, &pod_uids)
+        })
     })
     .await
     .context("joining CRI Pod sandbox recreation task")??;
