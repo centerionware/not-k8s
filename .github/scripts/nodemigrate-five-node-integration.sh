@@ -147,12 +147,16 @@ run_migration() {
         "NODEMIGRATE_REPLACE_NODE=true"
     )
     env+=("${extra_env[@]}")
-    echo "Running on $host: nodemigrate $*"
-    if output="$(node_env "$host" "${env[@]}" "$NODE_ROOT/target/release/nodemigrate" "$@" 2>&1)"; then
+    echo "Running on $host: nodemigrate (30 minute limit per migration) $*"
+    if output="$(node_env "$host" "${env[@]}" timeout --signal=TERM --kill-after=30s 30m \
+        "$NODE_ROOT/target/release/nodemigrate" "$@" 2>&1)"; then
         printf '%s\n' "$output" >&2
     else
         local status=$?
         printf '%s\n' "$output" >&2
+        if ((status == 124)); then
+            fail "nodemigrate $* exceeded its 30 minute execution limit on $host"
+        fi
         fail "nodemigrate $* failed on $host with status $status"
     fi
     printf '%s' "$output"
@@ -361,6 +365,7 @@ for host in cp-2 cp-3; do
         NODEMIGRATE_SOURCE_DIST=kubernetes NODEMIGRATE_SOURCE_KUBECONFIG=/etc/kubernetes/admin.conf \
         NODEMIGRATE_DESTINATION_KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig \
         NODEMIGRATE_REPLACE_NODE=true \
+        timeout --signal=TERM --kill-after=30s 30m \
         "$NODE_ROOT/target/release/nodemigrate" to=nodestore from=kubernetes \
             skip-api-import=true "source-export=$SOURCE_EXPORT_REMOTE" 2>&1)"; then
         printf '%s\n' "$output"
@@ -386,6 +391,7 @@ for host in worker-1 worker-2; do
         NODEMIGRATE_SOURCE_DIST=kubernetes NODEMIGRATE_SOURCE_KUBECONFIG=/etc/kubernetes/admin.conf \
         NODEMIGRATE_DESTINATION_KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig \
         NODEMIGRATE_REPLACE_NODE=true \
+        timeout --signal=TERM --kill-after=30s 30m \
         "$NODE_ROOT/target/release/nodemigrate" to=nodestore from=kubernetes \
             skip-api-import=true "source-export=$SOURCE_EXPORT_REMOTE" 2>&1)"; then
         printf '%s\n' "$output"

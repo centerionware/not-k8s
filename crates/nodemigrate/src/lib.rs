@@ -305,11 +305,13 @@ fn migrate_to_nodestore(
         return Err(rollback(error.context("destination did not become ready")));
     }
     if !request.skip_api_import {
+        eprintln!("nodemigrate: importing protected Kubernetes API export into destination");
         if let Err(error) = target_api.import(&export) {
             return Err(rollback(error.context(
                 "destination bootstrap succeeded but Kubernetes object import failed",
             )));
         }
+        eprintln!("nodemigrate: protected Kubernetes API import completed");
     }
     if !joins_existing
         && source
@@ -317,9 +319,15 @@ fn migrate_to_nodestore(
             .as_ref()
             .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
     {
+        eprintln!(
+            "nodemigrate: rebuilding destination Cilium host datapath state for node {migrating_node_name}"
+        );
         if let Err(error) = target_api.reset_cilium_agent_state(&migrating_node_name) {
             return Err(rollback(error.context("rebuilding destination Cilium host datapath state")));
         }
+        eprintln!(
+            "nodemigrate: rebuilt destination Cilium host datapath state for node {migrating_node_name}"
+        );
     }
     let replacement_state = if destination_node_exists {
         match remove_replaced_node(&target_api, &migrating_node_name, replace_existing_node) {
@@ -1039,6 +1047,32 @@ fn migrate_to_existing(
         ));
     }
     eprintln!("nodemigrate: retained destination API is ready");
+    // K3s restores its Node itself as soon as its service starts; cleaning
+    // Cilium before that registration preserves the K3s service map rebuild
+    // order observed in the passing round trip. Upstream Kubernetes needs the
+    // replacement Node first so Cilium can bind its new local identity.
+    let reset_cilium_before_node_replacement = target.distribution == request::Distribution::K3s
+        && target
+            .cluster
+            .as_ref()
+            .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"));
+    if reset_cilium_before_node_replacement {
+        eprintln!(
+            "nodemigrate: rebuilding retained Cilium state before registering the returned K3s node {returning_node_name}"
+        );
+        if let Err(error) = target_api.reset_cilium_agent_state(&returning_node_name) {
+            return Err(rollback_reverse_migration(
+                source,
+                target,
+                previous_service,
+                export.as_ref(),
+                host_path_snapshot.as_ref(),
+                error.context("rebuilding retained Cilium host datapath state"),
+                &recovery_location,
+            ));
+        }
+        eprintln!("nodemigrate: retained Cilium state is rebuilt before K3s node registration");
+    }
     if let Some(export) = &export {
         eprintln!("nodemigrate: importing protected Kubernetes API export");
         if let Err(error) = target_api.import(export) {
@@ -1124,10 +1158,11 @@ fn migrate_to_existing(
     // The retained node may have been explicitly replaced above. Rebuild
     // Cilium after that replacement is Ready so the agent initializes against
     // the final Node identity and datapath state.
-    if target
-        .cluster
-        .as_ref()
-        .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
+    if !reset_cilium_before_node_replacement
+        && target
+            .cluster
+            .as_ref()
+            .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
     {
         eprintln!(
             "nodemigrate: rebuilding retained Cilium host datapath state for node {returning_node_name}"

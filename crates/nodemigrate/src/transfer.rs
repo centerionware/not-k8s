@@ -971,6 +971,9 @@ impl KubeApi {
                 )
                 .await
                 .with_context(|| format!("recreating Cilium agent Pod {name} for state cleanup"))?;
+                eprintln!(
+                    "nodemigrate: deleted prior Cilium agent Pod {name}; waiting for its replacement on node {node_name}"
+                );
 
                 let deadline =
                     tokio::time::Instant::now() + std::time::Duration::from_secs(300);
@@ -979,6 +982,7 @@ impl KubeApi {
                 let mut ready_since = None;
                 let mut last_failed_init_restart_count = None;
                 let mut cleanup_init_failure_details = None;
+                let mut replacement_pod_logged = false;
                 loop {
                     let current_pods = pods
                         .list(&ListParams::default().labels("k8s-app=cilium"))
@@ -999,6 +1003,13 @@ impl KubeApi {
                             && pod.metadata.uid.as_deref().is_some_and(|pod_uid| pod_uid != uid)
                     });
                     if let Some(current) = replacement {
+                        if !replacement_pod_logged {
+                            eprintln!(
+                                "nodemigrate: replacement Cilium agent Pod {} appeared on node {node_name}",
+                                current.metadata.name.as_deref().unwrap_or("<unnamed>")
+                            );
+                            replacement_pod_logged = true;
+                        }
                         let init_state = current
                             .status
                             .as_ref()

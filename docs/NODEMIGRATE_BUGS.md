@@ -1,6 +1,46 @@
 # nodemigrate bug and fix tracker
 
-Last updated: 2026-09-29
+Last updated: 2026-09-30
+
+## Findings from migration run 36644181073
+
+Run [36644181073](https://github.com/centerionware/not-k8s/actions/runs/36644181073)
+tested SHA `81cd6b4c631106f4ca0d0572a7f125969dbb13df` with branch-built
+components, Cilium KPR, and the five-node lane. All three lanes failed; full
+logs are saved once under `/tmp/nodemigrate-36644181073-*.log`.
+
+- **Component: nodemigrate Cilium handoff / upstream Kubernetes lane.** The
+  ServiceAccount token refresh and protected import both returned, and Tokio
+  runtime shutdown returned immediately. The lane then made no visible
+  progress before the 30-minute migration cap. In forward migration, the next
+  operation after import is Cilium host-state cleanup. The current branch adds
+  boundary logs around that operation and node rollback so the next focused
+  run identifies the exact stage. The suspected Cilium cleanup stall is not
+  confirmed yet.
+- **Component: returned K3s Cilium/CSI path.** Forward and return migration
+  completed, Cilium's replacement agent remained Ready, and the returned K3s
+  audit and preserved CSI volume assertion passed. Reinstalling the upstream
+  hostpath CSI fixture then left its readiness PVC Pending; API requests to
+  the Kubernetes Service IP timed out. The captured Cilium service listing
+  showed an active API backend, while the BPF load-balancer map had the API
+  Service without a routable backend entry at diagnostic time. This points to
+  a Cilium datapath restoration gap, but its precise cause remains unverified.
+  Returned K3s now resets Cilium before K3s re-registers its Node, restoring
+  the ordering from the prior passing K3s round trip. Other retained targets
+  still reset after the replacement Node is Ready, as required by the earlier
+  upstream Kubernetes Traefik failure. Both paths require another migration
+  check before the ordering is considered verified.
+- **Component: five-node timeout scope.** The Docker job used one 30-minute
+  step limit for the entire five-node migration sequence. It completed cp-1
+  and cp-2 migrations successfully before the overall step expired, so this
+  did not prove that an individual migration exceeded 30 minutes. The script
+  now bounds each nodemigrate invocation to 30 minutes; the enclosing step is
+  extended to allow all five nodes and fixture checks to complete.
+
+The targeted `nodebootstrap,nodemigrate` quick-check passed for this SHA in
+[run 36643843760](https://github.com/centerionware/not-k8s/actions/runs/36643843760).
+No regular build or general e2e gate ran. The next migration retry remains
+held until the Cilium handoff and returned K3s datapath failures are addressed.
 
 ## Findings from migration run 36633722194
 

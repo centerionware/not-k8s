@@ -1,6 +1,27 @@
 # nodemigrate CI and integration status
 
-Last updated: 2026-09-29
+Last updated: 2026-09-30
+
+## 2026-09-30 migration run 36644181073
+
+Run [36644181073](https://github.com/centerionware/not-k8s/actions/runs/36644181073)
+tested SHA `81cd6b4c631106f4ca0d0572a7f125969dbb13df` with branch-built
+components, Cilium KPR, and the five-node migration path. The `nodebootstrap,nodemigrate`
+quick-check passed at that SHA in
+[run 36643843760](https://github.com/centerionware/not-k8s/actions/runs/36643843760).
+
+All three migration lanes failed. The upstream Kubernetes lane returned from
+the token refresh, protected import, and runtime shutdown, then stopped
+progressing before its 30-minute migration cap; the next operation is Cilium
+host-state cleanup, which now has explicit boundary diagnostics. K3s completed
+both migration directions, but the returned cluster failed the post-migration
+hostpath CSI readiness check with a Pending PVC and Kubernetes Service IP
+timeouts. The Docker five-node sequence completed two individual node
+migrations before its single 30-minute enclosing step expired. The CI script
+now applies a 30-minute timeout to each nodemigrate process and allows the
+five-node fixture sequence to finish. Evidence and remaining causes are in
+[NODEMIGRATE_BUGS.md](NODEMIGRATE_BUGS.md). No regular build or general e2e
+gate ran; no migration retry is queued while the known failures remain.
 
 ## 2026-09-29 migration rerun 36633722194
 
