@@ -70,7 +70,11 @@ no-migration K3s+Cilium fixture. `nodemigrate` now performs the same targeted
 link unpin, starts a replacement agent with `clean-cilium-state` temporarily
 disabled, restores the original ConfigMap value after its init starts, waits
 for stable readiness, and then recreates local non-host-network Pod sandboxes.
-Focused nodemigrate CI is pending; migration remains blocked until it passes.
+Focused nodemigrate quick-check [36748080605](https://github.com/centerionware/not-k8s/actions/runs/36748080605)
+at SHA `30627f9720b2d9196f2bf9918b981156479117c6` caught an `E0716`
+temporary-lifetime compile error in the replacement-Pod list request. The
+request now borrows a named `ListParams`; focused CI must pass before migration
+is retried.
 
 Run 36728443584 did not reach the cgroup capture: immediately after Cilium
 clean-state, the probe treated a temporary lack of a Running CoreDNS Pod as a

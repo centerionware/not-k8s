@@ -2113,7 +2113,8 @@ async fn reattach_cilium_socket_lb(
                 .await;
                 bail!("Cilium agent did not become Ready on node {node_name} after stale Socket LB link removal");
             }
-            let list_request = pods.list(&ListParams::default().labels("k8s-app=cilium"));
+            let list_params = ListParams::default().labels("k8s-app=cilium");
+            let list_request = pods.list(&list_params);
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let current_pods = cilium_api_request_with_timeout(
                 "waiting for Cilium agent after Socket LB link removal",
