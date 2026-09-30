@@ -164,7 +164,10 @@ macro_rules! handle_subresources {
             Ok(rest::BindOutcome::UnknownResource) | Ok(rest::BindOutcome::ObjectNotFound) => {
                 Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&$path_str)))
             }
-            Ok(rest::BindOutcome::Conflict) => Ok(json_response(StatusCode::CONFLICT, &precondition_failed_status(&$path_str))),
+            Ok(rest::BindOutcome::Conflict(conflict)) => Ok(json_response(
+                StatusCode::CONFLICT,
+                &binding_conflict_status(&$path_str, &conflict.message()),
+            )),
             Ok(rest::BindOutcome::Invalid(violations)) => Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&$path_str, &violations))),
             Err(error) => {
                 warn!(path = %$path_str, error = ?error, "rest::bind_pod failed");

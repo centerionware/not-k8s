@@ -213,7 +213,9 @@ jobs:
   migrate:
     if: github.event_name == 'workflow_dispatch' && inputs.docker_only != true && inputs.k3s_cilium_restart_probe != true
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Checkout, toolchain setup, both release builds, and migration need a
+    # larger total window than the migration step's own bounded runtime.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

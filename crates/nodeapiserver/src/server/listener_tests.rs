@@ -385,6 +385,21 @@ mod tests {
     }
 
     #[test]
+    fn binding_conflict_status_reports_the_failed_pod_precondition() {
+        let message = crate::server::rest::BindConflict::ResourceVersionMismatch {
+            requested: "41".to_string(),
+            current: 42,
+        }
+        .message();
+        let status = binding_conflict_status("/api/v1/namespaces/default/pods/web/binding", &message);
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["reason"], "Conflict");
+        assert_eq!(status["code"], 409);
+        assert!(status["message"].as_str().unwrap().contains("requested 41, current 42"));
+        assert_eq!(status["details"]["causes"][0]["message"], message);
+    }
+
+    #[test]
     fn dry_run_query_accepts_only_all() {
         assert_eq!(dry_run_query("dryRun=All").unwrap(), true);
         assert_eq!(dry_run_query("fieldManager=test").unwrap(), false);

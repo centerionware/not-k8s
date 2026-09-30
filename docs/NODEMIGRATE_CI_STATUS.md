@@ -4,26 +4,68 @@ Last updated: 2026-09-30
 
 ## Current gate
 
-The latest completed migration run is [36650426292](https://github.com/centerionware/not-k8s/actions/runs/36650426292)
-at SHA `a8c791328a91976f76557d80701cea4a115d3bd1`. K3s passed its full
-bidirectional Cilium KPR round trip. Upstream Kubernetes failed after forward
-migration when the CSI Pod could not schedule amid repeated Pod binding HTTP
-409s. Docker five-node failed on the returned-source standalone Pod because
-containerd still had its kubelet-created container name reserved. The current
-branch fixes the internal Pod binding CAS retry and Nodelet's legacy kubelet
-CRI label lookup. Initial quick-check [36654928410](https://github.com/centerionware/not-k8s/actions/runs/36654928410)
-passed 388 non-CRI nodelet tests but failed compiling the CRI resource snapshot
-because it needs an owned container name; that conversion is fixed in the
-current branch. The run stopped before checking `nodeapiserver`. Replacement
-quick-check passed for both crates at SHA `f6e7e4d6` in
-[run 36655430632](https://github.com/centerionware/not-k8s/actions/runs/36655430632).
-Each single-node migration invocation and its enclosing job are capped at 30
-minutes. This bounds setup, builds, migration, and verification together; the
-migration command itself also retains its own 30-minute cap. Each individual
-five-node migration is capped at 30 minutes, while the full five-node sequence
-keeps its aggregate window. No general e2e or regular build gate ran. The
-migration-specific rerun is eligible after the known runtime failures are
-fixed.
+The latest migration run is [36656072014](https://github.com/centerionware/not-k8s/actions/runs/36656072014)
+at SHA `346fb0f7d16267f97c772ce0d872cb8de05522c9`. Upstream Kubernetes failed
+its nodestore workload checkpoint after 233 Pod binding HTTP 409 responses
+across 24 Pods; the internal storage-conflict retry did not remove the
+repeated caller-visible conflicts. The K3s lane completed return migration
+and most returned-fixture assertions, then hit the overall 30-minute job
+timeout while Traefik showed 0/1 available. The job cap stopped the migration
+step after about 19 minutes, before its own 30-minute timeout. The Docker
+five-node lane failed a post-migration CNI ADD on
+worker-2 with `signal: killed` while the replacement Cilium agent was still
+initializing. Details and remaining root causes are in
+[NODEMIGRATE_BUGS.md](NODEMIGRATE_BUGS.md); logs are saved under
+`/tmp/nodemigrate-36656072014-{kubernetes,k3s,docker}.log`.
+
+The current branch now includes reason-specific Pod binding Conflict status
+messages, so a follow-up can identify whether UID, resourceVersion, deletion,
+already-bound state, or storage retries are producing the 409s. PR head
+`c9ced284` capped both the single-node job and its migration step at 30
+minutes; run 36656072014 showed the job cap was too short because it also
+includes toolchain setup and both branch builds. The job cap is now 60 minutes
+and the migration step retains its own 30-minute cap. Each five-node
+nodemigrate invocation remains capped at 30 minutes, with a longer aggregate
+scenario window. No general e2e or regular build gate ran. Do not
+dispatch another migration run until the encountered runtime failures have
+actionable fixes.
+
+Focused quick-check [36655430632](https://github.com/centerionware/not-k8s/actions/runs/36655430632)
+passed `nodeapiserver,nodelet` at SHA `f6e7e4d6`, including CRI-enabled
+Nodelet. The conflict-status changes are newer and still need a focused
+`nodeapiserver` quick-check.
+
+## 2026-09-30 migration run 36656072014
+
+The upstream lane reached the nodestore fixture and failed with 233 scheduler
+Binding HTTP 409 responses across 24 Pods; `migration-stateful-0` remained
+unscheduled and retried every 11 seconds. The target API log contains no
+`Pod binding storage retries exhausted` warning, so the prior internal-CAS
+retry does not explain these responses. The existing server collapses all
+caller precondition conflicts into the misleading `delete precondition
+failed` status. The current code now identifies the exact binding precondition
+in the 409 message while preserving UID/resourceVersion validation. The
+underlying conflict cause remains unconfirmed pending focused validation and a
+later migration run.
+
+K3s completed forward and return migration and most of the returned-stage
+fixture checks. Its overall 30-minute job timeout stopped the run at
+02:08:45Z, after the migration step had run about 19 minutes (01:49:42Z to
+02:08:41Z), before that step's separate 30-minute limit or the rollout wait
+completed. Traefik still showed 0/1 at the time, so this is an incomplete
+check rather than a confirmed migration failure. GitHub reports
+`cancelled_by: null`; the elapsed job duration matches the configured job
+timeout. The job-level limit is now 60 minutes. The Docker
+five-node lane reached post-migration workload checks, then worker-2's Cilium
+CNI ADD for `migration-daemon` failed with `signal: killed`. Nodelet logged a
+reconcile timeout while the replacement Cilium Pod's `clean-cilium-state`
+init container exited unsuccessfully and its agent was being restarted;
+diagnostics did not establish why the init container exited or whether the CNI
+process was killed by cancellation or the host.
+
+Run metadata: job IDs 109700594144 (Docker), 109700594250 (K3s), and
+109700594260 (upstream Kubernetes). The Docker preflight/build passed before
+its five-node probe failed. No general e2e or regular build gate ran.
 
 ## 2026-09-30 migration run 36644181073
 

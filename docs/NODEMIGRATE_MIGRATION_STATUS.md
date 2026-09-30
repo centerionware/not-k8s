@@ -2,20 +2,25 @@
 
 Last updated: 2026-09-30
 
-## Latest run: 36650426292
+## Latest run: 36656072014
 
-At tested SHA `a8c791328a91976f76557d80701cea4a115d3bd1`, K3s completed both
-migration directions and all checkpoints in 25m49s with Cilium KPR. Upstream
-Kubernetes completed forward migration but the imported CSI Pod remained
-unscheduled; the log set contains 236 Pod binding HTTP 409s across 24 Pods.
-Docker five-node passed preflight and its nodestore checkpoint, then the
-returned-source standalone Pod remained Unknown while containerd reported its
-container name reserved by a still-running kubelet-created container. Branch
-fixes now retry internal binding CAS conflicts from fresh state and recognize
-standard kubelet CRI labels. Both need focused quick-check and another
-migration-specific run. Details are in [CI status](NODEMIGRATE_CI_STATUS.md)
-and the [bug tracker](NODEMIGRATE_BUGS.md). No general e2e or regular build
-gate ran.
+At tested SHA `346fb0f7d16267f97c772ce0d872cb8de05522c9`, the upstream lane
+failed after 233 Pod binding HTTP 409s across 24 Pods; the internal-CAS retry
+did not address the repeated caller-visible conflicts. K3s completed both
+migration directions and most returned-fixture checks, then hit the overall
+30-minute job timeout while Traefik remained 0/1 available. The timeout
+stopped the migration step after about 19 minutes, before its own 30-minute
+limit. Docker five-node reached workload checks
+but a worker-2 Cilium CNI ADD failed with `signal: killed` while its replacement
+agent was initializing. These are unresolved/incomplete results, not passing
+round trips. Run logs are in `/tmp/nodemigrate-36656072014-{kubernetes,k3s,docker}.log`.
+
+The latest focused quick-check, [36655430632](https://github.com/centerionware/not-k8s/actions/runs/36655430632),
+passed `nodeapiserver,nodelet` at `f6e7e4d6`; the newer binding-conflict
+diagnostic change still needs a `nodeapiserver` quick-check. No general e2e or
+regular build gate ran. Further migration testing waits until encountered
+runtime failures have actionable fixes. See [CI status](NODEMIGRATE_CI_STATUS.md)
+and the [bug tracker](NODEMIGRATE_BUGS.md).
 
 The first focused quick-check [36654928410](https://github.com/centerionware/not-k8s/actions/runs/36654928410)
 found an ownership mismatch in the new Nodelet resource snapshot helper after

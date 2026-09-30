@@ -3,8 +3,35 @@ pub enum BindOutcome {
     Bound,
     UnknownResource,
     ObjectNotFound,
-    Conflict,
+    Conflict(BindConflict),
     Invalid(Vec<String>),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum BindConflict {
+    UidMismatch,
+    ResourceVersionMismatch { requested: String, current: i64 },
+    Deleting,
+    AlreadyBound { node_name: String },
+    StorageRetriesExhausted,
+}
+
+impl BindConflict {
+    pub fn message(&self) -> String {
+        match self {
+            Self::UidMismatch => "the Pod UID no longer matches the binding request".to_string(),
+            Self::ResourceVersionMismatch { requested, current } => format!(
+                "the Pod resourceVersion changed before binding (requested {requested}, current {current})"
+            ),
+            Self::Deleting => "the Pod is being deleted".to_string(),
+            Self::AlreadyBound { node_name } => {
+                format!("the Pod is already assigned to node {node_name}")
+            }
+            Self::StorageRetriesExhausted => {
+                "the Pod kept changing while binding; storage retries were exhausted".to_string()
+            }
+        }
+    }
 }
 
 enum BindPodAttempt {
@@ -197,7 +224,7 @@ pub async fn bind_pod(
                     attempts = attempt + 1,
                     "Pod binding storage retries exhausted"
                 );
-                return Ok(BindOutcome::Conflict);
+                return Ok(BindOutcome::Conflict(BindConflict::StorageRetriesExhausted));
             }
             BindPodAttempt::StorageConflict => {
                 tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
@@ -254,7 +281,9 @@ async fn bind_pod_once(
             .and_then(Value::as_str)
             != Some(uid)
         {
-            return Ok(BindPodAttempt::Complete(BindOutcome::Conflict));
+            return Ok(BindPodAttempt::Complete(BindOutcome::Conflict(
+                BindConflict::UidMismatch,
+            )));
         }
     }
     if let Some(resource_version) = body
@@ -262,21 +291,36 @@ async fn bind_pod_once(
         .and_then(Value::as_str)
     {
         if resource_version.parse::<i64>().ok() != Some(existing_kv.mod_revision) {
-            return Ok(BindPodAttempt::Complete(BindOutcome::Conflict));
+            return Ok(BindPodAttempt::Complete(BindOutcome::Conflict(
+                BindConflict::ResourceVersionMismatch {
+                    requested: resource_version.to_string(),
+                    current: existing_kv.mod_revision,
+                },
+            )));
         }
     }
     if existing_object
         .pointer("/metadata/deletionTimestamp")
         .is_some_and(|timestamp| !timestamp.is_null())
     {
-        return Ok(BindPodAttempt::Complete(BindOutcome::Conflict));
+        return Ok(BindPodAttempt::Complete(BindOutcome::Conflict(
+            BindConflict::Deleting,
+        )));
     }
     if existing_object
         .pointer("/spec/nodeName")
         .and_then(Value::as_str)
         .is_some_and(|node| !node.is_empty())
     {
-        return Ok(BindPodAttempt::Complete(BindOutcome::Conflict));
+        return Ok(BindPodAttempt::Complete(BindOutcome::Conflict(
+            BindConflict::AlreadyBound {
+                node_name: existing_object
+                    .pointer("/spec/nodeName")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            },
+        )));
     }
     if existing_object
         .pointer("/spec/schedulingGates")

@@ -2,6 +2,51 @@
 
 Last updated: 2026-09-30
 
+## Findings from migration run 36656072014
+
+Run [36656072014](https://github.com/centerionware/not-k8s/actions/runs/36656072014)
+tested SHA `346fb0f7d16267f97c772ce0d872cb8de05522c9` with branch runtime,
+Cilium KPR, and the five-node migration path. Full lane logs are saved under
+`/tmp/nodemigrate-36656072014-{kubernetes,k3s,docker}.log`.
+
+- **Component: nodeapiserver Pod binding conflict cause.** The upstream lane
+  recorded 233 Binding HTTP 409 responses across 24 Pods. The persistent
+  `migration-stateful-0` binding retried every 11 seconds, remained unbound,
+  and the target API emitted no `Pod binding storage retries exhausted`
+  warning. This rules against internal CAS retry exhaustion as the observed
+  cause, but audit metadata does not include the Binding request body, so it
+  cannot distinguish stale resourceVersion from UID, deletion, or already-
+  bound preconditions. The old 409 body incorrectly said `delete precondition
+  failed` for every cause. The current branch returns a specific Conflict
+  message for each precondition without dropping UID/resourceVersion checks.
+  Focused `nodeapiserver` quick-check and migration runtime verification remain
+  pending.
+- **Component: returned Cilium readiness during five-node workload checks.**
+  The Docker five-node probe passed cluster bring-up and reached post-migration
+  workload checks. On worker-2, a Cilium CNI ADD for `migration-daemon` ended
+  with `signal: killed`. Nodelet logged a 30-second reconcile timeout. At the
+  same time, the replacement Cilium Pod's `clean-cilium-state` init container
+  exited unsuccessfully, was retried, and its `cilium-agent` container started
+  after the failed CNI ADD. This ordering supports a Cilium-agent readiness
+  race, but the captured logs do not reveal why `clean-cilium-state` failed or
+  whether the CNI process received a cancellation or host signal. Do not treat
+  Node Ready or stale DaemonSet availability as proof that each local Cilium
+  CNI endpoint can serve a new sandbox; migration completion and fixture
+  checks need to establish readiness on the returning node.
+- **Component: K3s return fixture timing.** K3s completed forward and return
+  migration and most returned-stage checks, but the overall GitHub job hit its
+  30-minute timeout while Traefik reported 0/1 available. The job ran from
+  01:38:28Z to 02:08:45Z; the migration step began at 01:49:42Z and was stopped
+  after about 19 minutes, before its own 30-minute timeout or the rollout
+  command's five-minute deadline. Run metadata has `cancelled_by: null`. This
+  is a job-timeout truncation, not evidence of a Traefik regression. The job
+  timeout is now 60 minutes; this lane remains incomplete and must be rerun
+  after the actionable runtime issues are resolved.
+
+The run's job IDs were Docker 109700594144, K3s 109700594250, and upstream
+Kubernetes 109700594260. Its five-node build/preflight succeeded before the
+workload failure. No general e2e or regular build gate ran.
+
 ## Findings from migration run 36650426292
 
 Run [36650426292](https://github.com/centerionware/not-k8s/actions/runs/36650426292)

@@ -367,6 +367,21 @@ fn precondition_failed_status(path_str: &str) -> serde_json::Value {
     })
 }
 
+fn binding_conflict_status(path_str: &str, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: {message}"),
+        "reason": "Conflict",
+        "details": {
+            "causes": [{"reason": "Conflict", "message": message}]
+        },
+        "code": 409,
+    })
+}
+
 /// Real upstream's own `Conflict` shape for an `UPDATE`/`PATCH` (including
 /// the scale/status/pod-resize/other subresource writes that reuse the
 /// same `persist_update` tail) that lost the optimistic-concurrency
