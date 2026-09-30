@@ -72,9 +72,11 @@ disabled, restores the original ConfigMap value after its init starts, waits
 for stable readiness, and then recreates local non-host-network Pod sandboxes.
 Focused nodemigrate quick-check [36748080605](https://github.com/centerionware/not-k8s/actions/runs/36748080605)
 at SHA `30627f9720b2d9196f2bf9918b981156479117c6` caught an `E0716`
-temporary-lifetime compile error in the replacement-Pod list request. The
-request now borrows a named `ListParams`; focused CI must pass before migration
-is retried.
+temporary-lifetime compile error in the replacement-Pod list request. SHA
+`72845a8d762e94a8cf0d8de7f00949c7a9aa50f5` binds a named `ListParams`, and
+focused nodemigrate quick-check [36748550052](https://github.com/centerionware/not-k8s/actions/runs/36748550052)
+passed. Migration remains unverified and should not be retried while the other
+known migration blockers remain open.
 
 Run 36728443584 did not reach the cgroup capture: immediately after Cilium
 clean-state, the probe treated a temporary lack of a Running CoreDNS Pod as a

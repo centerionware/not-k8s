@@ -15,9 +15,11 @@ now applies this same targeted unpin-and-agent-reattach recovery after
 `clean-cilium-state`, then recreates the local non-host-network Pod sandboxes.
 Focused nodemigrate quick-check [36748080605](https://github.com/centerionware/not-k8s/actions/runs/36748080605)
 at SHA `30627f9720b2d9196f2bf9918b981156479117c6` caught an `E0716`
-temporary-lifetime compile error in the replacement-Pod list request. That
-binding is fixed in the worktree; a follow-up quick-check is pending before
-any migration retry. Logs:
+temporary-lifetime compile error in the replacement-Pod list request. The
+binding was fixed in SHA `72845a8d762e94a8cf0d8de7f00949c7a9aa50f5`; focused
+nodemigrate quick-check [36748550052](https://github.com/centerionware/not-k8s/actions/runs/36748550052)
+passed, including the nodemigrate library tests. This confirms compilation and
+unit behavior only; no migration ran. Logs:
 `/tmp/nodemigrate-36744527476-k3s-probe-job.log` and
 `/tmp/nodemigrate-36744527476-artifact/nodemigrate-k3s-cilium-restart-36744527476/nodemigrate-k3s-cilium-restart.log`.
 
