@@ -13,6 +13,17 @@ not installed. No Cilium or workload check ran. The workflow now passes the
 GitHub token through `sudo`; rerun this diagnostic path before drawing any
 conclusion from it.
 
+Corrected run
+[36707412491](https://github.com/centerionware/not-k8s/actions/runs/36707412491)
+passed ordinary K3s+Cilium KPR agent restart, Cilium sandbox handoff, K3s
+restart, same-name Node replacement, API resource, CoreDNS, API ClusterIP,
+CSI, StatefulSet, Job, RBAC, and workload checks. It did not enable
+`clean-cilium-state` and used K3s's kubelet. This narrows the remaining probe
+failure to the migration cleanup and/or Nodelet path, but does not identify
+which one. Next, run a non-migration diagnostic that performs the same
+temporary Cilium cleanup and records host-to-local-Pod probes before and after
+cleanup plus CNI sandbox recreation.
+
 ## Latest migration result: 36700106403
 
 Run [36700106403](https://github.com/centerionware/not-k8s/actions/runs/36700106403)

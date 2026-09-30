@@ -30,7 +30,7 @@ on:
         type: boolean
         default: false
       k3s_cilium_restart_probe:
-        description: Restart K3s with Cilium KPR and run workload checks without migration
+        description: Exercise Cilium cleanup and K3s restart without nodemigrate
         required: false
         type: boolean
         default: false

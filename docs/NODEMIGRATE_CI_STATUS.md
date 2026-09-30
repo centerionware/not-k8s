@@ -11,8 +11,20 @@ preserve `GH_TOKEN`, so `gh release download` could not install K3s. The
 artifact shows K3s absent and `SOURCE_KUBECONFIG` unset; no Cilium or workload
 probe ran. This is a confirmed workflow setup defect, not evidence about the
 network failure. The workflow now supplies `GH_TOKEN` to the step and passes
-it through `sudo`. Rerun only the restart diagnostic to validate setup; no
-migration retry is authorized while the CoreDNS probe path remains unresolved.
+it through `sudo`. The restart-only rerun
+[36707412491](https://github.com/centerionware/not-k8s/actions/runs/36707412491)
+passed at SHA `f77c74f8de17533ac18773f98bd5c17729849122` in 23m04s (job
+`109860848912`). K3s+Cilium KPR retained 119 listable API resources and the
+full workload fixture across ordinary Cilium Pod restart, Cilium sandbox
+recreation plus K3s restart, and same-name Node replacement. CoreDNS rollout,
+Pod-to-Service API probes, CSI, StatefulSet data, Jobs, CRDs, RBAC, and the
+other stage checks passed. No nodemigrate command ran. This rules out ordinary
+K3s/Kubelet recovery as a reproduction; it does not exercise the temporary
+`clean-cilium-state` reset used by nodemigrate or Nodelet's host-origin probes.
+Logs are saved at `/tmp/nodemigrate-36707412491-k3s-probe-workflow.log` and
+`/tmp/nodemigrate-36707412491-artifact/nodemigrate-k3s-cilium-restart.log`.
+No migration retry is authorized while the local CoreDNS probe path remains
+unresolved.
 
 ## Latest migration matrix
 

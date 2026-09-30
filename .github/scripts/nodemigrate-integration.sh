@@ -21,6 +21,8 @@ MIGRATION_STARTED_AT=""
 TARGET_WATCH_PID=""
 TARGET_WATCH_STOP_FILE=""
 TARGET_WATCH_LOG=""
+CILIUM_PROBE_CLEAN_STATE_RESTORE_REQUIRED=false
+CILIUM_PROBE_CLEAN_STATE_ORIGINAL_JSON=null
 
 if [[ "$LIBRARY_MODE" != true ]]; then
     exec > >(tee -a "$LOG") 2>&1
@@ -556,41 +558,6 @@ EOF
     return 1
 }
 
-restart_cilium_agent_pod() {
-    local kubeconfig="${1:?missing probe kubeconfig}"
-    local old_pod_json old_pod_name old_pod_uid replacement_json attempt
-    old_pod_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
-        -l k8s-app=cilium -o json | jq -ce '
-          if (.items | length) == 1 then .items[0] else empty end
-        ')" || {
-        echo "expected exactly one K3s Cilium agent Pod before restart" >&2
-        return 1
-    }
-    old_pod_name="$(jq -er '.metadata.name' <<< "$old_pod_json")"
-    old_pod_uid="$(jq -er '.metadata.uid' <<< "$old_pod_json")"
-    echo "Restarting Cilium agent Pod $old_pod_name UID=$old_pod_uid without changing Node identity"
-    KUBECONFIG="$kubeconfig" kubectl delete pod "$old_pod_name" -n kube-system \
-        --wait=true --timeout=120s
-
-    for attempt in $(seq 1 90); do
-        replacement_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
-            -l k8s-app=cilium -o json 2>/dev/null | jq -c --arg old_uid "$old_pod_uid" '
-              .items[]?
-              | select(.metadata.uid != $old_uid and .status.phase == "Running")
-              | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
-              | {name: .metadata.name, uid: .metadata.uid}
-            ' | head -n 1)" || replacement_json=""
-        if [[ -n "$replacement_json" ]]; then
-            echo "Replacement Cilium agent Pod $(jq -r '.name' <<< "$replacement_json") UID=$(jq -r '.uid' <<< "$replacement_json") is Ready"
-            return 0
-        fi
-        sleep 2
-    done
-    echo "Cilium agent Pod did not become Ready with a new UID after deletion" >&2
-    KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system -l k8s-app=cilium -o wide >&2 || true
-    return 1
-}
-
 stop_source_cilium_sandboxes_for_probe() {
     local endpoint="${NODEMIGRATE_CRI_ENDPOINT:-unix:///run/k3s/containerd/containerd.sock}"
     local pod_json sandbox_ids container_json container_ids id
@@ -646,6 +613,10 @@ stop_source_cilium_sandboxes_for_probe() {
 
 capture_cni_host_diagnostics() {
     local config file
+    echo "Host network routes at $(date -u +%FT%TZ):"
+    ip -br address || true
+    ip -4 route show table all || true
+    ip rule show || true
     for config in /etc/containerd/config.toml \
         /var/lib/rancher/k3s/agent/etc/containerd/config.toml; do
         [[ -f "$config" ]] || continue
@@ -679,6 +650,161 @@ capture_cni_host_diagnostics() {
         find "$dir" -maxdepth 3 -type s -printf '%p\n' 2>/dev/null || true
     done
     capture_cilium_datapath
+}
+
+probe_host_coredns() {
+    local kubeconfig="${1:?missing probe kubeconfig}"
+    local stage="${2:?missing probe stage}"
+    local pod_json pod_ip pod_name port path result output
+    pod_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+        -l k8s-app=kube-dns -o json)" || return 1
+    while IFS=$'\t' read -r pod_name pod_ip; do
+        [[ -n "$pod_name" && -n "$pod_ip" ]] || continue
+        echo "Host-origin CoreDNS probe stage=$stage pod=$pod_name ip=$pod_ip"
+        ip -4 route get "$pod_ip" || true
+        for spec in 8080:/health 8181:/ready; do
+            port="${spec%%:*}"
+            path="${spec#*:}"
+            if output="$(curl --silent --show-error --fail --connect-timeout 2 \
+                --max-time 5 -o /dev/null -w 'http=%{http_code} connect=%{time_connect} total=%{time_total}' \
+                "http://${pod_ip}:${port}${path}" 2>&1)"; then
+                echo "PASS host-origin CoreDNS HTTP probe stage=$stage pod=$pod_name endpoint=${pod_ip}:${port}${path} $output"
+            else
+                result=$?
+                echo "FAIL host-origin CoreDNS HTTP probe stage=$stage pod=$pod_name endpoint=${pod_ip}:${port}${path} exit=$result detail=$output"
+            fi
+        done
+    done < <(jq -r '.items[]? | [.metadata.name, (.status.podIP // "")] | @tsv' <<<"$pod_json")
+}
+
+restore_cilium_clean_state_for_probe() {
+    [[ "$CILIUM_PROBE_CLEAN_STATE_RESTORE_REQUIRED" == true ]] || return 0
+    local kubeconfig="${SOURCE_KUBECONFIG:-${CURRENT_KUBECONFIG:-}}"
+    local current_value patch
+    [[ -n "$kubeconfig" ]] || {
+        echo "cannot restore Cilium clean-state flag: source kubeconfig is unset" >&2
+        return 1
+    }
+    current_value="$(KUBECONFIG="$kubeconfig" kubectl get configmap cilium-config \
+        -n kube-system -o json | jq -c '.data["clean-cilium-state"] // null')" || return 1
+    [[ "$current_value" == '"true"' ]] || {
+        echo "Cilium clean-state flag changed while diagnostic cleanup was running; leaving current value untouched: $current_value" >&2
+        return 1
+    }
+    patch="$(jq -cn --argjson original "$CILIUM_PROBE_CLEAN_STATE_ORIGINAL_JSON" \
+        '{data:{"clean-cilium-state":$original}}')"
+    KUBECONFIG="$kubeconfig" kubectl patch configmap cilium-config -n kube-system \
+        --type=merge -p "$patch" >/dev/null || return 1
+    CILIUM_PROBE_CLEAN_STATE_RESTORE_REQUIRED=false
+    echo "Restored Cilium clean-cilium-state to $CILIUM_PROBE_CLEAN_STATE_ORIGINAL_JSON"
+}
+
+reset_cilium_state_for_probe() {
+    local kubeconfig="${1:?missing probe kubeconfig}"
+    local old_pod_json old_pod_name old_pod_uid replacement_json replacement_uid
+    local replacement_pod_name attempt patch
+    CILIUM_PROBE_CLEAN_STATE_ORIGINAL_JSON="$(KUBECONFIG="$kubeconfig" \
+        kubectl get configmap cilium-config -n kube-system -o json \
+        | jq -c '.data["clean-cilium-state"] // null')" || return 1
+    patch='{"data":{"clean-cilium-state":"true"}}'
+    KUBECONFIG="$kubeconfig" kubectl patch configmap cilium-config -n kube-system \
+        --type=merge -p "$patch" >/dev/null || return 1
+    CILIUM_PROBE_CLEAN_STATE_RESTORE_REQUIRED=true
+
+    old_pod_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+        -l k8s-app=cilium -o json | jq -ce '
+          if (.items | length) == 1 then .items[0] else empty end
+        ')" || return 1
+    old_pod_name="$(jq -er '.metadata.name' <<<"$old_pod_json")" || return 1
+    old_pod_uid="$(jq -er '.metadata.uid' <<<"$old_pod_json")" || return 1
+    echo "Enabling Cilium clean-cilium-state and replacing $old_pod_name UID=$old_pod_uid for a no-migration diagnostic"
+    KUBECONFIG="$kubeconfig" kubectl delete pod "$old_pod_name" -n kube-system \
+        --wait=true --timeout=120s || return 1
+
+    replacement_json=""
+    for attempt in $(seq 1 180); do
+        replacement_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+            -l k8s-app=cilium -o json 2>/dev/null | jq -c --arg old_uid "$old_pod_uid" '
+              .items[]?
+              | select(.metadata.uid != $old_uid and .metadata.deletionTimestamp == null)
+              | {name:.metadata.name, uid:.metadata.uid,
+                 started:any(.status.initContainerStatuses[]?;
+                   .name == "clean-cilium-state" and
+                   (.state.running != null or .state.terminated != null))}
+            ' | head -n 1)" || replacement_json=""
+        if [[ -n "$replacement_json" ]] \
+            && [[ "$(jq -r '.started' <<<"$replacement_json")" == true ]]; then
+            break
+        fi
+        sleep 1
+    done
+    [[ -n "$replacement_json" ]] \
+        && [[ "$(jq -r '.started' <<<"$replacement_json")" == true ]] || {
+        echo "replacement Cilium Pod did not start clean-cilium-state init within 180 seconds" >&2
+        return 1
+    }
+    replacement_uid="$(jq -er '.uid' <<<"$replacement_json")" || return 1
+    echo "Cilium clean-cilium-state init started on replacement UID=$replacement_uid; restoring the cluster flag"
+    restore_cilium_clean_state_for_probe || return 1
+
+    replacement_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+        -l k8s-app=cilium -o json | jq -ce --arg uid "$replacement_uid" '
+          .items[] | select(.metadata.uid == $uid)
+        ')" || return 1
+    replacement_pod_name="$(jq -er '.metadata.name' <<<"$replacement_json")" || return 1
+    KUBECONFIG="$kubeconfig" kubectl wait -n kube-system \
+        --for=condition=Ready "pod/$replacement_pod_name" --timeout=5m || return 1
+    replacement_json="$(KUBECONFIG="$kubeconfig" kubectl get pod "$replacement_pod_name" \
+        -n kube-system -o json)" || return 1
+    jq -e 'any(.status.initContainerStatuses[]?;
+        .name == "clean-cilium-state" and .state.terminated.exitCode == 0)' \
+        <<<"$replacement_json" >/dev/null || {
+        echo "replacement Cilium Pod did not report successful clean-cilium-state completion" >&2
+        KUBECONFIG="$kubeconfig" kubectl get pod "$replacement_pod_name" \
+            -n kube-system -o json | jq '{metadata:{uid:.metadata.uid},status:.status}' >&2 || true
+        return 1
+    }
+    echo "PASS Cilium clean-cilium-state completed and the replacement agent remained Ready"
+}
+
+recreate_non_host_pod_sandboxes_for_probe() {
+    local kubeconfig="${1:?missing probe kubeconfig}"
+    local endpoint="${NODEMIGRATE_CRI_ENDPOINT:-unix:///run/k3s/containerd/containerd.sock}"
+    local node_name pod_uids_json sandboxes_json sandbox_ids sandbox_id containers_json container_ids container_id
+    local removed_sandboxes=0 removed_containers=0
+    node_name="$(KUBECONFIG="$kubeconfig" kubectl get nodes -o json \
+        | jq -er 'if (.items | length) == 1 then .items[0].metadata.name else empty end')" || return 1
+    pod_uids_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -A \
+        --field-selector="spec.nodeName=$node_name" -o json \
+        | jq -c '[.items[]? | select(.metadata.deletionTimestamp == null)
+            | select(.spec.hostNetwork != true) | .metadata.uid]')" || return 1
+    sandboxes_json="$(crictl --runtime-endpoint "$endpoint" pods -o json)" || return 1
+    sandbox_ids="$(jq -r --argjson uids "$pod_uids_json" '
+        .items[]?
+        | select((.metadata.uid // "") as $uid | ($uids | index($uid)) != null)
+        | .id // empty
+      ' <<<"$sandboxes_json")" || return 1
+    [[ -n "$sandbox_ids" ]] || {
+        echo "no non-host-network Pod sandboxes were found on $node_name after Cilium cleanup" >&2
+        return 1
+    }
+    echo "Recreating non-host-network CRI Pod sandboxes on $node_name after Cilium cleanup"
+    while IFS= read -r sandbox_id; do
+        [[ -n "$sandbox_id" ]] || continue
+        crictl --runtime-endpoint "$endpoint" stopp "$sandbox_id" || return 1
+        containers_json="$(crictl --runtime-endpoint "$endpoint" ps -a -o json)" || return 1
+        container_ids="$(jq -r --arg sandbox "$sandbox_id" '
+            .containers[]? | select(.podSandboxId == $sandbox) | .id // empty
+          ' <<<"$containers_json")" || return 1
+        while IFS= read -r container_id; do
+            [[ -n "$container_id" ]] || continue
+            crictl --runtime-endpoint "$endpoint" rm "$container_id" || return 1
+            removed_containers=$((removed_containers + 1))
+        done <<<"$container_ids"
+        crictl --runtime-endpoint "$endpoint" rmp "$sandbox_id" || return 1
+        removed_sandboxes=$((removed_sandboxes + 1))
+    done <<<"$sandbox_ids"
+    echo "PASS removed $removed_sandboxes non-host-network Pod sandboxes and $removed_containers container records for Kubelet CNI recreation"
 }
 
 watch_cilium_mount_cgroup_logs() {
@@ -715,6 +841,7 @@ watch_cilium_mount_cgroup_logs() {
 
 diagnostics() {
     status=$?
+    restore_cilium_clean_state_for_probe || true
     if [[ $status -ne 0 ]]; then
         stop_target_forward_watch || true
         echo "Migration integration failed at $(date -u +%FT%TZ), exit=$status"
@@ -4356,12 +4483,18 @@ main() {
     if [[ "${NODEMIGRATE_K3S_CILIUM_RESTART_PROBE:-false}" == true ]]; then
         MIGRATION_STARTED_AT="$(date -u --iso-8601=seconds)"
         probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" source
+        probe_host_coredns "$SOURCE_KUBECONFIG" source
         echo "Cilium datapath before K3s restart"
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
 
-        restart_cilium_agent_pod "$SOURCE_KUBECONFIG"
+        reset_cilium_state_for_probe "$SOURCE_KUBECONFIG"
         KUBECONFIG="$SOURCE_KUBECONFIG" kubectl wait \
             --for=condition=Ready node --all --timeout=5m
+        probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-rebuilt
+        recreate_non_host_pod_sandboxes_for_probe "$SOURCE_KUBECONFIG"
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl rollout status \
+            deployment/coredns -n kube-system --timeout=5m
+        probe_host_coredns "$SOURCE_KUBECONFIG" clean-state-sandboxes-recreated
         verify_stage cilium-agent-restarted "$SOURCE_KUBECONFIG"
         assert_migratable_api_objects_retained source cilium-agent-restarted
         probe_api_clusterip_from_pod "$SOURCE_KUBECONFIG" cilium-agent-restarted

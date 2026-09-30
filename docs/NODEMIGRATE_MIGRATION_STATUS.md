@@ -9,8 +9,17 @@ failed at SHA `deadc5eb729e2af4d9de0fc96f7217db031abf8b` in job
 `109856719929` before K3s installation. The restart-only root step lacked
 `GH_TOKEN` in its preserved environment, so its `gh release download` failed;
 the artifact confirms K3s was absent and no Cilium probe ran. The workflow
-change supplies the token to that step and through `sudo`. Rerun the
-non-migration diagnostic after that change; this run is not migration evidence.
+change supplies the token to that step and through `sudo`. Restart-only rerun
+[36707412491](https://github.com/centerionware/not-k8s/actions/runs/36707412491)
+passed in 23m04s at SHA `f77c74f8de17533ac18773f98bd5c17729849122` (job
+`109860848912`). K3s+Cilium KPR passed ordinary agent
+restart, Cilium sandbox recreation followed by K3s restart, same-name Node
+replacement, and all fixture checkpoints: 119 API resources, CoreDNS, API
+Service, CSI, StatefulSet data, Jobs, RBAC, and other workloads. This is not
+migration evidence. It shows ordinary K3s/Kubelet recovery survives these
+operations; Cilium's temporary `clean-cilium-state` reset and Nodelet's probe
+path remain untested by this diagnostic. Saved logs are under
+`/tmp/nodemigrate-36707412491-*`.
 
 ## Latest migration matrix: 36700106403
 
