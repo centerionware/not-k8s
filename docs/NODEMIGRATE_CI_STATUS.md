@@ -64,6 +64,8 @@ is now running at that SHA with `runtime_source=branch`, Cilium KPR, and the
 five-node migration enabled. The single-node job allows 90 minutes with a
 60-minute migration step; the five-node job allows 360 minutes with a
 180-minute probe step. No full general e2e or regular build gate was run.
+The K3s lane passed its complete forward/return migration in 25m21s (job
+`109724942137`). Upstream and Docker remain active.
 
 ## 2026-09-30 migration run 36656072014
 

@@ -32,10 +32,11 @@ and [36663804224](https://github.com/centerionware/not-k8s/actions/runs/36663804
 Migration validation [36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690)
 is running against the branch-built runtime with Cilium KPR and the five-node
 path enabled. It includes K3s and upstream single-node round trips plus the
-three-control-plane/two-worker path. The workflow allows 90 minutes per
-single-node job (60 minutes for its migration step), and 360 minutes for the
-five-node job (180 minutes for its probe step). No general e2e or regular
-build gate ran. See [CI status](NODEMIGRATE_CI_STATUS.md) and the
+three-control-plane/two-worker path. The K3s round trip passed in 25m21s
+(job `109724942137`). Upstream and Docker are still running. The workflow
+allows 90 minutes per single-node job (60 minutes for its migration step), and
+360 minutes for the five-node job (180 minutes for its probe step). No general
+e2e or regular build gate ran. See [CI status](NODEMIGRATE_CI_STATUS.md) and the
 [bug tracker](NODEMIGRATE_BUGS.md) for results as they arrive.
 
 The first focused quick-check [36654928410](https://github.com/centerionware/not-k8s/actions/runs/36654928410)
