@@ -36,9 +36,17 @@ kubelet; Kubelet retained stale probe state and CoreDNS did not recover within
 five minutes. This is a diagnostic-harness defect and does not establish a
 Nodelet failure. The script now waits for the CoreDNS rollout and probes the
 current Ready Pod IP; it no longer removes CRI sandboxes under K3s. This
-correction is not yet pushed or checked in CI. Artifact and workflow logs are
+correction has no CI evidence yet. Artifact and workflow logs are
 saved under `/tmp/nodemigrate-36710560344-artifact/` and
 `/tmp/nodemigrate-36710560344-k3s-probe-workflow.log`.
+
+PR validation [36713356086](https://github.com/centerionware/not-k8s/actions/runs/36713356086)
+also exposed a stale fixture in `check_nodemigrate_diagnostics.sh`: it called
+the removed ordinary Cilium restart helper after the diagnostic switched to
+the clean-state reset. The checker now tests filtering to the current Ready
+CoreDNS Pod IP and guards against direct CRI sandbox deletion under K3s's
+kubelet. The updated checker passes locally; the next PR validation and
+corrected no-migration diagnostic are still pending.
 
 ## Latest migration matrix
 

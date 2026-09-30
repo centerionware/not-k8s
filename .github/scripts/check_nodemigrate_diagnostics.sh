@@ -46,16 +46,11 @@ case "${KUBECTL_FIXTURE:-}" in
             *"apply -f -"*) cat > "${NODEMIGRATE_TEST_APPLY_CAPTURE:?}" ;;
         esac
         ;;
-    cilium-restart)
+    coredns-ready)
         case "$*" in
-            *"get pods -n kube-system -l k8s-app=cilium -o json"*)
-                if [[ -f "${NODEMIGRATE_CILIUM_DELETE_MARKER:?}" ]]; then
-                    printf '%s\n' '{"items":[{"metadata":{"name":"cilium-new","uid":"new"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}'
-                else
-                    printf '%s\n' '{"items":[{"metadata":{"name":"cilium-old","uid":"old"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}'
-                fi
+            *"get pods -n kube-system -l k8s-app=kube-dns -o json"*)
+                printf '%s\n' '{"items":[{"metadata":{"name":"coredns-current"},"status":{"phase":"Running","podIP":"10.42.0.22","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"coredns-old"},"status":{"phase":"Running","podIP":"10.42.0.11","conditions":[{"type":"Ready","status":"False"}]}}]}'
                 ;;
-            *"delete pod cilium-old"*) touch "${NODEMIGRATE_CILIUM_DELETE_MARKER:?}" ;;
         esac
         ;;
     *)
@@ -65,6 +60,18 @@ case "${KUBECTL_FIXTURE:-}" in
 esac
 STUB
 chmod +x "$TEST_DIR/kubectl"
+
+cat > "$TEST_DIR/curl" <<'STUB'
+#!/usr/bin/env bash
+printf 'http=200 connect=0.001 total=0.002'
+STUB
+chmod +x "$TEST_DIR/curl"
+
+cat > "$TEST_DIR/ip" <<'STUB'
+#!/usr/bin/env bash
+printf '10.42.0.22 dev cilium_host src 10.42.0.170 uid 0\n'
+STUB
+chmod +x "$TEST_DIR/ip"
 
 cat > "$TEST_DIR/systemctl" <<'STUB'
 #!/usr/bin/env bash
@@ -264,16 +271,27 @@ grep -Fq 'nc -z -w 5 10.43.0.1 443' "$NODEMIGRATE_TEST_APPLY_CAPTURE" || {
     exit 1
 }
 
-export KUBECTL_FIXTURE=cilium-restart
-export NODEMIGRATE_CILIUM_DELETE_MARKER="$TEST_DIR/cilium-agent-deleted"
-output="$(restart_cilium_agent_pod /tmp/test-kubeconfig 2>&1)" || {
-    echo "Cilium agent Pod restart fixture failed: $output" >&2
+export KUBECTL_FIXTURE=coredns-ready
+output="$(probe_host_coredns /tmp/test-kubeconfig clean-state-rebuilt 2>&1)" || {
+    echo "Ready CoreDNS host-probe fixture failed: $output" >&2
     exit 1
 }
-grep -Fq 'Replacement Cilium agent Pod cilium-new UID=new is Ready' <<< "$output" || {
-    echo "Cilium agent replacement was not reported: $output" >&2
+grep -Fq 'PASS host-origin CoreDNS HTTP probe stage=clean-state-rebuilt pod=coredns-current endpoint=10.42.0.22:8080/health' <<< "$output" || {
+    echo "host-origin probe did not use the current Ready CoreDNS Pod IP: $output" >&2
     exit 1
 }
+if grep -Fq 'coredns-old' <<< "$output"; then
+    echo "host-origin probe targeted a non-Ready old CoreDNS Pod: $output" >&2
+    exit 1
+fi
+grep -Fq 'reset_cilium_state_for_probe "$SOURCE_KUBECONFIG"' "$ROOT/.github/scripts/nodemigrate-integration.sh" || {
+    echo "restart diagnostic does not exercise Cilium clean-state recovery" >&2
+    exit 1
+}
+if grep -Fq 'recreate_non_host_pod_sandboxes_for_probe' "$ROOT/.github/scripts/nodemigrate-integration.sh"; then
+    echo "K3s diagnostic must not delete CRI sandboxes under Kubelet" >&2
+    exit 1
+fi
 
 export NODEMIGRATE_CRI_CALLS="$TEST_DIR/crictl-calls.log"
 output="$(stop_source_cilium_sandboxes_for_probe 2>&1)" || {

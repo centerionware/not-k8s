@@ -30,7 +30,7 @@ kubelet still owned those Pods; stale Kubelet probe state prevented CoreDNS
 from recovering within five minutes. This is a harness defect, not evidence
 against Nodelet. The corrected script waits for CoreDNS rollout and probes its
 current Ready Pod IP without deleting CRI state under Kubelet. This correction
-is not yet pushed or checked in CI. The run did not invoke nodemigrate and is
+has no CI evidence yet. The run did not invoke nodemigrate and is
 not migration evidence.
 
 ## Latest migration matrix: 36700106403
