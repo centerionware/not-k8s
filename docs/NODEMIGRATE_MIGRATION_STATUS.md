@@ -2,6 +2,33 @@
 
 Last updated: 2026-09-30
 
+## Latest branch migration matrix: 36764002800
+
+[Run 36764002800](https://github.com/centerionware/not-k8s/actions/runs/36764002800)
+tested SHA `19ac3a5a91417cb1b238bd5356ea6c16dc0ab433` with branch-built
+`nodemigrate` and combined `notk8s --features cri`, Cilium KPR, and all three
+authorized migration paths. Standalone utility and combined-runtime builds
+passed in each applicable lane. The upstream Kubernetes lane failed during
+post-Cilium sandbox recreation: `crictl rm` found a container running because
+the installed kubelet matched the CRI endpoint but was inactive, which
+incorrectly suppressed Nodelet fallback even though Nodelet was active. The
+K3s return lane reached Cilium recovery, then process validation rejected
+K3s's rewritten `/usr/local/bin/k3s server` process title. The five-node
+Docker lane reached nodestore workload checks, where CoreDNS remained unready;
+Nodelet diagnostics show probes targeting `10.42.0.11` and `10.42.0.71` while
+the current CoreDNS and cert-manager Pods had new addresses `10.42.0.103` and
+`10.42.0.91`. Cilium listed the CoreDNS endpoints as Ready. This confirms
+Nodelet retained a stale probe target across Pod IP reassignment after CNI
+recovery.
+
+The candidate batch now falls back to active Nodelet if no active matching
+upstream agent was selected, validates K3s through `/proc/<pid>/exe`, and
+replaces a Pod's probe supervisor when its runtime Pod IP changes. Focused
+regressions cover each decision. Do not rerun migration until the changed
+`nodelet,nodemigrate` crates pass quick-check. Logs and artifacts are saved in
+`/tmp/nodemigrate-36764002800-artifacts/` and
+`/tmp/nodemigrate-36764002800-{docker,k3s,kubernetes}-job.log`.
+
 ## Restart-only diagnostic setup defect
 
 Workflow [36706135439](https://github.com/centerionware/not-k8s/actions/runs/36706135439)

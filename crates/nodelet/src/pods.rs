@@ -67,9 +67,10 @@ pub struct PodController {
     /// stream so `allocatedResourcesStatus` is refreshed promptly even when
     /// many unrelated container events are queued.
     priority_events: Option<UnboundedReceiver<String>>,
-    /// One probe-supervisor task per pod key, so re-reconciling an
-    /// unchanged pod doesn't spawn duplicates. Aborted on teardown.
-    probe_tasks: Arc<Mutex<HashMap<String, Vec<JoinHandle<()>>>>>,
+    /// One probe supervisor per pod key, so re-reconciling an unchanged pod
+    /// doesn't spawn duplicates. Its target IP is refreshed when CNI assigns
+    /// a new address to a surviving Pod after runtime/datapath recovery.
+    probe_tasks: Arc<Mutex<HashMap<String, ProbeSupervisor>>>,
     /// Pod UIDs already torn down (see `reconcile()`'s deletion branch) —
     /// keyed by UID rather than namespace/name, so a same-named pod
     /// recreated after this one is genuinely gone still gets a real
@@ -105,6 +106,15 @@ pub struct PodController {
     /// Keyed pod workers keep the watch loop responsive while preserving
     /// ordering for each individual Pod.
     reconcile_workers: Arc<ReconcileWorkers>,
+}
+
+struct ProbeSupervisor {
+    pod_ip: String,
+    handles: Vec<JoinHandle<()>>,
+}
+
+fn probe_supervisor_needs_restart(supervisor: &ProbeSupervisor, pod_ip: &str) -> bool {
+    supervisor.pod_ip != pod_ip
 }
 
 /// Work delivered to a per-Pod reconciler. A refresh asks the worker to GET
@@ -870,8 +880,13 @@ impl PodController {
         }
         let Some(pod_ip) = pod_ip else { return }; // no IP yet; wait for the next reconcile
         let mut tasks = self.probe_tasks.lock().unwrap();
-        if tasks.contains_key(&key) {
+        if tasks.get(&key).is_some_and(|supervisor| !probe_supervisor_needs_restart(supervisor, pod_ip)) {
             return;
+        }
+        if let Some(previous) = tasks.remove(&key) {
+            for handle in previous.handles {
+                handle.abort();
+            }
         }
         // Seed readiness synchronously. The supervisor repeats this when its
         // task starts, but the first status write happens immediately after
@@ -894,7 +909,7 @@ impl PodController {
             pod_ip.to_string(),
             pod_grace_period_seconds,
         );
-        tasks.insert(key, handles);
+        tasks.insert(key, ProbeSupervisor { pod_ip: pod_ip.to_string(), handles });
     }
 
     fn stop_probe_supervisor(&self, ns: &str, name: &str) {
@@ -903,8 +918,8 @@ impl PodController {
         // (see probes::spawn()'s doc comment) — abort() doesn't cascade, so
         // all of them must be aborted individually or the old ones leak and
         // keep restarting containers on their own schedule forever.
-        if let Some(handles) = self.probe_tasks.lock().unwrap().remove(&key) {
-            for handle in handles {
+        if let Some(supervisor) = self.probe_tasks.lock().unwrap().remove(&key) {
+            for handle in supervisor.handles {
                 handle.abort();
             }
         }
@@ -2393,3 +2408,6 @@ mod tests_pod_watch_order;
 #[cfg(test)]
 #[path = "pods_tests/startup_gate.rs"]
 mod tests_startup_gate;
+#[cfg(test)]
+#[path = "pods_tests/probe_supervisor.rs"]
+mod tests_probe_supervisor;

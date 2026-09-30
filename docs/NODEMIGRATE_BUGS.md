@@ -2,6 +2,37 @@
 
 Last updated: 2026-09-30
 
+## Migration matrix 36764002800 failures
+
+Branch-built matrix
+[36764002800](https://github.com/centerionware/not-k8s/actions/runs/36764002800)
+failed all three lanes after its utility and combined-runtime builds passed.
+The logs are saved under `/tmp/nodemigrate-36764002800-artifacts/` and
+`/tmp/nodemigrate-36764002800-{docker,k3s,kubernetes}-job.log`.
+
+- **Component: `nodemigrate` local Pod-agent selection.** Upstream return
+  cleanup failed removing a running container. The system had an installed
+  upstream kubelet configured for the same CRI endpoint, but that service was
+  inactive; its mere presence suppressed Nodelet fallback. The candidate now
+  falls back to active Nodelet when no active matching upstream agent control
+  was selected. A focused regression covers that fallback predicate.
+- **Component: `nodemigrate` K3s process identification.** K3s return cleanup
+  rejected `/usr/local/bin/k3s server` as not the K3s executable because the
+  code inspected mutable `/proc/<pid>/cmdline`. The candidate reads
+  `/proc/<pid>/exe` and verifies the executable basename, with a focused
+  predicate regression.
+- **Component: Nodelet probe target refresh.** At the five-node nodestore
+  checkpoint, Nodelet's timeout messages show CoreDNS probes targeting
+  `10.42.0.11` and cert-manager probes targeting `10.42.0.71`, while the
+  current Pods had IPs `10.42.0.103` and `10.42.0.91`. Cilium listed the local
+  CoreDNS endpoints Ready. The probe supervisor was keyed only by Pod name and
+  retained its original IP after CNI reassigned addresses. The candidate
+  stores the supervisor target IP and replaces its tasks when that IP changes;
+  a focused regression covers the changed-target case.
+
+The `nodelet,nodemigrate` quick-check must pass before another migration
+matrix is dispatched. No general build or full e2e ran for 36764002800.
+
 ## Confirmed Cilium clean-state service-datapath failure
 
 Focused upstream K3s+Cilium 1.20.2 KPR diagnostic

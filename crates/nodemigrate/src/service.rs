@@ -1319,9 +1319,6 @@ enum PodAgentControl {
 
 fn local_pod_agent_controls(runtime_endpoint: &str) -> Result<Vec<PodAgentControl>> {
     let installations = crate::detect::inspect_all(&crate::detect::HostLayout::system())?;
-    let upstream_agent_matches = installations
-        .iter()
-        .any(|installation| pod_agent_uses_runtime(installation, runtime_endpoint));
     let mut controls = Vec::new();
     for installation in installations
         .iter()
@@ -1357,7 +1354,11 @@ fn local_pod_agent_controls(runtime_endpoint: &str) -> Result<Vec<PodAgentContro
         };
         controls.push(control);
     }
-    if !upstream_agent_matches {
+    // An installed kubelet that matches the runtime but is stopped cannot
+    // race CRI cleanup. Nodelet may still own Pods on that same endpoint
+    // (for example, while replacing an upstream kubelet), so fall back to
+    // pausing it whenever no active matching upstream agent was selected.
+    if should_pause_nodelet_fallback(&controls) {
         if let Some(manager) = crate::detect::nodelet_service_manager() {
             if service_active(manager, "nodelet") {
                 controls.push(PodAgentControl::Service {
@@ -1370,6 +1371,10 @@ fn local_pod_agent_controls(runtime_endpoint: &str) -> Result<Vec<PodAgentContro
     controls.sort_by(|left, right| pod_agent_control_name(left).cmp(pod_agent_control_name(right)));
     controls.dedup_by(|left, right| pod_agent_control_name(left) == pod_agent_control_name(right));
     Ok(controls)
+}
+
+fn should_pause_nodelet_fallback(active_matching_controls: &[PodAgentControl]) -> bool {
+    active_matching_controls.is_empty()
 }
 
 fn pod_agent_uses_runtime(installation: &Installation, runtime_endpoint: &str) -> bool {
@@ -1408,22 +1413,21 @@ fn k3s_main_pid(manager: ServiceManager, service: &str) -> Result<u32> {
         .parse::<u32>()
         .context("parsing the K3s service main PID")?;
     ensure!(pid > 1, "K3s service {unit} has no valid main PID");
-    let command_line = std::fs::read(format!("/proc/{pid}/cmdline"))
-        .with_context(|| format!("reading K3s main process {pid} command line"))?;
-    let executable = command_line
-        .split(|byte| *byte == 0)
-        .next()
-        .filter(|value| !value.is_empty())
-        .context("K3s main process has an empty command line")?;
-    let executable =
-        std::str::from_utf8(executable).context("K3s executable path is not valid UTF-8")?;
-    let executable = std::path::Path::new(executable);
+    // K3s rewrites argv[0] to a process title such as
+    // `/usr/local/bin/k3s server`; use the kernel's executable link instead
+    // of rejecting the service based on its mutable command line.
+    let executable = std::fs::read_link(format!("/proc/{pid}/exe"))
+        .with_context(|| format!("reading K3s main process {pid} executable"))?;
     ensure!(
-        executable.file_name().is_some_and(|name| name == "k3s"),
+        is_k3s_executable(&executable),
         "systemd main process {} is not the K3s executable",
         executable.display()
     );
     Ok(pid)
+}
+
+fn is_k3s_executable(path: &std::path::Path) -> bool {
+    path.file_name().is_some_and(|name| name == "k3s")
 }
 
 fn with_pod_agent_controls_paused<T>(
@@ -1858,7 +1862,8 @@ fn command(program: &str, args: &[&str]) -> Result<Output> {
 mod tests {
     use super::{
         SourceCiliumIdentity, cilium_host_container_ids, cilium_source_sandbox_ids,
-        cri_cleanup_succeeded, nodelet_source_sandbox_ids, pod_agent_uses_runtime,
+        cri_cleanup_succeeded, is_k3s_executable, nodelet_source_sandbox_ids, pod_agent_uses_runtime,
+        should_pause_nodelet_fallback,
         runtime_service_name, static_pod_sandbox_ids, with_service_paused,
     };
     use crate::detect::{Installation, NodeRole, ServiceManager};
@@ -1913,6 +1918,22 @@ mod tests {
             ),
             "unix:///run/containerd/containerd.sock"
         ));
+    }
+
+    #[test]
+    fn accepts_k3s_executable_even_when_argv0_is_a_subcommand_title() {
+        assert!(is_k3s_executable(std::path::Path::new("/usr/local/bin/k3s")));
+        assert!(!is_k3s_executable(std::path::Path::new("/usr/local/bin/k3s server")));
+        assert!(!is_k3s_executable(std::path::Path::new("/usr/bin/containerd")));
+    }
+
+    #[test]
+    fn falls_back_to_nodelet_when_matching_upstream_agent_is_not_active() {
+        assert!(should_pause_nodelet_fallback(&[]));
+        assert!(!should_pause_nodelet_fallback(&[super::PodAgentControl::Service {
+            manager: ServiceManager::Systemd,
+            name: "kubelet".to_string(),
+        }]));
     }
 
     #[test]

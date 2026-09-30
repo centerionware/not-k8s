@@ -2,6 +2,24 @@
 
 Last updated: 2026-09-30
 
+## Branch migration matrix 36764002800
+
+Migration matrix
+[36764002800](https://github.com/centerionware/not-k8s/actions/runs/36764002800)
+finished at SHA `19ac3a5a91417cb1b238bd5356ea6c16dc0ab433` with
+`runtime_source=branch`, `cilium_kpr=true`, and
+`five_node_migration=true`. All relevant utility and combined-runtime builds
+passed; upstream Kubernetes, K3s, and Docker five-node migration jobs failed.
+The upstream failure was an active Nodelet cleanup race hidden by an inactive
+matching kubelet installation. K3s failure was false rejection of its actual
+executable based on a rewritten process title. The five-node stage failed
+CoreDNS readiness because probe diagnostics targeted stale IPs after CNI
+reassigned Pod addresses. Full job logs and downloaded artifacts are saved at
+`/tmp/nodemigrate-36764002800-{docker,k3s,kubernetes}-job.log` and
+`/tmp/nodemigrate-36764002800-artifacts/`. The worktree contains a candidate
+fix batch and focused regressions for all three causes; `nodelet,nodemigrate`
+quick-check is the next gate. No general build or full e2e ran.
+
 ## Cilium stale-link recovery fix
 
 The controlled diagnostic [36744527476](https://github.com/centerionware/not-k8s/actions/runs/36744527476)
