@@ -38,11 +38,11 @@ node-authorizer defect. Artifacts already exist under
 should start until the CoreDNS probe failure is understood and the resulting
 fix batch is ready.
 
-PR #591 remains open on `feat/nodemigrate-migration`, now at
-`2c4bf9030c4446d480af28b9ebe83b33474abfed`. Nodelet's focused quick-check
+PR #591 remains open on `feat/nodemigrate-migration`. The latest implemented
+code SHA is `b4647a9c9c0bd001d53c8bef1821d4bb484e5a76`. Nodelet's focused quick-check
 passed on code SHA `b4647a9c` in
 [36698119270](https://github.com/centerionware/not-k8s/actions/runs/36698119270).
-The migration-specific checks passed on the current PR tip in
+The migration-specific checks passed on PR revision `2c4bf903`
 [36698894529](https://github.com/centerionware/not-k8s/actions/runs/36698894529)
 and [36698894559](https://github.com/centerionware/not-k8s/actions/runs/36698894559).
 No live migration was dispatched because the CoreDNS readiness probe cause

@@ -43,11 +43,11 @@ target authorization defect. Captured evidence is under
 it again. The remaining CoreDNS failure needs diagnosis before migration
 verification continues.
 
-Open PR #591 now includes commits through
-`2c4bf9030c4446d480af28b9ebe83b33474abfed` on
-`feat/nodemigrate-migration`. Nodelet quick-check passed on code SHA `b4647a9c`
+Open PR #591 remains on `feat/nodemigrate-migration`; the latest implemented
+code commit covered here is `b4647a9c9c0bd001d53c8bef1821d4bb484e5a76`.
+Nodelet quick-check passed on code SHA `b4647a9c`
 in [36698119270](https://github.com/centerionware/not-k8s/actions/runs/36698119270).
-Migration-specific crate/packaging checks passed on this PR tip in
+Migration-specific crate/packaging checks passed on PR revision `2c4bf903`
 [36698894529](https://github.com/centerionware/not-k8s/actions/runs/36698894529),
 and nodemigrate tests passed in
 [36698894559](https://github.com/centerionware/not-k8s/actions/runs/36698894559).
