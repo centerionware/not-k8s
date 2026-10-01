@@ -1871,14 +1871,9 @@ apply_fixture_manifest_with_conflict_retry() {
     done
 }
 
-wait_for_migration_certificate() {
+collect_migration_cert_diagnostics() {
     local stage="$1"
-    if kubectl wait -n migration-apps --for=condition=Ready \
-        certificate/migration-test --timeout=5m; then
-        return 0
-    fi
-
-    echo "Certificate readiness failed at stage=$stage; collecting cert-manager diagnostics" >&2
+    echo "Collecting cert-manager diagnostics at stage=$stage" >&2
     kubectl get certificate migration-test -n migration-apps -o yaml >&2 || true
     kubectl describe certificate migration-test -n migration-apps >&2 || true
     kubectl get clusterissuer migration-selfsigned -o yaml >&2 || true
@@ -1893,6 +1888,26 @@ wait_for_migration_certificate() {
         kubectl logs -n cert-manager "deployment/$deployment" \
             --all-containers=true --since=15m --tail=200 >&2 || true
     done
+}
+
+wait_for_migration_cluster_issuer() {
+    local stage="$1"
+    if kubectl wait --for=condition=Ready clusterissuer/migration-selfsigned --timeout=5m; then
+        return 0
+    fi
+    echo "ClusterIssuer readiness failed at stage=$stage" >&2
+    collect_migration_cert_diagnostics "$stage"
+    return 1
+}
+
+wait_for_migration_certificate() {
+    local stage="$1"
+    if kubectl wait -n migration-apps --for=condition=Ready \
+        certificate/migration-test --timeout=5m; then
+        return 0
+    fi
+    echo "Certificate readiness failed at stage=$stage" >&2
+    collect_migration_cert_diagnostics "$stage"
     return 1
 }
 
@@ -2660,6 +2675,8 @@ YAML
         return 1
     fi
     rm -f "$fixture_manifest"
+    wait_for_migration_cluster_issuer "$stage"
+    wait_for_migration_certificate "$stage"
     kubectl create namespace migration-policy-client --dry-run=client -o yaml | kubectl apply -f -
     kubectl label namespace migration-policy-client \
         nodemigrate.io/policy-client=true --overwrite
