@@ -2,6 +2,26 @@
 
 Last updated: 2026-10-01
 
+## Branch-runtime matrix 36847726197
+
+Run [36847726197](https://github.com/centerionware/not-k8s/actions/runs/36847726197)
+tested SHA `1fc139de19520716d3851e2e4c0e70d2d6580add` with
+`runtime_source=branch`, `cilium_kpr=false`, and
+`five_node_migration=true`. `nodecontroller`/`nodemigrate` quick-check
+[36847335431](https://github.com/centerionware/not-k8s/actions/runs/36847335431)
+passed at that SHA. The migration workflow built the branch runtime in all
+lanes. K3s passed in 22m58s; upstream passed in 25m26s. The Docker lane
+verified the required exact topology of three control planes and two workers,
+then failed during cp-3 migration because Service route `10.96.0.1:443` did
+not become reachable within 300 seconds. cp-1 and cp-2 had passed this route
+check after kube-proxy restart. cp-3 diagnostics captured repeated bind
+failures for kube-proxy ports 10249 and 10256 although the replacement Pod was
+Ready. The current fix pauses local Pod agents before deleting kube-proxy,
+cleans the old Pod's CRI records, then resumes reconciliation. Route wait
+logging no longer attributes recovery only to Cilium. The Docker log is
+`/tmp/nodemigrate-36847726197-docker-artifact/nodemigrate-docker-preflight.log`.
+No general build or full e2e gate ran.
+
 ## Latest branch-runtime matrix 36841047899
 
 Run [36841047899](https://github.com/centerionware/not-k8s/actions/runs/36841047899)

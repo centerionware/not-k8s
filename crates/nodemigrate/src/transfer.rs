@@ -681,61 +681,68 @@ async fn restart_local_kube_proxy_if_needed(
         .metadata
         .name
         .as_deref()
-        .context("local kube-proxy Pod has no name")?;
+        .context("local kube-proxy Pod has no name")?
+        .to_owned();
     let uid = current
         .metadata
         .uid
         .as_deref()
         .context("local kube-proxy Pod has no UID")?
         .to_owned();
-    match pods
-        .delete(
-            name,
-            &DeleteParams {
-                grace_period_seconds: Some(0),
-                preconditions: Some(Preconditions {
-                    uid: Some(uid.clone()),
-                    resource_version: None,
-                }),
-                ..Default::default()
-            },
-        )
-        .await
-    {
-        Ok(_) => {}
-        Err(kube::Error::Api(response)) if response.code == 404 => {}
-        Err(error) => return Err(error).context("deleting the local kube-proxy Pod"),
-    }
-    eprintln!("nodemigrate: restarted local kube-proxy Pod {name} (UID {uid}) after Cilium host-state cleanup");
-
-    loop {
-        let current_pods = pods
-            .list(&selector)
-            .await
-            .context("waiting for the deleted kube-proxy Pod UID to disappear")?;
-        if !current_pods
-            .items
-            .iter()
-            .any(|pod| pod.metadata.uid.as_deref() == Some(uid.as_str()))
-        {
-            break;
-        }
-        ensure!(
-            tokio::time::Instant::now() < deadline,
-            "deleted kube-proxy Pod {name} UID {uid} remained in the API for 300 seconds"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
     let cleanup_endpoint = runtime_endpoint.to_owned();
     let cleanup_node = node_name.to_owned();
     let cleanup_uid = uid.clone();
+    let cleanup_pods = pods.clone();
+    let cleanup_selector = selector.clone();
+    let cleanup_deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+    let cleanup_handle = tokio::runtime::Handle::current();
     let (sandboxes, containers) = tokio::task::spawn_blocking(move || {
         crate::service::with_local_pod_agents_paused(&cleanup_endpoint, || {
-            recreate_pod_sandboxes_for_uids(
-                &cleanup_endpoint,
-                &cleanup_node,
-                &BTreeSet::from([cleanup_uid]),
-            )
+            cleanup_handle.block_on(async {
+                match cleanup_pods
+                    .delete(
+                        &name,
+                        &DeleteParams {
+                            grace_period_seconds: Some(0),
+                            preconditions: Some(Preconditions {
+                                uid: Some(cleanup_uid.clone()),
+                                resource_version: None,
+                            }),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(kube::Error::Api(response)) if response.code == 404 => {}
+                    Err(error) => return Err(error).context("deleting the local kube-proxy Pod"),
+                }
+                eprintln!("nodemigrate: restarted local kube-proxy Pod {name} (UID {cleanup_uid}) after Service-routing state cleanup");
+
+                loop {
+                    let current_pods = cleanup_pods
+                        .list(&cleanup_selector)
+                        .await
+                        .context("waiting for the deleted kube-proxy Pod UID to disappear")?;
+                    if !current_pods
+                        .items
+                        .iter()
+                        .any(|pod| pod.metadata.uid.as_deref() == Some(cleanup_uid.as_str()))
+                    {
+                        break;
+                    }
+                    ensure!(
+                        tokio::time::Instant::now() < cleanup_deadline,
+                        "deleted kube-proxy Pod {name} UID {cleanup_uid} remained in the API for 300 seconds"
+                    );
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                recreate_pod_sandboxes_for_uids(
+                    &cleanup_endpoint,
+                    &cleanup_node,
+                    &BTreeSet::from([cleanup_uid]),
+                )
+            })
         })
     })
     .await
@@ -2629,7 +2636,7 @@ async fn wait_for_kubernetes_service_route_with_client(client: &Client) -> Resul
         if !reachable {
             if now.duration_since(last_report) >= Duration::from_secs(10) {
                 eprintln!(
-                    "nodemigrate: Kubernetes Service route {target} is not reachable yet; Cilium must restore it before local Pod sandbox cleanup (last probe: {})",
+                    "nodemigrate: Kubernetes Service route {target} is not reachable yet; Service routing must restore it before local Pod sandbox cleanup (last probe: {})",
                     probe_error.as_deref().unwrap_or("unknown error")
                 );
                 last_report = now;

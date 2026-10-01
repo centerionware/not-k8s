@@ -2,6 +2,21 @@
 
 Last updated: 2026-10-01
 
+## Branch-runtime matrix 36847726197
+
+The five-node lane used exactly three control planes (`cp-1`–`cp-3`) and two
+workers (`worker-1`, `worker-2`); its topology and all-five-node recovery
+checks passed. K3s passed in 22m58s and upstream passed in 25m26s. During
+cp-3 migration, kube-proxy's Pod became Ready after restart, but its logs
+repeatedly report `address already in use` on 127.0.0.1:10249 and
+0.0.0.0:10256, and the Kubernetes Service route stayed down. The delete path
+allowed a DaemonSet replacement to launch before local Pod reconciliation was
+paused to remove the prior UID's CRI process. The restart path now pauses
+local agents before deleting the old Pod and resumes them after exact-UID CRI
+cleanup. This is the leading cause based on timing and bind errors; runtime
+verification remains pending. Log:
+`/tmp/nodemigrate-36847726197-docker-artifact/nodemigrate-docker-preflight.log`.
+
 ## Latest migration failures: run 36841047899
 
 The exact five-node Docker layout remains three control planes (`cp-1`–`cp-3`)

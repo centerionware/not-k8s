@@ -2,6 +2,25 @@
 
 Last updated: 2026-10-01
 
+## Latest branch-runtime matrix 36847726197
+
+Run [36847726197](https://github.com/centerionware/not-k8s/actions/runs/36847726197)
+tested commit `1fc139de19520716d3851e2e4c0e70d2d6580add` with branch runtime,
+Cilium KPR disabled, and the five-node migration enabled. K3s passed its full
+round trip in 22m58s and upstream Kubernetes passed in 25m26s. The Docker lane
+passed its topology check with exactly three control planes (`cp-1`–`cp-3`)
+and two workers (`worker-1`, `worker-2`), recovered all five Nodes, and
+started all three control-plane migrations. cp-1 and cp-2 passed the Service
+route check after the local kube-proxy restart. cp-3's replacement kube-proxy
+Pod stayed Ready, but `10.96.0.1:443` remained unreachable for 300 seconds.
+The captured kube-proxy output repeatedly reports bind failures on ports
+10249 and 10256 while the Pod is Ready. This points to overlapping local
+kube-proxy processes during replacement; the current fix pauses local Pod
+agents before deleting the Pod, removes the old UID's CRI records, and only
+then resumes reconciliation. The route diagnostic is now provider-neutral.
+Runtime verification of this ordering is pending. Log:
+`/tmp/nodemigrate-36847726197-docker-artifact/nodemigrate-docker-preflight.log`.
+
 ## Latest Cilium KPR-disabled matrix 36841047899
 
 Run [36841047899](https://github.com/centerionware/not-k8s/actions/runs/36841047899)
