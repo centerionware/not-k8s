@@ -18,22 +18,23 @@ are saved under `/tmp/nodemigrate-36805374812-artifacts/`.
   Only `stage-target` needs that constraint; workers must return without
   re-exporting cluster API state. The candidate now applies the role check only
   to `stage-target` and adds a worker-to-worker `skip-api-export` regression.
-  `git diff --check` passed; `nodemigrate` quick-check is pending.
+  The focused `nodemigrate` quick-check passed at SHA `eca452a1` in
+  [36809748353](https://github.com/centerionware/not-k8s/actions/runs/36809748353).
 - **Component: upstream Cilium Envoy recovery.** Upstream destination import
   completed and the Cilium agent/socket LB recovered. The replacement Envoy Pod
   repeatedly failed its readiness probe (`127.0.0.1:9878` connection refused)
   and entered CrashLoopBackOff. The integration artifacts omitted Envoy
   current/previous container logs and last termination state, so the crash
-  cause is unknown. Add those diagnostics and establish the failure mechanism
-  before another migration attempt; a five-minute deadline alone does not
-  diagnose or fix the issue.
+  cause is unknown. The integration capture now records those details, and a
+  no-migration upstream Cilium cleanup and Envoy restart probe is available but
+  has not run. Establish the failure mechanism before another migration
+  attempt; a five-minute deadline alone does not diagnose or fix the issue.
 - **Five-node topology clarification.** The lane is correctly configured as
   three control planes plus two workers. It passed setup and forward migration;
   the observed failure was worker role validation during reverse migration.
 
 K3s passed its full round trip in 27m06s. Do not rerun the full matrix until
-the worker validation fix is focused-checked and the upstream Envoy crash is
-diagnosed.
+the upstream Envoy crash is diagnosed.
 
 ## Previous migration matrix 36800539523
 

@@ -23,10 +23,14 @@ unknown. Full logs and artifacts are in
 
 The current source change limits the control-plane role requirement to
 `stage-target`; `skip-api-export` is allowed for returning workers into an
-already staged retained cluster. A focused regression covers worker-to-worker
-return. `git diff --check` passed; the `nodemigrate` quick-check is pending.
-No migration retry is being started while the upstream Envoy crash cause is
-still unknown. No general build or full e2e ran.
+already staged retained cluster. A focused worker-to-worker regression passed
+the `nodemigrate` quick-check at SHA `eca452a1` in
+[36809748353](https://github.com/centerionware/not-k8s/actions/runs/36809748353).
+Envoy termination state and current/previous container logs are now collected,
+and a no-migration upstream Cilium cleanup/Envoy restart probe is available to
+reproduce the failure mechanism. That probe has not run yet. No migration retry
+is being started while the upstream Envoy crash cause is still unknown. No
+general build or full e2e ran.
 
 ## Previous branch migration matrix: 36800539523
 

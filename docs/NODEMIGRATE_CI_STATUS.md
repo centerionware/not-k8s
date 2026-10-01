@@ -18,11 +18,15 @@ Cilium Envoy Pod repeatedly crashed and stayed unready for 300 seconds; the
 captured artifacts lack its container termination output, so the crash cause
 is unconfirmed. Logs and artifacts: `/tmp/nodemigrate-36805374812-artifacts/`.
 
-The worktree now requires control-plane roles only for `stage-target` and adds
-a regression for worker return with `skip-api-export`. `git diff --check`
-passed; focused `nodemigrate` quick-check is pending. Do not rerun the migration
-matrix until the upstream Envoy failure is diagnosed. No general build or full
-e2e ran.
+The candidate requires control-plane roles only for `stage-target` and adds a
+regression for worker return with `skip-api-export`; focused `nodemigrate`
+quick-check passed at SHA `eca452a1` in
+[36809748353](https://github.com/centerionware/not-k8s/actions/runs/36809748353).
+The integration diagnostics now collect Envoy current/previous logs and last
+termination state. A dedicated no-migration upstream Cilium cleanup/Envoy
+restart probe has been added but is not yet dispatched. Do not rerun the
+migration matrix until the upstream Envoy failure is diagnosed. No general
+build or full e2e ran.
 
 ## Previous branch migration matrix 36800539523
 

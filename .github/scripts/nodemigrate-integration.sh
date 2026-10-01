@@ -68,6 +68,31 @@ capture_cilium_agent_logs() {
         -l k8s-app=cilium -o name 2>/dev/null || true)
 }
 
+capture_cilium_envoy_logs() {
+    local kubeconfig="${1:-${KUBECONFIG:-${CURRENT_KUBECONFIG:-$SOURCE_KUBECONFIG}}}"
+    local pod
+    while IFS= read -r pod; do
+        [[ -n "$pod" ]] || continue
+        echo "Cilium Envoy Pod status for $pod:"
+        diagnostic_kubectl_json "$kubeconfig" '{
+                name: .metadata.name,
+                uid: .metadata.uid,
+                nodeName: .spec.nodeName,
+                containers: [.status.containerStatuses[]? | {
+                    name, image, containerID, ready, restartCount, state, lastState
+                }],
+                conditions: [.status.conditions[]? | {type, status, reason, message}]
+            }' get pod "$pod" -n kube-system
+        echo "Cilium Envoy current logs for $pod:"
+        KUBECONFIG="$kubeconfig" kubectl logs -n kube-system "$pod" \
+            -c cilium-envoy --tail=300 2>&1 || true
+        echo "Cilium Envoy previous logs for $pod:"
+        KUBECONFIG="$kubeconfig" kubectl logs -n kube-system "$pod" \
+            -c cilium-envoy --previous --tail=300 2>&1 || true
+    done < <(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+        -l k8s-app=cilium-envoy -o name 2>/dev/null || true)
+}
+
 # Record only the API-requested security settings and selected OCI runtime
 # fields for Cilium's agent. Do not print the full CRI inspect response: it can
 # contain environment values and other credentials unrelated to this probe.
@@ -277,7 +302,7 @@ watch_migration_target_state() {
                         name: .metadata.name,
                         phase: .status.phase,
                         conditions: [.status.conditions[]? | {type, status, reason, message}],
-                        containers: [.status.containerStatuses[]? | {name, ready, restartCount, state}],
+                        containers: [.status.containerStatuses[]? | {name, image, containerID, ready, restartCount, state, lastState}],
                         initContainers: [.status.initContainerStatuses[]? | {name, ready, restartCount, state}],
                         podIP: .status.podIP,
                         nodeName: .spec.nodeName
@@ -398,6 +423,9 @@ watch_migration_target_state() {
                     capture_cilium_agent_cri_security "$kubeconfig"
                     KUBECONFIG="$kubeconfig" kubectl logs -n kube-system \
                         -l k8s-app=cilium -c cilium-agent --tail=100 2>&1 || true
+                    if [[ "$snapshot" != "$previous_snapshot" ]]; then
+                        capture_cilium_envoy_logs "$kubeconfig"
+                    fi
                     echo "Target cert-manager webhook logs:"
                     KUBECONFIG="$kubeconfig" kubectl logs -n cert-manager \
                         -l app.kubernetes.io/component=webhook --all-containers --tail=100 2>&1 || true
@@ -899,6 +927,53 @@ restart_cilium_agent_for_probe() {
     echo "PASS Cilium agent restarted without clean-cilium-state: pod=$replacement_pod_name uid=$(jq -r '.uid' <<<"$replacement_json")"
 }
 
+restart_cilium_envoy_for_probe() {
+    local kubeconfig="${1:?missing probe kubeconfig}"
+    local old_pod_json old_pod_name old_pod_uid pods_json replacement_json replacement_name
+    old_pod_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+        -l k8s-app=cilium-envoy -o json | jq -ce '
+          if (.items | length) == 1 then .items[0]
+          else error("expected one Cilium Envoy Pod in this single-node diagnostic") end
+        ')" || return 1
+    old_pod_name="$(jq -er '.metadata.name' <<<"$old_pod_json")" || return 1
+    old_pod_uid="$(jq -er '.metadata.uid' <<<"$old_pod_json")" || return 1
+    echo "Restarting Cilium Envoy $old_pod_name UID=$old_pod_uid after clean agent state"
+    KUBECONFIG="$kubeconfig" kubectl delete pod "$old_pod_name" -n kube-system \
+        --wait=true --timeout=120s || return 1
+
+    replacement_json=""
+    for _ in $(seq 1 300); do
+        pods_json="$(KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+            -l k8s-app=cilium-envoy -o json 2>/dev/null)" || pods_json='{"items":[]}'
+        replacement_json="$(jq -c --arg old_uid "$old_pod_uid" '
+            .items[]?
+            | select(.metadata.uid != $old_uid and .metadata.deletionTimestamp == null)
+            | {name:.metadata.name, uid:.metadata.uid}
+          ' <<<"$pods_json" | head -n 1)" || replacement_json=""
+        if [[ -n "$replacement_json" ]]; then
+            break
+        fi
+        sleep 1
+    done
+    [[ -n "$replacement_json" ]] || {
+        echo "Cilium Envoy DaemonSet did not create a replacement Pod within 300 seconds" >&2
+        capture_cilium_envoy_logs "$kubeconfig" >&2 || true
+        return 1
+    }
+    replacement_name="$(jq -er '.name' <<<"$replacement_json")" || return 1
+    if ! KUBECONFIG="$kubeconfig" kubectl wait -n kube-system \
+        --for=condition=Ready "pod/$replacement_name" --timeout=300s; then
+        echo "Cilium Envoy replacement failed readiness; collecting termination state and logs" >&2
+        KUBECONFIG="$kubeconfig" kubectl describe -n kube-system \
+            pod "$replacement_name" >&2 || true
+        capture_cilium_envoy_logs "$kubeconfig" >&2 || true
+        KUBECONFIG="$kubeconfig" kubectl get events -n kube-system \
+            --sort-by=.lastTimestamp >&2 || true
+        return 1
+    fi
+    echo "PASS Cilium Envoy replacement remained Ready: pod=$replacement_name uid=$(jq -r '.uid' <<<"$replacement_json")"
+}
+
 restore_cilium_clean_state_for_probe() {
     [[ "$CILIUM_PROBE_CLEAN_STATE_RESTORE_REQUIRED" == true ]] || return 0
     local kubeconfig="${SOURCE_KUBECONFIG:-${CURRENT_KUBECONFIG:-}}"
@@ -1162,6 +1237,16 @@ fi
 
 need_root() {
     [[ "$(id -u)" == 0 ]] || { echo "run this integration script as root" >&2; exit 2; }
+    if [[ "${NODEMIGRATE_UPSTREAM_CILIUM_ENVOY_RESTART_PROBE:-false}" == true ]]; then
+        [[ "$SOURCE_DIST" == kubernetes && "${NODEMIGRATE_CILIUM_KPR:-false}" == true ]] || {
+            echo "the upstream Envoy restart probe requires Kubernetes with Cilium KPR enabled" >&2
+            exit 2
+        }
+        [[ -x "$NK" ]] || {
+            echo "build target/release/notk8s for the upstream Envoy restart probe" >&2
+            exit 2
+        }
+    fi
     if [[ "${NODEMIGRATE_K3S_CILIUM_RESTART_PROBE:-false}" == true ]]; then
         [[ "$SOURCE_DIST" == k3s && "${NODEMIGRATE_CILIUM_KPR:-false}" == true ]] || {
             echo "the Cilium restart probe requires K3s with Cilium KPR enabled" >&2
@@ -1171,7 +1256,8 @@ need_root() {
             echo "build target/release/notk8s for the K3s Cilium restart probe" >&2
             exit 2
         }
-    elif [[ ! -x "$NK" || ! -x "$MIGRATE" ]]; then
+    elif [[ "${NODEMIGRATE_UPSTREAM_CILIUM_ENVOY_RESTART_PROBE:-false}" != true \
+        && ( ! -x "$NK" || ! -x "$MIGRATE" ) ]]; then
         echo "build target/release/notk8s and target/release/nodemigrate first" >&2
         exit 2
     fi
@@ -4661,6 +4747,17 @@ main() {
     KUBECONFIG="$SOURCE_KUBECONFIG" pin_hostpath_driver_to_fixture_volumes
     verify_stage source "$SOURCE_KUBECONFIG"
     capture_source_csi_device_volume
+
+    if [[ "${NODEMIGRATE_UPSTREAM_CILIUM_ENVOY_RESTART_PROBE:-false}" == true ]]; then
+        MIGRATION_STARTED_AT="$(date -u --iso-8601=seconds)"
+        echo "Cilium datapath before upstream Envoy restart diagnostic"
+        capture_cilium_datapath "$SOURCE_KUBECONFIG"
+        reset_cilium_state_for_probe "$SOURCE_KUBECONFIG"
+        restart_cilium_envoy_for_probe "$SOURCE_KUBECONFIG"
+        verify_stage upstream-envoy-restarted "$SOURCE_KUBECONFIG"
+        echo "PASS upstream Cilium clean-state and Envoy restart diagnostic; nodemigrate remains disabled"
+        return 0
+    fi
 
     if [[ "${NODEMIGRATE_K3S_CILIUM_RESTART_PROBE:-false}" == true ]]; then
         local post_clean_state_api_ok=true post_restart_api_ok=true post_restart_backend_ok=true api_backend_ip
