@@ -37,9 +37,14 @@ Ready and did not reproduce the timeout. The targeted Certificate, issuer,
 CertificateRequest, event, Secret-metadata, and controller-log capture remains
 available on failure. The source fixture now waits for ClusterIssuer Ready
 before Certificate Ready immediately after object creation, retaining all
-later stage checks. Focused 3+2 validation of that ordering is running in
+later stage checks. Focused 3+2 validation of that ordering passed in
 [36838518158](https://github.com/centerionware/not-k8s/actions/runs/36838518158)
-at SHA `1ab4a760`. The full KPR-disabled migration matrix remains unverified.
+at SHA `1ab4a760acb3d527c81bb0bae53ea19b04be0716`: all five nodes recovered,
+the issuer and certificate became Ready in order, and the source workload
+fixture passed. Full KPR-disabled matrix
+[36841047899](https://github.com/centerionware/not-k8s/actions/runs/36841047899)
+is running on SHA `847f6e22f8c5011efe71e446ca54c50f25e02679`; the migration
+result remains unverified.
 
 ## Previous Cilium KPR-disabled matrix 36822827036
 

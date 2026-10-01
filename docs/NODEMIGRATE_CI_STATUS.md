@@ -38,10 +38,16 @@ not run. The fixture now waits for the ClusterIssuer to become Ready and then
 waits for the Certificate immediately after creation, while retaining the
 later source and migration-stage assertions. This preserves coverage and
 verifies the issuer dependency before the rest of the fixture is exercised.
-Fixture-only verification of that ordering is running in
+Fixture-only run
 [36838518158](https://github.com/centerionware/not-k8s/actions/runs/36838518158)
-at SHA `1ab4a760`; no full migration retry is dispatched until this setup
-passes.
+passed at SHA `1ab4a760acb3d527c81bb0bae53ea19b04be0716` in 22m01s. It
+confirmed all three control planes and both workers were Ready, kube-proxy
+started with the shared conntrack limit unchanged, cp-1 loss/recovery passed,
+the ClusterIssuer became Ready before its Certificate, and the full source
+workload fixture passed. The KPR-disabled full matrix was dispatched at SHA
+`847f6e22f8c5011efe71e446ca54c50f25e02679` in
+[run 36841047899](https://github.com/centerionware/not-k8s/actions/runs/36841047899)
+and is running K3s, upstream, and the full Docker 3+2 migration lanes.
 
 ## Previous Cilium KPR-disabled matrix 36822827036
 

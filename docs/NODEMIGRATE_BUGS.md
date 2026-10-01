@@ -33,7 +33,12 @@ cainjector logs. The source fixture now waits for ClusterIssuer Ready followed
 by Certificate Ready immediately after creating them, while keeping the later
 stage checks. Fixture-only run
 [36838518158](https://github.com/centerionware/not-k8s/actions/runs/36838518158)
-is testing that setup at SHA `1ab4a760`. Earlier fixture log:
+passed at SHA `1ab4a760acb3d527c81bb0bae53ea19b04be0716`; it confirmed the
+issuer and certificate became Ready in sequence and source fixture validation
+passed. Full KPR-disabled migration matrix
+[36841047899](https://github.com/centerionware/not-k8s/actions/runs/36841047899)
+is now running at SHA `847f6e22f8c5011efe71e446ca54c50f25e02679`. Earlier
+fixture log:
 `/tmp/nodemigrate-36830106965-docker-fixture.log`.
 
 ## Previous Cilium KPR-disabled matrix 36822827036
