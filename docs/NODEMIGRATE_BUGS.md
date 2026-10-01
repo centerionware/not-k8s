@@ -34,7 +34,9 @@ three-control-plane/two-worker Docker lane enabled. Logs are saved under
   Runtime verification is pending.
 
 Rerun the full branch-runtime migration matrix to verify the K3s and five-node
-paths together with the already passing upstream path.
+paths together with the already passing upstream path. The rerun is
+[36805374812](https://github.com/centerionware/not-k8s/actions/runs/36805374812)
+at SHA `b140095b`; its outcome is pending.
 
 ## Migration matrix 36792261326 failures
 

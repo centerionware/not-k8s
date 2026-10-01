@@ -24,7 +24,11 @@ staging call. Focused regressions cover both behaviors. Run the
 `nodemigrate` quick-check passed at SHA `f9bd9c11` in
 [36805080813](https://github.com/centerionware/not-k8s/actions/runs/36805080813).
 The first focused attempts found a moved-value compile error and a misplaced
-owner-reference fixture; both were corrected. No general build or full e2e ran.
+owner-reference fixture; both were corrected. Follow-up matrix
+[36805374812](https://github.com/centerionware/not-k8s/actions/runs/36805374812)
+is running at SHA `b140095b15f230941b2d4ad179fc0be2955ffc06` with the branch
+runtime, Cilium KPR, and five-node lane enabled. No general build or full e2e
+ran.
 
 ## Previous branch migration matrix: 36792261326
 

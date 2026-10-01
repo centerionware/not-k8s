@@ -20,7 +20,11 @@ compile error, then two runs exposed a malformed owner-reference test fixture;
 the fixture and source borrow are corrected. The final focused check passed at
 SHA `f9bd9c11` in
 [36805080813](https://github.com/centerionware/not-k8s/actions/runs/36805080813).
-No general build or full e2e ran.
+Follow-up matrix
+[36805374812](https://github.com/centerionware/not-k8s/actions/runs/36805374812)
+is running at SHA `b140095b15f230941b2d4ad179fc0be2955ffc06` with the same
+branch-runtime, KPR, and five-node inputs. No lane results are known yet. No
+general build or full e2e ran.
 
 ## Branch migration matrix 36792261326
 
