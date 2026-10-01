@@ -2703,7 +2703,50 @@ async fn capture_cilium_cleanup_diagnostics(
     last_state: Option<&str>,
 ) {
     eprintln!("nodemigrate: Cilium recovery deadline diagnostics on {node_name}: state={}", last_state.unwrap_or("no replacement Pod observed"));
-    let Some((pod_name, pod_uid)) = replacement else { return };
+    let Some((pod_name, pod_uid)) = replacement else {
+        let params = ListParams::default().labels("k8s-app=cilium");
+        match tokio::time::timeout(Duration::from_secs(5), pods.list(&params)).await {
+            Ok(Ok(list)) => {
+                for pod in list.items {
+                    let phase = pod.status.as_ref().and_then(|status| status.phase.as_deref()).unwrap_or("<none>");
+                    let conditions = pod.status.as_ref().and_then(|status| status.conditions.as_ref()).map(|conditions| {
+                        conditions.iter().map(|condition| format!(
+                            "{}={}:{}:{}", condition.type_, condition.status,
+                            condition.reason.as_deref().unwrap_or(""),
+                            condition.message.as_deref().unwrap_or("")
+                        )).collect::<Vec<_>>().join("; ")
+                    }).unwrap_or_else(|| "<none>".to_owned());
+                    eprintln!(
+                        "nodemigrate: Cilium Pod present at recovery deadline name={} uid={} node={} deleting={} phase={phase} conditions=[{conditions}]",
+                        pod.metadata.name.as_deref().unwrap_or("<unnamed>"),
+                        pod.metadata.uid.as_deref().unwrap_or("<none>"),
+                        pod.spec.as_ref().and_then(|spec| spec.node_name.as_deref()).unwrap_or("<unassigned>"),
+                        pod.metadata.deletion_timestamp.is_some(),
+                    );
+                }
+            }
+            Ok(Err(error)) => eprintln!("nodemigrate: unable to list Cilium Pods at recovery deadline: {error:#}"),
+            Err(_) => eprintln!("nodemigrate: listing Cilium Pods at recovery deadline timed out"),
+        }
+        let params = ListParams::default().limit(100);
+        match tokio::time::timeout(Duration::from_secs(5), events.list(&params)).await {
+            Ok(Ok(list)) => {
+                for event in list.items {
+                    eprintln!(
+                        "nodemigrate: recent kube-system event type={} reason={} object={}/{} message={}",
+                        event.type_.as_deref().unwrap_or(""),
+                        event.reason.as_deref().unwrap_or(""),
+                        event.involved_object.kind.as_deref().unwrap_or(""),
+                        event.involved_object.name.as_deref().unwrap_or(""),
+                        event.message.as_deref().unwrap_or(""),
+                    );
+                }
+            }
+            Ok(Err(error)) => eprintln!("nodemigrate: unable to list recent kube-system events: {error:#}"),
+            Err(_) => eprintln!("nodemigrate: listing recent kube-system events timed out"),
+        }
+        return;
+    };
     match tokio::time::timeout(Duration::from_secs(5), pods.get_opt(pod_name)).await {
         Ok(Ok(Some(pod))) => {
             let phase = pod.status.as_ref().and_then(|status| status.phase.as_deref()).unwrap_or("<none>");

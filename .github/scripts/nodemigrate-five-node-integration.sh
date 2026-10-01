@@ -175,6 +175,25 @@ wait_five_nodes() {
     ' >/dev/null
 }
 
+wait_for_admission_service() {
+    local namespace="$1" service="$2" port="$3" cluster_ip
+    cluster_ip="$(node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf \
+        kubectl get service "$service" -n "$namespace" -o json \
+        | jq -r '.spec.clusterIP')"
+    [[ "$cluster_ip" =~ ^[0-9a-fA-F:.]+$ ]] \
+        || fail "$namespace/$service has no usable ClusterIP: $cluster_ip"
+    echo "Waiting for admission service route $namespace/$service $cluster_ip:$port"
+    for _ in $(seq 1 300); do
+        if node cp-1 bash -ec 'timeout 2 bash -c "exec 3<>/dev/tcp/$1/$2"' \
+            _ "$cluster_ip" "$port" >/dev/null 2>&1; then
+            echo "PASS admission service route $namespace/$service $cluster_ip:$port"
+            return 0
+        fi
+        sleep 2
+    done
+    fail "admission service route $namespace/$service $cluster_ip:$port did not become reachable"
+}
+
 assert_retained_kubeadm_is_quiescent() {
     echo "Checking retained kubeadm services are disabled while nodestore owns the nodes"
     for host in "${NODES[@]}"; do
@@ -434,21 +453,24 @@ done
 node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf \
     kubectl --request-timeout=20s get --raw=/readyz >/dev/null \
     || fail "retained kubeadm API did not recover after all three control planes were staged"
-run_migration cp-1 /etc/nodebootstrap/admin.kubeconfig /etc/kubernetes/admin.conf \
-    NO_EXTRA_ENV to=kubernetes from=nodestore "import-export=$RETURN_EXPORT" >/dev/null
-
-echo "Completing fresh Node registration for retained control planes and workers"
-# Kubeadm workers do not receive /etc/kubernetes/admin.conf from kubeadm join.
-# Give each worker the recovered cluster admin config so nodemigrate can watch
-# the retained API while verifying that its replacement Node registered.
 for host in worker-1 worker-2; do
     copy_file cp-1 /etc/kubernetes/admin.conf "$host" /etc/kubernetes/admin.conf
     node "$host" chmod 0600 /etc/kubernetes/admin.conf
 done
+echo "Returning remaining nodes before API import so workload and admission webhook endpoints can recover"
 for host in cp-2 cp-3 worker-1 worker-2; do
     run_migration "$host" /etc/nodebootstrap/admin.kubeconfig /etc/kubernetes/admin.conf \
         NO_EXTRA_ENV to=kubernetes from=nodestore skip-api-export=true >/dev/null
 done
+wait_five_nodes /etc/kubernetes/admin.conf
+node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf \
+    kubectl rollout status daemonset/cilium -n kube-system --timeout=10m
+node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf \
+    kubectl rollout status deployment/cert-manager-webhook -n cert-manager --timeout=10m
+wait_for_admission_service cert-manager cert-manager-webhook 443
+run_migration cp-1 /etc/nodebootstrap/admin.kubeconfig /etc/kubernetes/admin.conf \
+    NO_EXTRA_ENV to=kubernetes from=nodestore "import-export=$RETURN_EXPORT" >/dev/null
+
 wait_five_nodes /etc/kubernetes/admin.conf
 node cp-1 env NODEMIGRATE_HOSTPATH_SETUP="$NODEMIGRATE_HOSTPATH_SETUP" \
     NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" \

@@ -1296,9 +1296,9 @@ fn restart_named(manager: ServiceManager, name: &str) -> Result<()> {
 /// Pause the local Kubernetes Pod reconcilers while CRI sandboxes are removed.
 /// A live kubelet/Nodelet can recreate a container between StopPodSandbox and
 /// RemoveContainer, racing the cleanup that is resetting its own sandboxes.
-/// K3s embeds kubelet and containerd in separate processes under one service:
-/// pause only the K3s main process so its API/kubelet stops reconciling while
-/// embedded containerd remains available for CRI cleanup.
+/// K3s embeds its API server and kubelet in the main process. Keep that process
+/// live during CNI teardown: Cilium's CNI plugin can need the Kubernetes API
+/// while StopPodSandbox waits for DEL to finish. Freezing K3s also freezes API.
 pub(crate) fn with_local_pod_agents_paused<T>(
     runtime_endpoint: &str,
     operation: impl FnOnce() -> Result<T>,
@@ -1313,10 +1313,7 @@ enum PodAgentControl {
         manager: ServiceManager,
         name: String,
     },
-    K3sMainProcess {
-        pid: u32,
-        runtime_endpoint: String,
-    },
+    K3sMainProcess,
 }
 
 fn local_pod_agent_controls(runtime_endpoint: &str) -> Result<Vec<PodAgentControl>> {
@@ -1340,11 +1337,7 @@ fn local_pod_agent_controls(runtime_endpoint: &str) -> Result<Vec<PodAgentContro
             Distribution::K3s => {
                 let endpoint = installation.runtime_endpoint.as_deref().unwrap_or_default();
                 if endpoint.contains("/run/k3s/containerd/containerd.sock") {
-                    let pid = k3s_main_pid(manager, &installation.service_name)?;
-                    PodAgentControl::K3sMainProcess {
-                        pid,
-                        runtime_endpoint: endpoint.to_string(),
-                    }
+                    PodAgentControl::K3sMainProcess
                 } else {
                     PodAgentControl::Service {
                         manager,
@@ -1395,41 +1388,8 @@ fn pod_agent_uses_runtime(installation: &Installation, runtime_endpoint: &str) -
 fn pod_agent_control_name(control: &PodAgentControl) -> &str {
     match control {
         PodAgentControl::Service { name, .. } => name,
-        PodAgentControl::K3sMainProcess { .. } => "k3s",
+        PodAgentControl::K3sMainProcess => "k3s",
     }
-}
-
-fn k3s_main_pid(manager: ServiceManager, service: &str) -> Result<u32> {
-    ensure!(
-        manager == ServiceManager::Systemd,
-        "pausing the embedded K3s kubelet while retaining its CRI requires systemd"
-    );
-    let unit = format!("{service}.service");
-    let output = checked_output(
-        "systemctl",
-        &["show", "--property=MainPID", "--value", &unit],
-        "finding the K3s main process for CRI sandbox coordination",
-    )?;
-    let pid = String::from_utf8_lossy(&output)
-        .trim()
-        .parse::<u32>()
-        .context("parsing the K3s service main PID")?;
-    ensure!(pid > 1, "K3s service {unit} has no valid main PID");
-    // K3s rewrites argv[0] to a process title such as
-    // `/usr/local/bin/k3s server`; use the kernel's executable link instead
-    // of rejecting the service based on its mutable command line.
-    let executable = std::fs::read_link(format!("/proc/{pid}/exe"))
-        .with_context(|| format!("reading K3s main process {pid} executable"))?;
-    ensure!(
-        is_k3s_executable(&executable),
-        "systemd main process {} is not the K3s executable",
-        executable.display()
-    );
-    Ok(pid)
-}
-
-fn is_k3s_executable(path: &std::path::Path) -> bool {
-    path.file_name().is_some_and(|name| name == "k3s")
 }
 
 fn with_pod_agent_controls_paused<T>(
@@ -1440,6 +1400,11 @@ fn with_pod_agent_controls_paused<T>(
     let Some(control) = controls.get(index) else {
         return operation();
     };
+    // The K3s main process also serves its API. Pausing it makes Cilium CNI
+    // DEL wait on the API that this migration has just frozen.
+    if !pod_agent_control_should_pause(control) {
+        return with_pod_agent_controls_paused(controls, index + 1, operation);
+    }
     with_service_paused(
         true,
         || {
@@ -1454,28 +1419,17 @@ fn with_pod_agent_controls_paused<T>(
     )
 }
 
+fn pod_agent_control_should_pause(control: &PodAgentControl) -> bool {
+    !matches!(control, PodAgentControl::K3sMainProcess)
+}
+
 fn stop_pod_agent_control(control: &PodAgentControl) -> Result<()> {
     match control {
         PodAgentControl::Service { manager, name } => stop_named(*manager, name)
             .with_context(|| format!("pausing local {name} before CRI sandbox cleanup")),
-        PodAgentControl::K3sMainProcess {
-            pid,
-            runtime_endpoint,
-        } => {
-            crictl_info(runtime_endpoint)?;
-            signal_process(*pid, libc::SIGSTOP)
-                .with_context(|| format!("pausing K3s main process {pid}"))?;
-            if let Err(error) = crictl_info(runtime_endpoint) {
-                let resume = signal_process(*pid, libc::SIGCONT);
-                return match resume {
-                    Ok(()) => Err(error).context(
-                        "K3s embedded containerd did not remain available after pausing kubelet",
-                    ),
-                    Err(resume_error) => Err(error).context(format!(
-                        "K3s embedded containerd did not remain available and resuming K3s also failed: {resume_error:#}"
-                    )),
-                };
-            }
+        PodAgentControl::K3sMainProcess => {
+            // The wrapper skips K3s controls instead of freezing the combined
+            // API/kubelet process while its CNI plugin is still active.
             Ok(())
         }
     }
@@ -1485,37 +1439,8 @@ fn start_pod_agent_control(control: &PodAgentControl) -> Result<()> {
     match control {
         PodAgentControl::Service { manager, name } => start_named(*manager, name)
             .with_context(|| format!("restarting local {name} after CRI sandbox cleanup")),
-        PodAgentControl::K3sMainProcess { pid, .. } => {
-            signal_process(*pid, libc::SIGCONT)
-                .with_context(|| format!("resuming K3s main process {pid}"))?;
-            eprintln!("nodemigrate: resumed local k3s kubelet after CRI sandbox cleanup");
-            Ok(())
-        }
+        PodAgentControl::K3sMainProcess => Ok(()),
     }
-}
-
-fn signal_process(pid: u32, signal: i32) -> Result<()> {
-    let pid = libc::pid_t::try_from(pid).context("process PID exceeds pid_t range")?;
-    ensure!(
-        unsafe { libc::kill(pid, signal) } == 0,
-        "sending signal {signal} to process {pid} failed: {}",
-        std::io::Error::last_os_error()
-    );
-    Ok(())
-}
-
-fn crictl_info(runtime_endpoint: &str) -> Result<()> {
-    checked_output(
-        "crictl",
-        &[
-            "--timeout=5s",
-            "--runtime-endpoint",
-            runtime_endpoint,
-            "info",
-        ],
-        "checking CRI availability while coordinating Pod sandbox cleanup",
-    )?;
-    Ok(())
 }
 
 fn with_service_paused<T>(
@@ -1928,9 +1853,9 @@ fn command(program: &str, args: &[&str]) -> Result<Output> {
 mod tests {
     use super::{
         SourceCiliumIdentity, cilium_host_container_ids, cilium_source_sandbox_ids,
-        cri_cleanup_attempt_limit, cri_cleanup_retryable, cri_cleanup_succeeded, is_k3s_executable,
+        cri_cleanup_attempt_limit, cri_cleanup_retryable, cri_cleanup_succeeded,
         cri_pod_sandbox_status_is_stopped,
-        nodelet_source_sandbox_ids, pod_agent_uses_runtime,
+        nodelet_source_sandbox_ids, pod_agent_control_should_pause, pod_agent_uses_runtime,
         should_pause_nodelet_fallback,
         runtime_service_name, static_pod_sandbox_ids, with_service_paused,
     };
@@ -1989,19 +1914,25 @@ mod tests {
     }
 
     #[test]
-    fn accepts_k3s_executable_even_when_argv0_is_a_subcommand_title() {
-        assert!(is_k3s_executable(std::path::Path::new("/usr/local/bin/k3s")));
-        assert!(!is_k3s_executable(std::path::Path::new("/usr/local/bin/k3s server")));
-        assert!(!is_k3s_executable(std::path::Path::new("/usr/bin/containerd")));
-    }
-
-    #[test]
     fn falls_back_to_nodelet_when_matching_upstream_agent_is_not_active() {
         assert!(should_pause_nodelet_fallback(&[]));
         assert!(!should_pause_nodelet_fallback(&[super::PodAgentControl::Service {
             manager: ServiceManager::Systemd,
             name: "kubelet".to_string(),
         }]));
+    }
+
+    #[test]
+    fn keeps_k3s_api_live_during_cni_sandbox_cleanup() {
+        assert!(!pod_agent_control_should_pause(
+            &super::PodAgentControl::K3sMainProcess
+        ));
+        assert!(pod_agent_control_should_pause(
+            &super::PodAgentControl::Service {
+                manager: ServiceManager::Systemd,
+                name: "kubelet".to_string(),
+            }
+        ));
     }
 
     #[test]

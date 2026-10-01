@@ -1402,6 +1402,30 @@ fn resume_export_import(
         "retained destination API is not ready; protected export remains at {}",
         export.dir.display()
     ))?;
+    if target
+        .cluster
+        .as_ref()
+        .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
+    {
+        let name = node_name(target);
+        eprintln!(
+            "nodemigrate: rebuilding staged Cilium host datapath state on control-plane node {name} before API import"
+        );
+        target_api
+            .reset_cilium_agent_state(&name, target.runtime_endpoint.as_deref())
+            .with_context(|| {
+                format!(
+                    "rebuilding staged Cilium state on {name}; protected export remains at {}",
+                    export.dir.display()
+                )
+            })?;
+        wait_for_node(&target_api, &name).with_context(|| {
+            format!(
+                "staged control-plane node {name} was not Ready after Cilium recovery; protected export remains at {}",
+                export.dir.display()
+            )
+        })?;
+    }
     let control_plane_nodes = export.control_plane_node_names();
     ensure!(
         !control_plane_nodes.is_empty(),
