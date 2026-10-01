@@ -2734,11 +2734,11 @@ async fn capture_cilium_cleanup_diagnostics(
                 "nodemigrate: Cilium DaemonSet at recovery deadline generation={} observed_generation={} desired={} current={} ready={} available={} misscheduled={} selector={selector} node_selector={node_selector} tolerations={tolerations}",
                 daemonset.metadata.generation.unwrap_or_default(),
                 status.and_then(|status| status.observed_generation).unwrap_or_default(),
-                status.and_then(|status| status.desired_number_scheduled).unwrap_or_default(),
-                status.and_then(|status| status.current_number_scheduled).unwrap_or_default(),
-                status.and_then(|status| status.number_ready).unwrap_or_default(),
+                status.map(|status| status.desired_number_scheduled).unwrap_or_default(),
+                status.map(|status| status.current_number_scheduled).unwrap_or_default(),
+                status.map(|status| status.number_ready).unwrap_or_default(),
                 status.and_then(|status| status.number_available).unwrap_or_default(),
-                status.and_then(|status| status.number_misscheduled).unwrap_or_default(),
+                status.map(|status| status.number_misscheduled).unwrap_or_default(),
             );
         }
         Ok(Ok(None)) => eprintln!("nodemigrate: Cilium DaemonSet is absent at recovery deadline"),
