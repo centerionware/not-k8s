@@ -1871,6 +1871,31 @@ apply_fixture_manifest_with_conflict_retry() {
     done
 }
 
+wait_for_migration_certificate() {
+    local stage="$1"
+    if kubectl wait -n migration-apps --for=condition=Ready \
+        certificate/migration-test --timeout=5m; then
+        return 0
+    fi
+
+    echo "Certificate readiness failed at stage=$stage; collecting cert-manager diagnostics" >&2
+    kubectl get certificate migration-test -n migration-apps -o yaml >&2 || true
+    kubectl describe certificate migration-test -n migration-apps >&2 || true
+    kubectl get clusterissuer migration-selfsigned -o yaml >&2 || true
+    kubectl describe clusterissuer migration-selfsigned >&2 || true
+    kubectl get certificaterequests -n migration-apps -o yaml >&2 || true
+    kubectl get events -n migration-apps --sort-by=.lastTimestamp | tail -n 100 >&2 || true
+    kubectl get events -n cert-manager --sort-by=.lastTimestamp | tail -n 100 >&2 || true
+    kubectl get secret migration-test-tls -n migration-apps \
+        -o custom-columns='NAME:.metadata.name,TYPE:.type,CREATED:.metadata.creationTimestamp' >&2 || true
+    for deployment in cert-manager cert-manager-webhook cert-manager-cainjector; do
+        echo "cert-manager diagnostic logs: deployment/$deployment" >&2
+        kubectl logs -n cert-manager "deployment/$deployment" \
+            --all-containers=true --since=15m --tail=200 >&2 || true
+    done
+    return 1
+}
+
 ensure_kubectl_image() {
     if [[ -z "${NODEMIGRATE_KUBECTL_IMAGE:-}" ]]; then
         local kubectl_version
@@ -2839,7 +2864,7 @@ YAML
     kubectl wait -n cert-manager --for=condition=Available deployment/cert-manager-cainjector --timeout=5m
     kubectl wait --for=condition=Established crd/certificates.cert-manager.io --timeout=2m
     kubectl wait --for=condition=Established crd/clusterissuers.cert-manager.io --timeout=2m
-    kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
+    wait_for_migration_certificate "$stage"
     kubectl delete pod -n migration-apps migration-seed-static migration-seed-csi --wait=true
 
     # Exercise a legacy Secret-backed ServiceAccount credential. Kubernetes
@@ -3970,7 +3995,7 @@ YAML
     verify_authentication_and_authorization_reviews "$stage"
     verify_custom_resource_status_subresource "$stage"
     verify_ephemeral_container_subresource "$stage"
-    kubectl wait -n migration-apps --for=condition=Ready certificate/migration-test --timeout=5m
+    wait_for_migration_certificate "$stage"
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-static-pvc --timeout=5m
     kubectl wait -n migration-apps --for=jsonpath='{.status.phase}'=Bound pvc/migration-csi-pvc --timeout=5m
 
