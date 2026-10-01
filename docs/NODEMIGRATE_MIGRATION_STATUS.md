@@ -2,6 +2,28 @@
 
 Last updated: 2026-10-01
 
+## Cilium KPR-disabled matrix 36822827036
+
+The KPR-disabled branch-runtime matrix passed the K3s round trip in 26m42s.
+The upstream Kubernetes single-node migration completed API import and Cilium
+agent state rebuild, then failed restarting the local Cilium Envoy Pod: its
+replacement reported `unable to bind domain socket ... errno=98` and did not
+remain Ready. Nodemigrate rolled back, restored the source service and saved
+PV/CNI data, and retained the protected export. The branch now waits for the
+deleted Envoy API UID to disappear, pauses local Pod agents, and removes only
+that Pod UID's CRI sandbox/container records before waiting for the DaemonSet
+replacement. Focused utility validation is pending.
+
+The Docker-isolated 3-control-plane/2-worker lane failed before nodemigrate
+started, during cert-manager fixture installation. The `startupapicheck` Job
+hit `BackoffLimitExceeded`; kube-proxy on cp-1 and cp-2 was CrashLoopBackOff.
+The failure log did not include those containers' current/previous output, so
+the proximate kube-proxy and cert-manager errors remain unconfirmed. Targeted
+failure diagnostics have been added, and a KPR-disabled preflight-only run is
+pending to identify the cause before another migration attempt. Run and logs:
+[36822827036](https://github.com/centerionware/not-k8s/actions/runs/36822827036),
+`/tmp/nodemigrate-36822827036-artifacts/`.
+
 ## Latest branch migration matrix: 36818085887
 
 [Run 36818085887](https://github.com/centerionware/not-k8s/actions/runs/36818085887)

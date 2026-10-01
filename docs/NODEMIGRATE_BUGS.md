@@ -2,6 +2,29 @@
 
 Last updated: 2026-10-01
 
+## Cilium KPR-disabled matrix 36822827036
+
+[Run 36822827036](https://github.com/centerionware/not-k8s/actions/runs/36822827036)
+passed its K3s round trip. The required Docker topology remained three control
+planes plus two workers, but its cert-manager fixture failed before migration:
+`cert-manager-startupapicheck` hit `BackoffLimitExceeded`; kube-proxy on cp-1
+and cp-2 was CrashLoopBackOff. The preflight output did not capture the
+container logs needed to determine why. The harness now collects current and
+previous logs plus Pod descriptions for failed/restarting Pods; a preflight-
+only KPR-disabled diagnostic run is pending.
+
+- **Component: nodemigrate Cilium Envoy restart.** The upstream migration
+  rolled back after the replacement Envoy process failed to bind its
+  host-mounted Unix socket (`errno=98`, address already in use). The existing
+  restart path deleted the API Pod and accepted a new UID without first
+  removing the old UID's local CRI sandbox and container. The fix waits for
+  the deleted API UID to disappear, pauses local Pod agents, and removes only
+  that exact sandbox/container before the replacement readiness check. The
+  source service and PV/CNI data were restored and the protected export was
+  retained. Focused CI validation is pending.
+
+Failure logs: `/tmp/nodemigrate-36822827036-artifacts/`.
+
 ## Branch migration matrix 36818085887
 
 [Run 36818085887](https://github.com/centerionware/not-k8s/actions/runs/36818085887)
@@ -15,13 +38,12 @@ and Docker-isolated five-node migrations all passed. Full logs:
   worker return path did not re-import cluster-wide resources. This verifies
   the `skip-api-export` role-check correction with the actual 3+2 cluster,
   beyond its focused unit regression.
-- **Upstream Envoy migration failure not reproduced.** The preceding upstream
-  run crashed its replacement Envoy Pod after import. In this full matrix the
-  upstream lane passed round-trip migration and the required Cilium/workload
-  checkpoints; the separate immediate UID-preconditioned Envoy probe also
-  passed in [36817021594](https://github.com/centerionware/not-k8s/actions/runs/36817021594).
-  No confirmed Envoy product defect remains from these runs. Keep the current
-  Envoy termination/log capture in place in case this failure recurs.
+- **Upstream Envoy recovery passed in this matrix, then failed in KPR-disabled
+  coverage.** Run 36818085887 passed round-trip migration and the separate
+  immediate UID-preconditioned Envoy probe passed in
+  [36817021594](https://github.com/centerionware/not-k8s/actions/runs/36817021594).
+  KPR-disabled run 36822827036 later exposed a distinct confirmed socket-owner
+  race during migration; its exact-UID CRI cleanup fix is pending focused CI.
 - **No additional failing migration assertion was observed.** The five-node
   lane passed all five-node readiness, source/target/returned state comparison,
   and durable fixture checks. Runtime events include transient CNI/probe

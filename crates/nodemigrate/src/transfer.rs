@@ -449,6 +449,7 @@ async fn restart_local_cilium_envoy(
     client: &Client,
     pods: &Api<Pod>,
     node_name: &str,
+    runtime_endpoint: &str,
 ) -> Result<()> {
     let daemonsets: Api<DaemonSet> = Api::namespaced(client.clone(), "kube-system");
     if daemonsets
@@ -508,6 +509,47 @@ async fn restart_local_cilium_envoy(
     }
     eprintln!(
         "nodemigrate: restarted Cilium Envoy Pod {name} (UID {uid}) after host-state cleanup"
+    );
+
+    // The Envoy DaemonSet uses a host-mounted Unix socket. A replacement Pod
+    // can start before containerd has finished stopping the deleted Pod's
+    // process, then fail to bind that still-owned socket with EADDRINUSE.
+    // Once the old API UID is gone, stop and remove only its exact local CRI
+    // sandbox before accepting the replacement.
+    loop {
+        let current = pods
+            .get_opt(name)
+            .await
+            .with_context(|| format!("waiting for Cilium Envoy Pod {name} deletion"))?;
+        if current
+            .as_ref()
+            .and_then(|pod| pod.metadata.uid.as_deref())
+            != Some(uid.as_str())
+        {
+            break;
+        }
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "deleted Cilium Envoy Pod {name} UID {uid} remained in the API for 300 seconds"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let cleanup_endpoint = runtime_endpoint.to_owned();
+    let cleanup_node = node_name.to_owned();
+    let cleanup_uid = uid.clone();
+    let (removed_sandboxes, removed_containers) = tokio::task::spawn_blocking(move || {
+        crate::service::with_local_pod_agents_paused(&cleanup_endpoint, || {
+            recreate_pod_sandboxes_for_uids(
+                &cleanup_endpoint,
+                &cleanup_node,
+                &BTreeSet::from([cleanup_uid]),
+            )
+        })
+    })
+    .await
+    .context("joining Cilium Envoy CRI sandbox cleanup")??;
+    eprintln!(
+        "nodemigrate: removed {removed_sandboxes} sandbox(es) and {removed_containers} container record(s) for deleted Cilium Envoy Pod UID {uid} on node {node_name}"
     );
 
     let mut ready_since = None;
@@ -1766,7 +1808,12 @@ impl KubeApi {
                                 &bpf_root,
                             )
                             .await?;
-                            restart_local_cilium_envoy(&client, &pods, node_name)
+                            restart_local_cilium_envoy(
+                                &client,
+                                &pods,
+                                node_name,
+                                &runtime_endpoint,
+                            )
                                 .await
                                 .context("restarting the local Cilium Envoy Pod after host-state cleanup")?;
                             eprintln!(
@@ -6614,6 +6661,13 @@ current-context: test
         assert_eq!(
             pod_sandbox_ids_for_uids(&sandboxes, &pod_uids),
             vec!["web-sandbox".to_owned()]
+        );
+        // Host-network Pods normally skip the broad CNI sandbox refresh, but
+        // the local Envoy restart must still clean this exact DaemonSet Pod
+        // UID so an old process cannot keep its host-mounted socket bound.
+        assert_eq!(
+            pod_sandbox_ids_for_uids(&sandboxes, &["api-uid".to_owned()].into_iter().collect()),
+            vec!["api-sandbox".to_owned()]
         );
     }
 

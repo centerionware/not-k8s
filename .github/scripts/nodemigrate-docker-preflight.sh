@@ -368,6 +368,27 @@ collect_cluster_diagnostics() {
             kubectl logs "$pod" -n kube-system --all-containers --tail=120 || true
             kubectl logs "$pod" -n kube-system --all-containers --previous --tail=120 || true
         done
+        echo "Pods with failed or restarting containers:"
+        kubectl get pods -A -o json 2>/dev/null | jq -r "
+            .items[]
+            | select(
+                .status.phase == \"Failed\"
+                or any(((.status.containerStatuses // []) + (.status.initContainerStatuses // []) + (.status.ephemeralContainerStatuses // []))[];
+                    .state.waiting.reason == \"CrashLoopBackOff\"
+                    or .state.waiting.reason == \"CreateContainerConfigError\"
+                    or .state.waiting.reason == \"ErrImagePull\"
+                    or .state.waiting.reason == \"ImagePullBackOff\"
+                    or ((.state.terminated.exitCode // 0) != 0))
+            )
+            | [.metadata.namespace, .metadata.name]
+            | @tsv
+        " | while read -r namespace pod; do
+            [[ -n "$namespace" && -n "$pod" ]] || continue
+            echo "Failed Pod diagnostics: $namespace/$pod"
+            kubectl describe pod "$pod" -n "$namespace" || true
+            kubectl logs "$pod" -n "$namespace" --all-containers --tail=160 || true
+            kubectl logs "$pod" -n "$namespace" --all-containers --previous --tail=160 || true
+        done || true
     ' || true
     collect_node_diagnostics
 }
