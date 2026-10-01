@@ -17,8 +17,9 @@ use base64::Engine;
 use k8s_openapi::api::{
     apps::v1::DaemonSet,
     core::v1::{ConfigMap, Event, Namespace, Node, Pod, Service},
+    coordination::v1::Lease,
 };
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{MicroTime, ObjectMeta};
 use kube::{
     api::{
         Api, DeleteParams, DynamicObject, ListParams, LogParams, Patch, PatchParams, PostParams,
@@ -58,6 +59,7 @@ const CILIUM_API_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CILIUM_AGENT_READY_STABILITY: Duration = Duration::from_secs(10);
 const CILIUM_SERVICE_ROUTE_READY_TIMEOUT: Duration = Duration::from_secs(300);
 const CILIUM_SERVICE_ROUTE_READY_STABILITY: Duration = Duration::from_secs(10);
+const CONTROLLER_MANAGER_LEASE_READY_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Default)]
 struct CiliumAgentProgress {
@@ -69,6 +71,36 @@ struct CiliumAgentProgress {
 #[derive(Default)]
 struct CiliumServiceRouteProgress {
     reachable_since: Option<tokio::time::Instant>,
+}
+
+#[derive(Default)]
+struct ControllerManagerLeaseProgress {
+    last_renew_time: Option<MicroTime>,
+}
+
+impl ControllerManagerLeaseProgress {
+    fn observe(&mut self, lease: &Lease) -> bool {
+        let Some(spec) = lease.spec.as_ref() else {
+            return false;
+        };
+        if !spec
+            .holder_identity
+            .as_deref()
+            .is_some_and(|holder| !holder.is_empty())
+        {
+            return false;
+        }
+        let Some(renew_time) = spec.renew_time.as_ref() else {
+            return false;
+        };
+        let renew_time = renew_time.clone();
+        let renewed = self
+            .last_renew_time
+            .as_ref()
+            .is_some_and(|previous| previous != &renew_time);
+        self.last_renew_time = Some(renew_time);
+        renewed
+    }
 }
 
 impl CiliumServiceRouteProgress {
@@ -803,6 +835,11 @@ fn pod_sandbox_ids_for_uids(sandboxes: &Value, pod_uids: &BTreeSet<String>) -> V
 }
 
 impl KubeApi {
+    pub fn wait_for_controller_manager(&self) -> Result<()> {
+        let (runtime, client) = self.connected()?;
+        runtime.block_on(wait_for_controller_manager_lease(&client))
+    }
+
     pub fn wait_for_kubernetes_service_route(&self) -> Result<()> {
         let (runtime, client) = self.connected()?;
         runtime.block_on(wait_for_kubernetes_service_route_with_client(&client))
@@ -2368,6 +2405,82 @@ async fn wait_for_kubernetes_service_route_with_client(client: &Client) -> Resul
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+}
+
+async fn wait_for_controller_manager_lease(client: &Client) -> Result<()> {
+    let leases: Api<Lease> = Api::namespaced(client.clone(), "kube-system");
+    let controller_managers: Api<Pod> = Api::namespaced(client.clone(), "kube-system");
+    let deadline = tokio::time::Instant::now() + CONTROLLER_MANAGER_LEASE_READY_TIMEOUT;
+    let mut progress = ControllerManagerLeaseProgress::default();
+    let mut last_report = tokio::time::Instant::now();
+
+    loop {
+        let lease = tokio::time::timeout(
+            Duration::from_secs(5),
+            leases.get_opt("kube-controller-manager"),
+        )
+        .await
+        .context("timed out reading kube-controller-manager Lease")?
+        .context("reading kube-controller-manager Lease")?;
+        if lease
+            .as_ref()
+            .is_some_and(|lease| progress.observe(lease))
+        {
+            eprintln!("nodemigrate: retained kube-controller-manager Lease renewed");
+            return Ok(());
+        }
+        if lease.is_none() {
+            let pods = tokio::time::timeout(
+                Duration::from_secs(5),
+                controller_managers.list(&ListParams::default().labels("component=kube-controller-manager")),
+            )
+            .await
+            .context("timed out listing kube-controller-manager Pods")?
+            .context("listing kube-controller-manager Pods")?;
+            if pods.items.iter().any(controller_manager_without_election_is_ready) {
+                eprintln!(
+                    "nodemigrate: retained kube-controller-manager Pod is Ready with leader election disabled"
+                );
+                return Ok(());
+            }
+        }
+
+        let now = tokio::time::Instant::now();
+        if now.duration_since(last_report) >= Duration::from_secs(10) {
+            eprintln!(
+                "nodemigrate: waiting for retained kube-controller-manager Lease to renew before Cilium reset"
+            );
+            last_report = now;
+        }
+        if now >= deadline {
+            bail!(
+                "kube-controller-manager Lease did not renew within {} seconds",
+                CONTROLLER_MANAGER_LEASE_READY_TIMEOUT.as_secs()
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+fn controller_manager_without_election_is_ready(pod: &Pod) -> bool {
+    let ready = pod.status.as_ref().is_some_and(|status| {
+        status.conditions.as_ref().is_some_and(|conditions| {
+            conditions
+                .iter()
+                .any(|condition| condition.type_ == "Ready" && condition.status == "True")
+        })
+    });
+    let leader_election_disabled = pod.spec.as_ref().is_some_and(|spec| {
+        spec.containers.iter().any(|container| {
+            container.args.as_ref().is_some_and(|args| {
+                args.iter().any(|arg| arg == "--leader-elect=false")
+                    || args
+                        .windows(2)
+                        .any(|pair| pair[0] == "--leader-elect" && pair[1] == "false")
+            })
+        })
+    });
+    ready && leader_election_disabled
 }
 
 async fn restore_cilium_clean_state_flag(
@@ -5001,6 +5114,7 @@ mod tests {
     use super::{
         can_preserve_existing_crd, crd_metadata_merge_patch, crd_schema_matches,
         custom_resource_gvks, is_running_standalone_nonrestartable_pod,
+        controller_manager_without_election_is_ready,
         is_source_custom_resource, kubeconfig_root_ca,
         kubernetes_service_route, namespace_ca_bundle_matches, node_is_ready_replacement,
         node_scheduling_patch, object_rank,
@@ -5017,11 +5131,14 @@ mod tests {
         summarize_import_failures, take_pod_ephemeral_containers, write_export_manifest,
         remove_cilium_socket_lb_pins, run_with_cilium_flag_restore, ApiResource,
         CiliumAgentProgress, DynamicObject, Export, ExportedObject, KubeApi, NodeSchedulingState,
-        CiliumServiceRouteProgress, SkipReason,
+        CiliumServiceRouteProgress, ControllerManagerLeaseProgress, SkipReason,
         CILIUM_AGENT_READY_STABILITY,
         CILIUM_SERVICE_ROUTE_READY_STABILITY,
     };
-    use k8s_openapi::api::core::v1::{Pod, Service};
+    use k8s_openapi::api::{
+        coordination::v1::Lease,
+        core::v1::{Pod, Service},
+    };
     use crate::detect::{ClusterConfig, Installation, K3sDatastore, NodeRole, ServiceManager};
     use crate::request::Distribution;
     use std::collections::{BTreeMap, HashMap};
@@ -5079,6 +5196,72 @@ mod tests {
             true,
             start + CILIUM_SERVICE_ROUTE_READY_STABILITY + Duration::from_secs(12)
         ));
+    }
+
+    #[test]
+    fn controller_manager_readiness_requires_a_lease_renewal() {
+        let mut progress = ControllerManagerLeaseProgress::default();
+        let initial: Lease = serde_json::from_value(serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": {"name": "kube-controller-manager", "namespace": "kube-system"},
+            "spec": {
+                "holderIdentity": "control-plane-a",
+                "renewTime": "2026-10-01T00:00:00Z"
+            }
+        }))
+        .unwrap();
+        let unchanged: Lease = serde_json::from_value(serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": {"name": "kube-controller-manager", "namespace": "kube-system"},
+            "spec": {
+                "holderIdentity": "control-plane-a",
+                "renewTime": "2026-10-01T00:00:00Z"
+            }
+        }))
+        .unwrap();
+        let renewed: Lease = serde_json::from_value(serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": {"name": "kube-controller-manager", "namespace": "kube-system"},
+            "spec": {
+                "holderIdentity": "control-plane-a",
+                "renewTime": "2026-10-01T00:00:10Z"
+            }
+        }))
+        .unwrap();
+
+        assert!(!progress.observe(&initial));
+        assert!(!progress.observe(&unchanged));
+        assert!(progress.observe(&renewed));
+    }
+
+    #[test]
+    fn controller_manager_without_leader_election_uses_pod_readiness() {
+        let ready: Pod = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": "kube-controller-manager-node-a", "namespace": "kube-system"},
+            "spec": {
+                "containers": [{"name": "kube-controller-manager", "args": ["--leader-elect=false"]}]
+            },
+            "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+        }))
+        .unwrap();
+        let not_ready: Pod = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": "kube-controller-manager-node-a", "namespace": "kube-system"},
+            "spec": {
+                "containers": [{"name": "kube-controller-manager", "args": ["--leader-elect", "false"]}]
+            },
+            "status": {"conditions": [{"type": "Ready", "status": "False"}]}
+        }))
+        .unwrap();
+
+        assert!(controller_manager_without_election_is_ready(&ready));
+        assert!(!controller_manager_without_election_is_ready(&not_ready));
     }
 
     #[test]

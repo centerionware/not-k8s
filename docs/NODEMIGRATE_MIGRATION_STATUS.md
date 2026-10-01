@@ -27,9 +27,15 @@ and status plus returned Node labels, taints, and conditions. The first
 quick-check for those diagnostics caught a counter-type compile error; the
 correction passed in
 [36798954063](https://github.com/centerionware/not-k8s/actions/runs/36798954063).
-No migration matrix has exercised this fix batch yet. The upstream
-no-replacement cause remains unresolved; do not count this matrix or the
-quick-check as migration success. No general build or full e2e ran.
+Re-reading the saved upstream event snapshot shows the controller-manager
+Lease acquired a new leader about two minutes after the five-minute Cilium
+replacement wait expired. This suggests the DaemonSet controller was not
+active during the reset, but the post-failure evidence does not prove that
+cause. The current candidate waits for a fresh controller-manager Lease
+renewal before deleting Cilium on the upstream Kubernetes return path, or a
+Ready controller-manager Pod when leader election is explicitly disabled; its
+focused check is pending. No migration matrix has exercised the latest fix
+batch. No general build or full e2e ran.
 
 ## Latest branch migration matrix: 36786000022
 

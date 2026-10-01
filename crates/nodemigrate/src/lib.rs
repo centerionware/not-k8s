@@ -1157,6 +1157,29 @@ fn migrate_to_existing(
         ));
     }
     eprintln!("nodemigrate: returned node {returning_node_name} is Ready");
+    if target.distribution == request::Distribution::Kubernetes
+        && target
+            .cluster
+            .as_ref()
+            .is_some_and(|cluster| cluster.cni.as_deref() == Some("cilium"))
+    {
+        eprintln!(
+            "nodemigrate: waiting for retained Kubernetes controller manager before Cilium reset"
+        );
+        if let Err(error) = target_api.wait_for_controller_manager() {
+            return Err(rollback_reverse_migration(
+                source,
+                target,
+                previous_service,
+                export.as_ref(),
+                host_path_snapshot.as_ref(),
+                error.context(
+                    "waiting for retained Kubernetes controller manager before Cilium reset",
+                ),
+                &recovery_location,
+            ));
+        }
+    }
     // The retained node may have been explicitly replaced above. Rebuild
     // Cilium after that replacement is Ready so the agent initializes against
     // the final Node identity and datapath state.

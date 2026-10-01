@@ -12,17 +12,20 @@ paths failed. Logs are saved at `/tmp/nodemigrate-36792261326-job-*.log`.
 
 - **Component: retained Kubernetes Cilium recovery.** After return, the
   retained API and Node were ready. Nodemigrate deleted the old local Cilium
-  agent Pod, but observed no replacement for five minutes. This run's
-  diagnostics did not preserve the Pod inventory or events that would explain
-  why the DaemonSet controller did not produce a replacement. The cause is
-  unresolved. At `e14a992a`, deadline diagnostics now capture all Cilium Pods
+  agent Pod, but observed no replacement for five minutes. The later event
+  snapshot shows the controller-manager Lease acquired a new leader about two
+  minutes after that wait expired. This suggests the DaemonSet controller was
+  not active during Cilium replacement, but does not prove the cause. At
+  `e14a992a`, deadline diagnostics now capture all Cilium Pods
   and recent kube-system events; the focused check passed in
   [36797519104](https://github.com/centerionware/not-k8s/actions/runs/36797519104).
   At `a83a7ca9`, they also capture DaemonSet generation/status and returned
   Node scheduling metadata. The first check found counter-type compile errors;
   after correction, the `nodemigrate` quick-check passed in
   [36798954063](https://github.com/centerionware/not-k8s/actions/runs/36798954063).
-  This is diagnostic coverage, not a confirmed runtime fix.
+  The candidate waits for a fresh controller-manager Lease renewal before
+  deleting Cilium on upstream Kubernetes return, or a Ready controller-manager
+  Pod when leader election is explicitly disabled; focused CI is pending.
 - **Component: K3s CRI cleanup coordination.** The workflow paused K3s' main
   process before stopping a local Pod sandbox, leaving the CNI DEL path
   waiting on an API that the same process served. The current candidate keeps

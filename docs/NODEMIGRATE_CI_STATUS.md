@@ -11,9 +11,11 @@ builds and setup passed; all three runtime lanes failed:
 
 - Upstream Kubernetes job `110147659893` failed during return Cilium recovery.
   The retained API and Node became ready, but after deleting the old local
-  Cilium agent Pod no replacement was observed for five minutes. The job's
-  failure diagnostics did not retain the Cilium Pod inventory or relevant
-  events, so the controller/scheduling cause is unresolved.
+  Cilium agent Pod no replacement was observed for five minutes. A later
+  event snapshot showed `kube-controller-manager` acquiring its Lease about
+  two minutes after that wait expired. This suggests its DaemonSet controller
+  was not active during Cilium replacement, but does not prove that was the
+  cause.
 - K3s job `110147660066` failed while `StopPodSandbox` ran with the K3s API
   process paused. The CNI DEL path did not finish before the CRI deadline.
 - Five-node job `110147660255` restored the returning control planes but tried
@@ -35,8 +37,12 @@ caught four status-counter type mismatches; after correction, the rerun passed
 at [36798954063](https://github.com/centerionware/not-k8s/actions/runs/36798954063).
 PR validation [36798179242](https://github.com/centerionware/not-k8s/actions/runs/36798179242)
 passed script and jq checks, with migration jobs skipped. The fixes still need
-branch-runtime migration evidence; the upstream cause is not yet confirmed. No
-general build or full e2e ran.
+branch-runtime migration evidence; the upstream cause is not yet confirmed. A
+candidate now waits for the retained controller-manager Lease to renew before
+resetting Cilium on the upstream Kubernetes return path, with a Ready
+controller-manager Pod fallback when leader election is explicitly disabled.
+Its focused unit tests and `nodemigrate` quick-check are pending. No general
+build or full e2e ran.
 
 ## Branch migration matrix 36786000022
 
