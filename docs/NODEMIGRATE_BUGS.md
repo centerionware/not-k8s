@@ -28,7 +28,10 @@ paths failed. Logs are saved at `/tmp/nodemigrate-36792261326-job-*.log`.
   Pod when leader election is explicitly disabled. Both readiness tests passed
   the `nodemigrate` quick-check at SHA `7fa9b2f9` in
   [36800293651](https://github.com/centerionware/not-k8s/actions/runs/36800293651);
-  runtime behavior remains unverified.
+  runtime behavior remains unverified. Matrix
+  [36800539523](https://github.com/centerionware/not-k8s/actions/runs/36800539523)
+  is now exercising this guard at SHA `dda5227b` alongside the existing K3s
+  and five-node fixes.
 - **Component: K3s CRI cleanup coordination.** The workflow paused K3s' main
   process before stopping a local Pod sandbox, leaving the CNI DEL path
   waiting on an API that the same process served. The current candidate keeps

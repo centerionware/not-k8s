@@ -46,6 +46,14 @@ quick-check at SHA `7fa9b2f9` in
 [36800293651](https://github.com/centerionware/not-k8s/actions/runs/36800293651).
 No general build or full e2e ran.
 
+Branch-runtime migration matrix
+[36800539523](https://github.com/centerionware/not-k8s/actions/runs/36800539523)
+is running at SHA `dda5227b117c0dc42ba0353cc638bcaabe7901d7` with
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+Upstream Kubernetes, K3s, and isolated five-node jobs are active. This is the
+first runtime validation of the controller-manager readiness guard and the
+existing K3s/five-node recovery fixes. No result is known yet.
+
 ## Branch migration matrix 36786000022
 
 [Run 36786000022](https://github.com/centerionware/not-k8s/actions/runs/36786000022)
