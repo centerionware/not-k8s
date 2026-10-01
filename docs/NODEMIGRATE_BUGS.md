@@ -2,7 +2,36 @@
 
 Last updated: 2026-10-01
 
-## Migration matrix 36805374812
+## Branch migration matrix 36818085887
+
+[Run 36818085887](https://github.com/centerionware/not-k8s/actions/runs/36818085887)
+tested SHA `af463a1bb86bbaa3e9bf7cea012a5d60745c49f1`, branch runtime, Cilium
+KPR, and the full 3-control-plane/2-worker scenario. K3s, upstream Kubernetes,
+and Docker-isolated five-node migrations all passed. Full logs:
+`/tmp/nodemigrate-36818085887-artifacts/`.
+
+- **Resolved component: reverse worker return validation.** The five-node
+  reverse migration returned both workers after all three control planes; the
+  worker return path did not re-import cluster-wide resources. This verifies
+  the `skip-api-export` role-check correction with the actual 3+2 cluster,
+  beyond its focused unit regression.
+- **Upstream Envoy migration failure not reproduced.** The preceding upstream
+  run crashed its replacement Envoy Pod after import. In this full matrix the
+  upstream lane passed round-trip migration and the required Cilium/workload
+  checkpoints; the separate immediate UID-preconditioned Envoy probe also
+  passed in [36817021594](https://github.com/centerionware/not-k8s/actions/runs/36817021594).
+  No confirmed Envoy product defect remains from these runs. Keep the current
+  Envoy termination/log capture in place in case this failure recurs.
+- **No additional failing migration assertion was observed.** The five-node
+  lane passed all five-node readiness, source/target/returned state comparison,
+  and durable fixture checks. Runtime events include transient CNI/probe
+  messages during cutover; the returned service, pod-origin API, CSI/PV,
+  StatefulSet, and resource parity assertions passed. Preserve these as
+  operational diagnostics rather than attributing them to an unproven defect.
+
+Cilium kube-proxy replacement disabled is still a required untested scenario.
+
+## Previous migration matrix 36805374812
 
 Branch-runtime run
 [36805374812](https://github.com/centerionware/not-k8s/actions/runs/36805374812)
@@ -57,8 +86,10 @@ are saved under `/tmp/nodemigrate-36805374812-artifacts/`.
   three control planes plus two workers. It passed setup and forward migration;
   the observed failure was worker role validation during reverse migration.
 
-K3s passed its full round trip in 27m06s. Do not rerun the full matrix until
-the upstream Envoy crash is diagnosed.
+K3s passed its full round trip in 27m06s. The Envoy crash was not reproduced by
+the later branch matrix [36818085887](https://github.com/centerionware/not-k8s/actions/runs/36818085887),
+which passed the upstream round trip and the complete three-control-plane /
+two-worker lane. Preserve the Envoy diagnostics in case the failure recurs.
 
 ## Previous migration matrix 36800539523
 

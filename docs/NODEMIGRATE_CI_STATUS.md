@@ -2,7 +2,37 @@
 
 Last updated: 2026-10-01
 
-## Branch migration matrix 36805374812
+## Branch migration matrix 36818085887
+
+[Run 36818085887](https://github.com/centerionware/not-k8s/actions/runs/36818085887)
+tested SHA `af463a1bb86bbaa3e9bf7cea012a5d60745c49f1` with
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+All three migration jobs passed: upstream Kubernetes in 27m30s, K3s in
+28m27s, and the Docker-isolated five-node run in 53m29s. Each single-node lane
+built branch `nodemigrate` and `notk8s --features cri`; fetching the regular
+release runtime was skipped because the branch runtime was selected.
+
+The five-node topology was three control planes plus two workers. All five
+Nodes were Ready at the returned checkpoint; all three control planes and both
+workers returned to the retained kubeadm cluster. Worker returns did not
+re-import cluster-wide API objects. At source, nodestore, and returned
+checkpoints, the fixture passed its workload, API CA continuity, Cilium
+KPR Service routing, HostPath CSI/PV data, StatefulSet PVC binding/data,
+RBAC, TokenReview/SAR, CRD status, ephemeral-container, ingress, and pod-origin
+API checks. The final comparison found unchanged normalized source objects,
+all 113 source-discovered listable resources still exposed, and matching
+returned fixture state including text/binary ConfigMaps, Secret digests,
+certificate Secret, and PVC data. The five-node log also confirms the old
+kubeadm control-plane processes were quiescent while source manifests and etcd
+data remained available for recovery. Full logs are saved in
+`/tmp/nodemigrate-36818085887-artifacts/`.
+
+This closes the reverse worker-return validation failure and shows the prior
+upstream Envoy crash did not reproduce in this full migration run. Cilium KPR
+disabled coverage remains pending. No general `build.yml` or full `e2e.yml`
+gate ran.
+
+## Previous branch migration matrix 36805374812
 
 [Run 36805374812](https://github.com/centerionware/not-k8s/actions/runs/36805374812)
 tested SHA `b140095b15f230941b2d4ad179fc0be2955ffc06` with
@@ -52,10 +82,10 @@ precondition. The corrected focused probe
 [36817021594](https://github.com/centerionware/not-k8s/actions/runs/36817021594)
 passed at SHA `3d77f575a41c14940c6fcf7c9b762b2333ba50d3`: Cilium clean-state
 recovery succeeded, the UID-preconditioned Envoy delete returned the matching
-Pod, and its replacement became Ready. Rerun the branch-runtime migration
-matrix with Cilium KPR and five-node migration enabled. The migration-specific
-Envoy crash remains unreproduced and unexplained. Logs:
-`/tmp/nodemigrate-36812017038-artifacts/`. No general build or full e2e ran.
+Pod, and its replacement became Ready. The full follow-up matrix passed in
+36818085887 above, so the old migration-specific Envoy failure was not
+reproduced. Logs: `/tmp/nodemigrate-36812017038-artifacts/` and
+`/tmp/nodemigrate-36818085887-artifacts/`. No general build or full e2e ran.
 
 ## Previous branch migration matrix 36800539523
 

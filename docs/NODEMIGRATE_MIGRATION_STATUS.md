@@ -2,7 +2,35 @@
 
 Last updated: 2026-10-01
 
-## Latest branch migration matrix: 36805374812
+## Latest branch migration matrix: 36818085887
+
+[Run 36818085887](https://github.com/centerionware/not-k8s/actions/runs/36818085887)
+tested SHA `af463a1bb86bbaa3e9bf7cea012a5d60745c49f1` with the branch-built
+utility and combined runtime, Cilium KPR enabled, and the 3-control-plane /
+2-worker Docker scenario enabled. K3s passed its full Cilium round trip in
+28m27s; upstream Kubernetes passed in 27m30s; the five-node lane passed in
+53m29s. All branch builds passed.
+
+The five-node kubeadm/Cilium lane completed source-to-nodestore and return
+migration. All five Nodes were Ready after return, and all three control planes
+and both workers were returned. Workers joined the retained cluster without
+re-importing cluster-wide resources. Source manifests and etcd data remained
+available while old kubeadm control-plane processes were quiescent. The
+source-discovered resource inventory passed with 113 listable API resources;
+normalized source API data and durable fixture state matched across the
+source, nodestore, and returned stages. The source and returned checkpoints
+also matched text/binary ConfigMaps, Secret digests, certificate Secret, and
+PVC payloads. HostPath CSI/PV data, StatefulSet claim bindings and data,
+API CA continuity, Cilium eBPF Service routing, ingress, RBAC and
+TokenReview/SAR behavior, CRD status, and pod-origin API access passed at their
+checkpoints. Detailed logs: `/tmp/nodemigrate-36818085887-artifacts/`.
+
+This closes the worker `skip-api-export` validation defect. The earlier
+upstream Envoy replacement crash was not reproduced in this full matrix;
+current/previous Envoy diagnostics remain enabled for future failures. Cilium
+KPR-disabled coverage remains required. No general build or full e2e gate ran.
+
+## Previous branch migration matrix: 36805374812
 
 [Run 36805374812](https://github.com/centerionware/not-k8s/actions/runs/36805374812)
 tested SHA `b140095b15f230941b2d4ad179fc0be2955ffc06` with branch runtime,
