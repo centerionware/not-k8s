@@ -5337,15 +5337,15 @@ mod tests {
             "metadata": {
                 "name": "node-a.node-password.k3s",
                 "namespace": "kube-system",
-                "resourceVersion": "12"
+                "resourceVersion": "12",
+                "ownerReferences": [{
+                    "apiVersion": "v1",
+                    "kind": "Node",
+                    "name": "node-a",
+                    "uid": "node-uid"
+                }]
             },
             "immutable": true,
-            "ownerReferences": [{
-                "apiVersion": "v1",
-                "kind": "Node",
-                "name": "node-a",
-                "uid": "node-uid"
-            }],
             "data": {"password": "ZGVzdGluYXRpb24="}
         }))
         .unwrap();
