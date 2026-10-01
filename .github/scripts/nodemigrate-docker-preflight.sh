@@ -607,6 +607,28 @@ fi
 docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
     kubectl --request-timeout=20s get nodes -o wide
 
+if [[ "$CILIUM_KPR" == false ]]; then
+    echo "Refreshing kube-proxy after Cilium and all five nodes are Ready"
+    docker exec "$cp1" env KUBECONFIG=/etc/kubernetes/admin.conf \
+        kubectl rollout restart daemonset/kube-proxy -n kube-system
+    docker exec "$cp1" env KUBECONFIG=/etc/kubernetes/admin.conf \
+        kubectl rollout status daemonset/kube-proxy -n kube-system --timeout=5m
+    for host in cp-1 cp-2 cp-3; do
+        echo "Checking host-network Kubernetes Service routing on $host"
+        docker exec "$(node_container "$host")" bash -ec '
+            for attempt in $(seq 1 30); do
+                if timeout 3 bash -c "exec 3<>/dev/tcp/10.96.0.1/443" 2>/dev/null; then
+                    echo "PASS: Kubernetes Service route 10.96.0.1:443 reachable from host network"
+                    exit 0
+                fi
+                sleep 2
+            done
+            echo "FAIL: Kubernetes Service route 10.96.0.1:443 unreachable from host network" >&2
+            exit 1
+        '
+    done
+fi
+
 echo "PASS: five Docker nodes ran a kubeadm 3-control-plane/2-worker cluster with Cilium, survived control-plane loss, and recovered all Nodes"
 echo "PASS: Docker isolation checks confirmed distinct namespaces, CRI/BPF support, separate storage, and inter-node reachability"
 if [[ "$FIVE_NODE_MIGRATION" == true ]]; then

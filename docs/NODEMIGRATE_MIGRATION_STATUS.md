@@ -2,6 +2,23 @@
 
 Last updated: 2026-10-01
 
+## Latest branch-runtime matrix 36857298075
+
+Run [36857298075](https://github.com/centerionware/not-k8s/actions/runs/36857298075)
+tested SHA `b5567216a8de0b0000a600782fa3b3985ec35a80`. K3s and upstream
+Kubernetes completed their full round trips. The five-node lane retained the
+required topology of exactly three control planes (`cp-1`–`cp-3`) and two
+workers (`worker-1`, `worker-2`) and passed control-plane-loss recovery, but
+failed source fixture setup before the first migration. Cert-manager could
+not reach its webhook ClusterIP `10.99.188.30:443`, leaving the source
+ClusterIssuer unready; the webhook Pod and endpoint were reported Ready.
+Expanded same-name CRI sandbox cleanup from this SHA has not yet been exercised
+by a full migration because of that setup failure. The next Docker preflight
+refreshes kube-proxy after Cilium readiness and actively checks the API
+Service VIP from all three control-plane hosts. Runtime verification is
+pending. Saved artifact:
+`/tmp/nodemigrate-36857298075-docker-artifact/nodemigrate-docker-preflight.log`.
+
 ## Latest branch-runtime matrix 36852709698
 
 Run [36852709698](https://github.com/centerionware/not-k8s/actions/runs/36852709698)

@@ -2,6 +2,21 @@
 
 Last updated: 2026-10-01
 
+## Branch-runtime matrix 36857298075
+
+The five-node cluster passed isolation, Cilium readiness, and the exact
+three-control-plane/two-worker role check. The lane failed before migration
+while waiting for source `ClusterIssuer/migration-selfsigned`. Cert-manager
+reported repeated timeouts calling its webhook at ClusterIP
+`10.99.188.30:443`; the webhook Pod and Service endpoint were Ready, and
+kube-proxy owned Service routing because KPR was disabled. This is source
+host-network Service routing failure evidence, separate from the cp-3 route
+failure during migration in run 36852709698. The Docker preflight now refreshes
+kube-proxy after Cilium and all Nodes are ready, then checks the Kubernetes
+Service VIP from each control-plane host before installing the fixture.
+Runtime verification remains pending. Log:
+`/tmp/nodemigrate-36857298075-docker-artifact/nodemigrate-docker-preflight.log`.
+
 ## Branch-runtime matrix 36852709698
 
 The five-node run used exactly three control planes (`cp-1`–`cp-3`) and two

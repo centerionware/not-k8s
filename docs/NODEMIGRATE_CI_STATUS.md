@@ -2,6 +2,26 @@
 
 Last updated: 2026-10-01
 
+## Latest branch-runtime matrix 36857298075
+
+Run [36857298075](https://github.com/centerionware/not-k8s/actions/runs/36857298075)
+tested SHA `b5567216a8de0b0000a600782fa3b3985ec35a80` with branch runtime,
+Cilium KPR disabled, and five-node migration enabled. Focused nodemigrate
+quick-check [36857068859](https://github.com/centerionware/not-k8s/actions/runs/36857068859)
+passed. K3s and upstream round trips passed in 22m33s and 23m46s. The Docker
+cluster passed its exact 3-control-plane/2-worker topology and node recovery,
+but source fixture setup failed before migration: cert-manager could not
+reach its webhook at Service ClusterIP `10.99.188.30:443`, so
+`ClusterIssuer/migration-selfsigned` did not become Ready. The webhook Pod
+and endpoint were Ready; KPR was disabled and kube-proxy owned routing. The
+Docker preflight now restarts kube-proxy after Cilium/node readiness and probes
+the Kubernetes API Service VIP from each control-plane host. This preflight
+route fix and the expanded stale kube-proxy CRI cleanup both still need full
+3+2 runtime verification. Saved log:
+`/tmp/nodemigrate-36857298075-docker-job.log`; artifact:
+`/tmp/nodemigrate-36857298075-docker-artifact/nodemigrate-docker-preflight.log`.
+No general build or full e2e gate ran.
+
 ## Latest branch-runtime matrix 36852709698
 
 Run [36852709698](https://github.com/centerionware/not-k8s/actions/runs/36852709698)
