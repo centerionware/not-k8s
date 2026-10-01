@@ -2,6 +2,23 @@
 
 Last updated: 2026-10-01
 
+## Branch-runtime matrix 36865090999
+
+The exact 3-control-plane/2-worker lane completed the full bidirectional
+migration and all source, nodestore, and returned fixture checks. The kube-
+proxy host-alias change resolved the prior inability to resolve `cp-1` in
+node Pods; all five kube-proxy Pods mapped `cp-1` to the isolated node IP and
+all five node-level API Service probes passed. K3s also passed. The upstream
+lane stopped before migration because the one-shot `kubectl apply -f` of the
+pinned Gateway API release manifest received HTTP 504. This was a transient
+download failure, not a migration or API behavior failure. The harness now
+downloads the manifest with bounded curl retries and applies the saved file.
+The retry needs matrix verification. Logs:
+`/tmp/nodemigrate-36865090999-kubernetes-job.log`,
+`/tmp/nodemigrate-36865090999-docker-job.log`, and artifacts under
+`/tmp/nodemigrate-36865090999-kubernetes-artifact/` and
+`/tmp/nodemigrate-36865090999-docker-artifact/`.
+
 ## Branch-runtime matrix 36861277281
 
 The required five-node cluster remained exactly three control planes and two

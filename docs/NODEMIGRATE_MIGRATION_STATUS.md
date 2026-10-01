@@ -2,6 +2,21 @@
 
 Last updated: 2026-10-01
 
+## Latest branch-runtime matrix 36865090999
+
+At SHA `15bd4c1d44064bbffe39fed8d1ce1e2f8eca4842`, K3s passed its full
+round trip in 26m17s. The isolated upstream cluster used exactly three
+control planes (`cp-1`–`cp-3`) and two workers (`worker-1`, `worker-2`),
+passed the complete forward and return migration in 49m55s, and returned all
+five Nodes Ready. Source, nodestore, and returned fixture checks passed for
+PV/PVC data, StatefulSet data, CRD status, RBAC, Gateway API, ingress, and
+other fixture resources. All 113 source-discovered listable API resources
+remained exposed; normalized source API state and returned fixture data
+matched. The upstream single-node lane did not begin migration: a transient
+HTTP 504 fetching the Gateway API manifest stopped source fixture setup. A
+bounded retry is now added for that download and awaits validation. See
+[CI status](NODEMIGRATE_CI_STATUS.md) for logs and run identity.
+
 ## Latest branch-runtime matrix 36861277281
 
 K3s and upstream Kubernetes passed full round trips on branch SHA

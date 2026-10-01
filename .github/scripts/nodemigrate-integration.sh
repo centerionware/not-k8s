@@ -1951,7 +1951,19 @@ install_workloads() {
     helm repo add traefik https://traefik.github.io/charts --force-update
     helm repo update
     local gateway_api_version="${GATEWAY_API_VERSION:-v1.6.1}"
-    kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${gateway_api_version}/standard-install.yaml"
+    local gateway_api_manifest
+    gateway_api_manifest="$(mktemp)"
+    if ! curl --fail --location --retry 5 --retry-delay 2 --retry-max-time 60 \
+        --output "$gateway_api_manifest" \
+        "https://github.com/kubernetes-sigs/gateway-api/releases/download/${gateway_api_version}/standard-install.yaml"; then
+        rm -f "$gateway_api_manifest"
+        return 1
+    fi
+    if ! kubectl apply -f "$gateway_api_manifest"; then
+        rm -f "$gateway_api_manifest"
+        return 1
+    fi
+    rm -f "$gateway_api_manifest"
     kubectl wait --for=condition=Established crd/gatewayclasses.gateway.networking.k8s.io --timeout=2m
     kubectl wait --for=condition=Established crd/httproutes.gateway.networking.k8s.io --timeout=2m
     helm upgrade --install cert-manager jetstack/cert-manager \

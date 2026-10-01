@@ -2,6 +2,28 @@
 
 Last updated: 2026-10-01
 
+## Latest branch-runtime matrix 36865090999
+
+Run [36865090999](https://github.com/centerionware/not-k8s/actions/runs/36865090999)
+tested SHA `15bd4c1d44064bbffe39fed8d1ce1e2f8eca4842` with
+`runtime_source=branch`, Cilium KPR disabled, and five-node migration enabled.
+K3s passed in 26m17s. The exact five-node layout—three control planes
+(`cp-1`–`cp-3`) and two workers (`worker-1`, `worker-2`)—passed the full
+source → nodestore → returned migration in 49m55s. All five Nodes returned
+Ready; source, nodestore, and returned fixture checks passed, including
+retained PV/PVC data, CRD status, RBAC, Gateway API, and all 113
+source-discovered listable API resources. Normalized source API state and
+returned fixture data matched. The kube-proxy `cp-1` host-alias fix passed.
+Upstream Kubernetes failed before migration because fetching the pinned
+Gateway API manifest returned HTTP 504. The harness now retries that download
+before applying it; this network-retry change still needs matrix verification.
+Job logs:
+`/tmp/nodemigrate-36865090999-kubernetes-job.log` and
+`/tmp/nodemigrate-36865090999-docker-job.log`; artifacts are under
+`/tmp/nodemigrate-36865090999-kubernetes-artifact/` and
+`/tmp/nodemigrate-36865090999-docker-artifact/`. No general build or full e2e
+gate ran.
+
 ## Latest branch-runtime matrix 36861277281
 
 Run [36861277281](https://github.com/centerionware/not-k8s/actions/runs/36861277281)
