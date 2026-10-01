@@ -41,8 +41,10 @@ branch-runtime migration evidence; the upstream cause is not yet confirmed. A
 candidate now waits for the retained controller-manager Lease to renew before
 resetting Cilium on the upstream Kubernetes return path, with a Ready
 controller-manager Pod fallback when leader election is explicitly disabled.
-Its focused unit tests and `nodemigrate` quick-check are pending. No general
-build or full e2e ran.
+Its Lease-renewal and no-election readiness tests passed the `nodemigrate`
+quick-check at SHA `7fa9b2f9` in
+[36800293651](https://github.com/centerionware/not-k8s/actions/runs/36800293651).
+No general build or full e2e ran.
 
 ## Branch migration matrix 36786000022
 

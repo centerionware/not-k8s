@@ -25,7 +25,10 @@ paths failed. Logs are saved at `/tmp/nodemigrate-36792261326-job-*.log`.
   [36798954063](https://github.com/centerionware/not-k8s/actions/runs/36798954063).
   The candidate waits for a fresh controller-manager Lease renewal before
   deleting Cilium on upstream Kubernetes return, or a Ready controller-manager
-  Pod when leader election is explicitly disabled; focused CI is pending.
+  Pod when leader election is explicitly disabled. Both readiness tests passed
+  the `nodemigrate` quick-check at SHA `7fa9b2f9` in
+  [36800293651](https://github.com/centerionware/not-k8s/actions/runs/36800293651);
+  runtime behavior remains unverified.
 - **Component: K3s CRI cleanup coordination.** The workflow paused K3s' main
   process before stopping a local Pod sandbox, leaving the CNI DEL path
   waiting on an API that the same process served. The current candidate keeps

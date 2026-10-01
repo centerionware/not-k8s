@@ -34,8 +34,11 @@ active during the reset, but the post-failure evidence does not prove that
 cause. The current candidate waits for a fresh controller-manager Lease
 renewal before deleting Cilium on the upstream Kubernetes return path, or a
 Ready controller-manager Pod when leader election is explicitly disabled; its
-focused check is pending. No migration matrix has exercised the latest fix
-batch. No general build or full e2e ran.
+focused Lease-renewal and no-election readiness tests passed the `nodemigrate`
+quick-check at SHA `7fa9b2f9` in
+[36800293651](https://github.com/centerionware/not-k8s/actions/runs/36800293651).
+No migration matrix has exercised the latest fix batch. No general build or
+full e2e ran.
 
 ## Latest branch migration matrix: 36786000022
 
