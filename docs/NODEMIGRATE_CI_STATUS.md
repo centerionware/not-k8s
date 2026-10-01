@@ -15,8 +15,12 @@ K3s immutable node-password Secret. Five-node job `110173643019` failed on a
 second return invocation for an already-staged control plane, which rejected
 the fully disabled source service stack. Full lane logs are in
 `/tmp/nodemigrate-36800539523-artifacts/`. The current worktree contains
-focused fixes for both failures; run a `nodemigrate` quick-check before another
-migration matrix. No general build or full e2e ran.
+focused fixes for both failures. The first quick-check caught a moved-value
+compile error, then two runs exposed a malformed owner-reference test fixture;
+the fixture and source borrow are corrected. The final focused check passed at
+SHA `f9bd9c11` in
+[36805080813](https://github.com/centerionware/not-k8s/actions/runs/36805080813).
+No general build or full e2e ran.
 
 ## Branch migration matrix 36792261326
 

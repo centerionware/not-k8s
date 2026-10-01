@@ -21,18 +21,20 @@ three-control-plane/two-worker Docker lane enabled. Logs are saved under
   already issued a new immutable Secret for the re-registered Node. The K3s
   log confirms K3s added a Node owner reference to that Secret before import.
   The current candidate preserves only a matching immutable, Node-owned K3s
-  password Secret already issued by the destination; focused CI is pending.
+  password Secret already issued by the destination.
 - **Component: idempotent staged nodestore shutdown.** Docker job
   `110173643019` staged `cp-2` and `cp-3`, restored the retained quorum, then
   invoked return on the already-staged `cp-2`. The second invocation failed
   because `stop_nodestore_stack` required an active service even though the
   nodestore services were all disabled by the first staging call. The candidate
   accepts a known service stack only when active or fully disabled, preserving
-  the failure for missing or enabled-but-inactive stacks; focused CI is pending.
+  the failure for missing or enabled-but-inactive stacks. Both fixes and their
+  regressions passed the `nodemigrate` quick-check at SHA `f9bd9c11` in
+  [36805080813](https://github.com/centerionware/not-k8s/actions/runs/36805080813).
+  Runtime verification is pending.
 
-Do not dispatch another matrix until both candidates pass `nodemigrate`
-quick-check. Then rerun the full branch-runtime migration matrix to verify the
-K3s and five-node paths together with the already passing upstream path.
+Rerun the full branch-runtime migration matrix to verify the K3s and five-node
+paths together with the already passing upstream path.
 
 ## Migration matrix 36792261326 failures
 

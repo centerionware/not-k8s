@@ -21,8 +21,10 @@ The worktree now preserves a destination-issued immutable K3s password Secret
 only when its namespace, name, immutability, and Node owner reference match;
 it also accepts a known nodestore stack that is fully disabled from a previous
 staging call. Focused regressions cover both behaviors. Run the
-`nodemigrate` quick-check before retrying the matrix. No general build or full
-e2e ran.
+`nodemigrate` quick-check passed at SHA `f9bd9c11` in
+[36805080813](https://github.com/centerionware/not-k8s/actions/runs/36805080813).
+The first focused attempts found a moved-value compile error and a misplaced
+owner-reference fixture; both were corrected. No general build or full e2e ran.
 
 ## Previous branch migration matrix: 36792261326
 
