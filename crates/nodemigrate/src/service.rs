@@ -1196,7 +1196,7 @@ fn stop_nodestore_stack(
     })
     .collect::<Vec<_>>();
     ensure!(
-        !require_active || services.iter().any(|service| service.active),
+        !require_active || service_stack_is_active_or_staged(&services),
         "no active nodebootstrap services were found to stop"
     );
     let previous = PreviousServiceState {
@@ -1225,6 +1225,14 @@ fn stop_nodestore_stack(
         }
     }
     Ok(previous)
+}
+
+fn service_stack_is_active_or_staged(services: &[ServiceState]) -> bool {
+    services.iter().any(|service| service.active)
+        || (!services.is_empty()
+            && services
+                .iter()
+                .all(|service| !service.active && !service.enabled))
 }
 
 fn restore_nodestore_stack(manager: ServiceManager, previous: &PreviousServiceState) -> Result<()> {
@@ -1852,11 +1860,11 @@ fn command(program: &str, args: &[&str]) -> Result<Output> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SourceCiliumIdentity, cilium_host_container_ids, cilium_source_sandbox_ids,
+        ServiceState, SourceCiliumIdentity, cilium_host_container_ids, cilium_source_sandbox_ids,
         cri_cleanup_attempt_limit, cri_cleanup_retryable, cri_cleanup_succeeded,
         cri_pod_sandbox_status_is_stopped,
         nodelet_source_sandbox_ids, pod_agent_control_should_pause, pod_agent_uses_runtime,
-        should_pause_nodelet_fallback,
+        service_stack_is_active_or_staged, should_pause_nodelet_fallback,
         runtime_service_name, static_pod_sandbox_ids, with_service_paused,
     };
     use crate::detect::{Installation, NodeRole, ServiceManager};
@@ -1864,6 +1872,24 @@ mod tests {
 
     const SOURCE_CONTAINER_ID: &str =
         "ef96e5cf937fed840c1bfcc03df0ef667927c7f666ba4963da35faaa9f80f39a";
+
+    #[test]
+    fn staged_nodestore_services_can_be_disabled_again() {
+        let staged = vec![ServiceState {
+            name: "nodestore".to_string(),
+            enabled: false,
+            active: false,
+        }];
+        assert!(service_stack_is_active_or_staged(&staged));
+
+        let unexpectedly_inactive = vec![ServiceState {
+            name: "nodestore".to_string(),
+            enabled: true,
+            active: false,
+        }];
+        assert!(!service_stack_is_active_or_staged(&unexpectedly_inactive));
+        assert!(!service_stack_is_active_or_staged(&[]));
+    }
 
     #[test]
     fn only_pauses_the_pod_agent_using_the_cleaned_runtime() {

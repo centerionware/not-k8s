@@ -4296,6 +4296,12 @@ async fn apply_object(
             .await
             .with_context(|| format!("reading destination {type_meta}/{kind} {name}"))?;
         let result = if let Some(existing) = existing {
+            if preserves_destination_k3s_node_password_secret(&apply_value, &existing) {
+                eprintln!(
+                    "nodemigrate: preserved the destination-issued immutable K3s node-password Secret {name}"
+                );
+                return Ok(existing);
+            }
             if kind == "CustomResourceDefinition"
                 && matches!(name, "ingressroutes.traefik.io" | "ingressroutetcps.traefik.io")
                 && !crd_schema_matches(&existing, &object)
@@ -4447,6 +4453,54 @@ async fn apply_object(
         }
     }
     bail!("destination kept changing {type_meta}/{kind} {name} during migration")
+}
+
+fn preserves_destination_k3s_node_password_secret(
+    source: &Value,
+    destination: &DynamicObject,
+) -> bool {
+    if source.get("kind").and_then(Value::as_str) != Some("Secret") {
+        return false;
+    }
+    let source_name = source.pointer("/metadata/name").and_then(Value::as_str);
+    let source_namespace = source
+        .pointer("/metadata/namespace")
+        .and_then(Value::as_str);
+    let source_immutable = source.pointer("/immutable").and_then(Value::as_bool) == Some(true);
+    let destination_name = destination.metadata.name.as_deref();
+    let destination_namespace = destination.metadata.namespace.as_deref();
+    let destination_immutable = destination.data.pointer("/immutable").and_then(Value::as_bool)
+        == Some(true);
+    let destination_node_owner = destination_name
+        .and_then(|name| name.strip_suffix(".node-password.k3s"));
+    let destination_is_node_owned = destination_node_owner.is_some_and(|node_name| {
+        destination
+            .metadata
+            .owner_references
+            .as_ref()
+            .is_some_and(|references| {
+                references
+                    .iter()
+                    .any(|reference| reference.kind == "Node" && reference.name == node_name)
+            })
+    });
+    is_k3s_node_password_secret(source_namespace, source_name, source_immutable)
+        && is_k3s_node_password_secret(
+            destination_namespace,
+            destination_name,
+            destination_immutable,
+        )
+        && destination_is_node_owned
+}
+
+fn is_k3s_node_password_secret(
+    namespace: Option<&str>,
+    name: Option<&str>,
+    immutable: bool,
+) -> bool {
+    namespace == Some("kube-system")
+        && name.is_some_and(|name| name.ends_with(".node-password.k3s"))
+        && immutable
 }
 
 /// Ephemeral containers are valid only through the Pod's dedicated
@@ -5127,6 +5181,7 @@ mod tests {
         persistent_host_paths, pod_status_is_terminal_or_exited, prepare_initial_import_object,
         preserve_discovered_type_meta, remapped_node_owner_references, restore_cni_path_backups,
         retryable_import_error, same_group_kind, sanitize, service_account_token_secret_patch,
+        preserves_destination_k3s_node_password_secret,
         service_account_token_secret_value, skip_kind_reason, skip_object, snapshot_k3s_cni_paths,
         summarize_import_failures, take_pod_ephemeral_containers, write_export_manifest,
         remove_cilium_socket_lb_pins, run_with_cilium_flag_restore, ApiResource,
@@ -5262,6 +5317,54 @@ mod tests {
 
         assert!(controller_manager_without_election_is_ready(&ready));
         assert!(!controller_manager_without_election_is_ready(&not_ready));
+    }
+
+    #[test]
+    fn preserves_destination_immutable_k3s_node_password_secret() {
+        let source = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": "node-a.node-password.k3s",
+                "namespace": "kube-system"
+            },
+            "immutable": true,
+            "data": {"password": "c291cmNl"}
+        });
+        let destination: DynamicObject = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": "node-a.node-password.k3s",
+                "namespace": "kube-system",
+                "resourceVersion": "12"
+            },
+            "immutable": true,
+            "ownerReferences": [{
+                "apiVersion": "v1",
+                "kind": "Node",
+                "name": "node-a",
+                "uid": "node-uid"
+            }],
+            "data": {"password": "ZGVzdGluYXRpb24="}
+        }))
+        .unwrap();
+
+        assert!(preserves_destination_k3s_node_password_secret(
+            &source,
+            &destination
+        ));
+
+        let unrelated = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": "application-secret", "namespace": "kube-system"},
+            "immutable": true
+        });
+        assert!(!preserves_destination_k3s_node_password_secret(
+            &unrelated,
+            &destination
+        ));
     }
 
     #[test]

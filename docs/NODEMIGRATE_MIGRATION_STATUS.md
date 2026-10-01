@@ -2,7 +2,29 @@
 
 Last updated: 2026-10-01
 
-## Latest branch migration matrix: 36792261326
+## Latest branch migration matrix: 36800539523
+
+[Run 36800539523](https://github.com/centerionware/not-k8s/actions/runs/36800539523)
+tested SHA `dda5227b117c0dc42ba0353cc638bcaabe7901d7` with the branch runtime,
+Cilium KPR, and five-node Docker migration enabled. Upstream Kubernetes passed
+the full round trip in 26m17s: the retained controller-manager Lease renewed
+before Cilium reset, the agent and Envoy recovered, all 119 listable API
+resources remained available, and returned durable state matched the source.
+K3s failed return import on an immutable K3s node-password Secret that K3s had
+regenerated for the returning Node. The five-node run passed migration to
+nodestore and the workload checkpoint there, then failed while returning
+already-staged `cp-2`: the service shutdown path rejected its fully disabled
+nodestore services. The log files are in
+`/tmp/nodemigrate-36800539523-artifacts/`.
+
+The worktree now preserves a destination-issued immutable K3s password Secret
+only when its namespace, name, immutability, and Node owner reference match;
+it also accepts a known nodestore stack that is fully disabled from a previous
+staging call. Focused regressions cover both behaviors. Run the
+`nodemigrate` quick-check before retrying the matrix. No general build or full
+e2e ran.
+
+## Previous branch migration matrix: 36792261326
 
 [Run 36792261326](https://github.com/centerionware/not-k8s/actions/runs/36792261326)
 tested `d93048bb10a97a717b9c0e36ffec869dc06fe752` with the branch runtime,
@@ -37,12 +59,8 @@ Ready controller-manager Pod when leader election is explicitly disabled; its
 focused Lease-renewal and no-election readiness tests passed the `nodemigrate`
 quick-check at SHA `7fa9b2f9` in
 [36800293651](https://github.com/centerionware/not-k8s/actions/runs/36800293651).
-Migration matrix
-[36800539523](https://github.com/centerionware/not-k8s/actions/runs/36800539523)
-is running at SHA `dda5227b117c0dc42ba0353cc638bcaabe7901d7` with the branch
-runtime, Cilium KPR, and five-node migration enabled. It is the first runtime
-check of the latest fix batch; no result is known yet. No general build or
-full e2e ran.
+See matrix 36800539523 above for the current runtime result and follow-up
+fixes. No general build or full e2e ran.
 
 ## Latest branch migration matrix: 36786000022
 

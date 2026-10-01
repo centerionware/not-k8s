@@ -2,6 +2,38 @@
 
 Last updated: 2026-10-01
 
+## Migration matrix 36800539523
+
+Branch-runtime run
+[36800539523](https://github.com/centerionware/not-k8s/actions/runs/36800539523)
+tested SHA `dda5227b117c0dc42ba0353cc638bcaabe7901d7` with Cilium KPR and the
+three-control-plane/two-worker Docker lane enabled. Logs are saved under
+`/tmp/nodemigrate-36800539523-artifacts/`.
+
+- **Upstream Kubernetes Cilium recovery passed.** Job `110173643294` completed
+  the full round trip in 26m17s. The controller-manager Lease renewed before
+  Cilium reset, the agent and Envoy were recreated, and the returned checkpoint
+  matched all 119 source-discovered listable API resources plus durable fixture
+  state. This is the first runtime evidence for the Lease readiness guard.
+- **Component: K3s immutable node-password Secret.** Job `110173643182` failed
+  while returning to K3s: applying the exported immutable
+  `kube-system/<node>.node-password.k3s` Secret hit a 422 because K3s had
+  already issued a new immutable Secret for the re-registered Node. The K3s
+  log confirms K3s added a Node owner reference to that Secret before import.
+  The current candidate preserves only a matching immutable, Node-owned K3s
+  password Secret already issued by the destination; focused CI is pending.
+- **Component: idempotent staged nodestore shutdown.** Docker job
+  `110173643019` staged `cp-2` and `cp-3`, restored the retained quorum, then
+  invoked return on the already-staged `cp-2`. The second invocation failed
+  because `stop_nodestore_stack` required an active service even though the
+  nodestore services were all disabled by the first staging call. The candidate
+  accepts a known service stack only when active or fully disabled, preserving
+  the failure for missing or enabled-but-inactive stacks; focused CI is pending.
+
+Do not dispatch another matrix until both candidates pass `nodemigrate`
+quick-check. Then rerun the full branch-runtime migration matrix to verify the
+K3s and five-node paths together with the already passing upstream path.
+
 ## Migration matrix 36792261326 failures
 
 Branch-runtime run
@@ -28,10 +60,8 @@ paths failed. Logs are saved at `/tmp/nodemigrate-36792261326-job-*.log`.
   Pod when leader election is explicitly disabled. Both readiness tests passed
   the `nodemigrate` quick-check at SHA `7fa9b2f9` in
   [36800293651](https://github.com/centerionware/not-k8s/actions/runs/36800293651);
-  runtime behavior remains unverified. Matrix
-  [36800539523](https://github.com/centerionware/not-k8s/actions/runs/36800539523)
-  is now exercising this guard at SHA `dda5227b` alongside the existing K3s
-  and five-node fixes.
+  matrix 36800539523 later confirmed the guard during the passing upstream
+  round trip. That matrix exposed the K3s and five-node issues tracked above.
 - **Component: K3s CRI cleanup coordination.** The workflow paused K3s' main
   process before stopping a local Pod sandbox, leaving the CNI DEL path
   waiting on an API that the same process served. The current candidate keeps

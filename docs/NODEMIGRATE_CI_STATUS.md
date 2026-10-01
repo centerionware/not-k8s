@@ -2,6 +2,22 @@
 
 Last updated: 2026-10-01
 
+## Branch migration matrix 36800539523
+
+[Run 36800539523](https://github.com/centerionware/not-k8s/actions/runs/36800539523)
+tested SHA `dda5227b117c0dc42ba0353cc638bcaabe7901d7` with
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+All utility and combined-runtime builds passed. Upstream Kubernetes job
+`110173643294` passed its 26m17s round trip, including the controller-manager
+Lease gate, Cilium recovery, all 119 listable API resources, and returned
+durable-state checks. K3s job `110173643182` failed on import of a destination
+K3s immutable node-password Secret. Five-node job `110173643019` failed on a
+second return invocation for an already-staged control plane, which rejected
+the fully disabled source service stack. Full lane logs are in
+`/tmp/nodemigrate-36800539523-artifacts/`. The current worktree contains
+focused fixes for both failures; run a `nodemigrate` quick-check before another
+migration matrix. No general build or full e2e ran.
+
 ## Branch migration matrix 36792261326
 
 [Run 36792261326](https://github.com/centerionware/not-k8s/actions/runs/36792261326)
@@ -46,13 +62,9 @@ quick-check at SHA `7fa9b2f9` in
 [36800293651](https://github.com/centerionware/not-k8s/actions/runs/36800293651).
 No general build or full e2e ran.
 
-Branch-runtime migration matrix
-[36800539523](https://github.com/centerionware/not-k8s/actions/runs/36800539523)
-is running at SHA `dda5227b117c0dc42ba0353cc638bcaabe7901d7` with
-`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
-Upstream Kubernetes, K3s, and isolated five-node jobs are active. This is the
-first runtime validation of the controller-manager readiness guard and the
-existing K3s/five-node recovery fixes. No result is known yet.
+The controller-manager readiness candidate described above has runtime
+evidence from matrix 36800539523. See that result for current K3s and five-node
+follow-up fixes.
 
 ## Branch migration matrix 36786000022
 
