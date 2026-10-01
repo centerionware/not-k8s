@@ -13,17 +13,24 @@ host-mounted Unix socket (`errno=98`, address already in use) and remained
 unready for 300 seconds. The source service and snapshotted PV/CNI data were
 restored, and the protected export was retained. The migration fix now removes
 the deleted Envoy Pod's exact CRI sandbox before allowing its replacement to
-start; focused validation is pending.
+start; focused validation passed in quick-check run
+[36826217674](https://github.com/centerionware/not-k8s/actions/runs/36826217674)
+at SHA `0c7fe976dda0cddb2de06ca341242d79b558fd10`.
 
 The Docker-isolated lane used the required five-node topology: three control
 planes (`cp-1` through `cp-3`) and two workers (`worker-1`, `worker-2`). It
 failed during source fixture setup, before nodemigrate ran: the
 `cert-manager-startupapicheck` Job reached `BackoffLimitExceeded`, while
 kube-proxy Pods on cp-1 and cp-2 were in CrashLoopBackOff. This was not a
-topology mismatch. The preflight did not capture those Pods' container logs;
-the harness now collects current/previous logs and descriptions for failed or
-restarting Pods. A preflight-only KPR-disabled diagnostic run is pending before
-another migration attempt. Full logs: `/tmp/nodemigrate-36822827036-artifacts/`.
+topology mismatch. Base preflight-only run
+[36826217648](https://github.com/centerionware/not-k8s/actions/runs/36826217648)
+passed five-node readiness and cp-1 recovery at SHA
+`0c7fe976dda0cddb2de06ca341242d79b558fd10`, but it did not install the
+workload fixture and did not exercise the missing diagnostics. The workflow
+now supports a fixture-only 3+2 run that installs the application fixture,
+captures failed/restarting Pod and Job details, and stops before migration;
+that diagnostic run is pending. Full prior logs:
+`/tmp/nodemigrate-36822827036-artifacts/`.
 
 ## Branch migration matrix 36818085887
 

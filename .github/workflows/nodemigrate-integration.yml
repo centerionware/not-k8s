@@ -29,6 +29,11 @@ on:
         required: false
         type: boolean
         default: false
+      five_node_fixture_only:
+        description: Install and validate the 3+2 workload fixture, then stop before migration
+        required: false
+        type: boolean
+        default: false
       k3s_cilium_restart_probe:
         description: Exercise Cilium cleanup and K3s restart without nodemigrate
         required: false
@@ -144,6 +149,7 @@ jobs:
           NODEMIGRATE_PREFLIGHT_LOG: ${{ runner.temp }}/nodemigrate-docker-preflight.log
           NODEMIGRATE_CILIUM_KPR: ${{ inputs.cilium_kpr }}
           NODEMIGRATE_FIVE_NODE_MIGRATION: ${{ inputs.five_node_migration }}
+          NODEMIGRATE_FIVE_NODE_FIXTURE_ONLY: ${{ inputs.five_node_fixture_only }}
           NODEMIGRATE_HOSTPATH_SETUP: ${{ runner.temp }}/nodemigrate-hostpath-setup.sh
         run: bash .github/scripts/nodemigrate-docker-preflight.sh
 

@@ -88,6 +88,36 @@ failure_diagnostics() {
             node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf \
                 kubectl logs -n kube-system "$pod" --all-containers --previous --tail=120 || true
         done
+        node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf bash -c '
+            echo "Pods with failed or restarting containers:"
+            kubectl get pods -A -o json 2>/dev/null | jq -r "
+                .items[]
+                | select(
+                    .status.phase == \"Failed\"
+                    or any(((.status.containerStatuses // []) + (.status.initContainerStatuses // []) + (.status.ephemeralContainerStatuses // []))[];
+                        .state.waiting.reason == \"CrashLoopBackOff\"
+                        or .state.waiting.reason == \"CreateContainerConfigError\"
+                        or .state.waiting.reason == \"ErrImagePull\"
+                        or .state.waiting.reason == \"ImagePullBackOff\"
+                        or ((.state.terminated.exitCode // 0) != 0))
+                )
+                | [.metadata.namespace, .metadata.name]
+                | @tsv
+            " | while read -r namespace pod; do
+                [[ -n "$namespace" && -n "$pod" ]] || continue
+                echo "Failed Pod diagnostics: $namespace/$pod"
+                kubectl describe pod "$pod" -n "$namespace" || true
+                kubectl logs "$pod" -n "$namespace" --all-containers --tail=160 || true
+                kubectl logs "$pod" -n "$namespace" --all-containers --previous --tail=160 || true
+            done || true
+            echo "Jobs with failed Pods:"
+            kubectl get jobs -A -o json 2>/dev/null | jq -r ".items[] | select((.status.failed // 0) > 0) | [.metadata.namespace, .metadata.name] | @tsv" \
+                | while read -r namespace job; do
+                    [[ -n "$namespace" && -n "$job" ]] || continue
+                    echo "Failed Job diagnostics: $namespace/$job"
+                    kubectl describe job "$job" -n "$namespace" || true
+                done || true
+        ' || true
         node cp-1 env KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig \
             kubectl get nodes -o wide || true
         capture_cilium_failure_state
@@ -289,6 +319,11 @@ node cp-1 env NODEMIGRATE_HOSTPATH_SETUP="$NODEMIGRATE_HOSTPATH_SETUP" \
     NODEMIGRATE_STATIC_NODE=cp-1 \
     NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" \
     bash "$NODE_ROOT/.github/scripts/nodemigrate-five-node-fixture.sh" source
+
+if [[ "${NODEMIGRATE_FIVE_NODE_FIXTURE_ONLY:-false}" == true ]]; then
+    echo "PASS: source workload fixture installed and validated on the kubeadm 3-control-plane/2-worker Cilium cluster; migration was not started"
+    exit 0
+fi
 
 echo "Migrating cp-1 and importing the cluster API state into nodestore"
 cp1_initial_env=(

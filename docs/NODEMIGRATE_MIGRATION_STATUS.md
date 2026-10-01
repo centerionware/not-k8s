@@ -12,15 +12,21 @@ remain Ready. Nodemigrate rolled back, restored the source service and saved
 PV/CNI data, and retained the protected export. The branch now waits for the
 deleted Envoy API UID to disappear, pauses local Pod agents, and removes only
 that Pod UID's CRI sandbox/container records before waiting for the DaemonSet
-replacement. Focused utility validation is pending.
+replacement. The focused `nodemigrate` quick-check passed at
+[36826217674](https://github.com/centerionware/not-k8s/actions/runs/36826217674);
+runtime migration validation remains pending.
 
 The Docker-isolated 3-control-plane/2-worker lane failed before nodemigrate
 started, during cert-manager fixture installation. The `startupapicheck` Job
 hit `BackoffLimitExceeded`; kube-proxy on cp-1 and cp-2 was CrashLoopBackOff.
 The failure log did not include those containers' current/previous output, so
-the proximate kube-proxy and cert-manager errors remain unconfirmed. Targeted
-failure diagnostics have been added, and a KPR-disabled preflight-only run is
-pending to identify the cause before another migration attempt. Run and logs:
+the proximate kube-proxy and cert-manager errors remain unconfirmed. Base
+preflight-only run
+[36826217648](https://github.com/centerionware/not-k8s/actions/runs/36826217648)
+passed five-node readiness and cp-1 recovery, but did not install the workload
+fixture. A fixture-only 3+2 workflow mode now installs and validates the source
+fixture, collects failed/restarting Pod and Job diagnostics, and stops before
+migration; it is pending. Run and logs:
 [36822827036](https://github.com/centerionware/not-k8s/actions/runs/36822827036),
 `/tmp/nodemigrate-36822827036-artifacts/`.
 

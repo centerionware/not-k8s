@@ -12,6 +12,7 @@ CONTAINERS=()
 VOLUMES=()
 CILIUM_KPR="${NODEMIGRATE_CILIUM_KPR:-false}"
 FIVE_NODE_MIGRATION="${NODEMIGRATE_FIVE_NODE_MIGRATION:-false}"
+FIVE_NODE_FIXTURE_ONLY="${NODEMIGRATE_FIVE_NODE_FIXTURE_ONLY:-false}"
 [[ "$CILIUM_KPR" == false || "$CILIUM_KPR" == true ]] || {
     echo "NODEMIGRATE_CILIUM_KPR must be false or true, got '$CILIUM_KPR'" >&2
     exit 2
@@ -20,6 +21,14 @@ FIVE_NODE_MIGRATION="${NODEMIGRATE_FIVE_NODE_MIGRATION:-false}"
     echo "NODEMIGRATE_FIVE_NODE_MIGRATION must be false or true, got '$FIVE_NODE_MIGRATION'" >&2
     exit 2
 }
+[[ "$FIVE_NODE_FIXTURE_ONLY" == false || "$FIVE_NODE_FIXTURE_ONLY" == true ]] || {
+    echo "NODEMIGRATE_FIVE_NODE_FIXTURE_ONLY must be false or true, got '$FIVE_NODE_FIXTURE_ONLY'" >&2
+    exit 2
+}
+if [[ "$FIVE_NODE_FIXTURE_ONLY" == true && "$FIVE_NODE_MIGRATION" != true ]]; then
+    echo "five-node fixture-only mode requires NODEMIGRATE_FIVE_NODE_MIGRATION=true" >&2
+    exit 2
+fi
 WORKSPACE_MOUNT=()
 if [[ "$FIVE_NODE_MIGRATION" == true ]]; then
     [[ -x "$ROOT/target/release/notk8s" && -x "$ROOT/target/release/nodemigrate" ]] \
@@ -576,6 +585,7 @@ if [[ "$FIVE_NODE_MIGRATION" == true ]]; then
         NODEMIGRATE_NODE_IMAGE="$IMAGE" \
         NODEMIGRATE_HOSTPATH_SETUP=/var/tmp/nodemigrate-hostpath-setup.sh \
         NODEMIGRATE_CILIUM_KPR="$CILIUM_KPR" \
+        NODEMIGRATE_FIVE_NODE_FIXTURE_ONLY="$FIVE_NODE_FIXTURE_ONLY" \
         bash "$ROOT/.github/scripts/nodemigrate-five-node-integration.sh"
 else
     echo "NOTE: this preflight validates the five-node Kubernetes/Cilium simulation only; nodemigrate runtime and migration parity remain unverified"

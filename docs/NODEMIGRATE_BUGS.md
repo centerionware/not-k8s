@@ -8,10 +8,13 @@ Last updated: 2026-10-01
 passed its K3s round trip. The required Docker topology remained three control
 planes plus two workers, but its cert-manager fixture failed before migration:
 `cert-manager-startupapicheck` hit `BackoffLimitExceeded`; kube-proxy on cp-1
-and cp-2 was CrashLoopBackOff. The preflight output did not capture the
-container logs needed to determine why. The harness now collects current and
-previous logs plus Pod descriptions for failed/restarting Pods; a preflight-
-only KPR-disabled diagnostic run is pending.
+and cp-2 was CrashLoopBackOff. The failing run did not capture the container
+logs needed to determine why. Base preflight-only run
+[36826217648](https://github.com/centerionware/not-k8s/actions/runs/36826217648)
+passed five-node readiness and control-plane recovery, but did not install the
+workload fixture. A fixture-only mode now installs the source applications,
+captures failed/restarting Pod and Job details, and stops before migration; it
+is pending.
 
 - **Component: nodemigrate Cilium Envoy restart.** The upstream migration
   rolled back after the replacement Envoy process failed to bind its
@@ -21,7 +24,9 @@ only KPR-disabled diagnostic run is pending.
   the deleted API UID to disappear, pauses local Pod agents, and removes only
   that exact sandbox/container before the replacement readiness check. The
   source service and PV/CNI data were restored and the protected export was
-  retained. Focused CI validation is pending.
+  retained. The focused `nodemigrate` quick-check passed in
+  [36826217674](https://github.com/centerionware/not-k8s/actions/runs/36826217674);
+  runtime migration validation remains pending.
 
 Failure logs: `/tmp/nodemigrate-36822827036-artifacts/`.
 
