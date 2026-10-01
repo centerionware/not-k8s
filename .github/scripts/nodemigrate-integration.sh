@@ -927,6 +927,72 @@ restart_cilium_agent_for_probe() {
     echo "PASS Cilium agent restarted without clean-cilium-state: pod=$replacement_pod_name uid=$(jq -r '.uid' <<<"$replacement_json")"
 }
 
+delete_pod_uid_preconditioned() {
+    local kubeconfig="${1:?missing delete kubeconfig}"
+    local namespace="${2:?missing Pod namespace}"
+    local name="${3:?missing Pod name}"
+    local uid="${4:?missing Pod UID}"
+    local proxy_port proxy_log proxy_pid delete_options response ready=false
+
+    proxy_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')" \
+        || return 1
+    proxy_log="$(mktemp)" || return 1
+    KUBECONFIG="$kubeconfig" kubectl proxy --address=127.0.0.1 \
+        --port="$proxy_port" >"$proxy_log" 2>&1 &
+    proxy_pid=$!
+
+    for _ in $(seq 1 30); do
+        if curl --silent --show-error --fail \
+            "http://127.0.0.1:$proxy_port/version" >/dev/null 2>&1; then
+            ready=true
+            break
+        fi
+        if ! kill -0 "$proxy_pid" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    if [[ "$ready" != true ]]; then
+        echo "kubectl proxy did not become ready for UID-preconditioned Pod deletion" >&2
+        cat "$proxy_log" >&2 || true
+        kill "$proxy_pid" 2>/dev/null || true
+        wait "$proxy_pid" 2>/dev/null || true
+        rm -f "$proxy_log"
+        return 1
+    fi
+
+    delete_options="$(jq -cn --arg uid "$uid" \
+        '{apiVersion:"v1",kind:"DeleteOptions",gracePeriodSeconds:0,preconditions:{uid:$uid}}')" \
+        || {
+            kill "$proxy_pid" 2>/dev/null || true
+            wait "$proxy_pid" 2>/dev/null || true
+            rm -f "$proxy_log"
+            return 1
+        }
+    if ! response="$(curl --silent --show-error --fail-with-body \
+        -X DELETE -H 'Content-Type: application/json' \
+        --data-binary "$delete_options" \
+        "http://127.0.0.1:$proxy_port/api/v1/namespaces/$namespace/pods/$name" 2>&1)"; then
+        echo "UID-preconditioned Pod deletion failed: $response" >&2
+        kill "$proxy_pid" 2>/dev/null || true
+        wait "$proxy_pid" 2>/dev/null || true
+        rm -f "$proxy_log"
+        return 1
+    fi
+    if ! jq -e --arg uid "$uid" \
+        '.kind == "Pod" and .metadata.uid == $uid' <<<"$response" >/dev/null; then
+        echo "UID-preconditioned Pod deletion returned an unexpected object: $response" >&2
+        kill "$proxy_pid" 2>/dev/null || true
+        wait "$proxy_pid" 2>/dev/null || true
+        rm -f "$proxy_log"
+        return 1
+    fi
+
+    kill "$proxy_pid" 2>/dev/null || true
+    wait "$proxy_pid" 2>/dev/null || true
+    rm -f "$proxy_log"
+}
+
 restart_cilium_envoy_for_probe() {
     local kubeconfig="${1:?missing probe kubeconfig}"
     local old_pod_json old_pod_name old_pod_uid pods_json replacement_json replacement_name
@@ -938,8 +1004,8 @@ restart_cilium_envoy_for_probe() {
     old_pod_name="$(jq -er '.metadata.name' <<<"$old_pod_json")" || return 1
     old_pod_uid="$(jq -er '.metadata.uid' <<<"$old_pod_json")" || return 1
     echo "Restarting Cilium Envoy $old_pod_name UID=$old_pod_uid after clean agent state"
-    KUBECONFIG="$kubeconfig" kubectl delete pod "$old_pod_name" -n kube-system \
-        --preconditions="uid=$old_pod_uid" --grace-period=0 --wait=false || return 1
+    delete_pod_uid_preconditioned "$kubeconfig" kube-system \
+        "$old_pod_name" "$old_pod_uid" || return 1
 
     replacement_json=""
     for _ in $(seq 1 300); do

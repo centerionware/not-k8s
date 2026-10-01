@@ -39,11 +39,17 @@ captured for context; it no longer rolls CoreDNS or runs broad workload checks.
 Run [36814377031](https://github.com/centerionware/not-k8s/actions/runs/36814377031)
 passed at SHA `50854109f8bd3a1e9e907dcc631ed649db1b14f4`; build, CSI setup, clean
 Cilium state recovery, and Envoy replacement readiness all passed. This probe
-used a graceful delete, so it does not yet match nodemigrate's immediate
-UID-preconditioned delete. The working tree now matches both delete parameters;
-run that probe before rerunning the migration matrix with the improved Envoy
-diagnostics. The migration-specific Envoy crash remains unreproduced and
-unexplained. Logs:
+used a graceful delete, so it did not match nodemigrate's immediate
+UID-preconditioned delete. Follow-up
+[36815693628](https://github.com/centerionware/not-k8s/actions/runs/36815693628)
+tested the exact path at SHA `f6fa945c1233bfa688f254c1ac07e27a5c623499`; build
+and fixture setup passed, but the probe stopped before sending the deletion
+because this runner's `kubectl delete` does not recognize `--preconditions`.
+This is a harness command limitation and provides no evidence about the utility
+delete itself. The working tree now sends the Kubernetes `DeleteOptions` body
+through authenticated `kubectl proxy`, including grace period zero and the UID
+precondition. Rerun the focused probe before the migration matrix. The
+migration-specific Envoy crash remains unreproduced and unexplained. Logs:
 `/tmp/nodemigrate-36812017038-artifacts/`. No general build or full e2e ran.
 
 ## Previous branch migration matrix 36800539523

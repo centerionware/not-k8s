@@ -41,6 +41,15 @@ are saved under `/tmp/nodemigrate-36805374812-artifacts/`.
   remain responsible for workload recovery. Saved logs are in
   `/tmp/nodemigrate-36812017038-artifacts/`. Normal post-cleanup Envoy restart
   works, but the migration-specific crash remains unexplained.
+- **Component: Envoy restart CI probe.** Run
+  [36815693628](https://github.com/centerionware/not-k8s/actions/runs/36815693628)
+  built the combined runtime and completed source setup, then exited before
+  deleting Envoy because the installed `kubectl delete` rejects the
+  `--preconditions` flag. This is a harness command incompatibility; it did not
+  exercise UID-preconditioned deletion or migration behavior. The integration
+  helper now sends Kubernetes `DeleteOptions` with grace period zero and the
+  expected UID through an authenticated `kubectl proxy`, and validates the
+  returned Pod UID. Focused probe rerun is pending.
 - **Five-node topology clarification.** The lane is correctly configured as
   three control planes plus two workers. It passed setup and forward migration;
   the observed failure was worker role validation during reverse migration.
