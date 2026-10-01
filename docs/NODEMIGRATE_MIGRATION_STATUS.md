@@ -2,7 +2,21 @@
 
 Last updated: 2026-10-01
 
-## Latest branch-runtime matrix 36865090999
+## Latest branch-runtime matrix 36871609082
+
+Run [36871609082](https://github.com/centerionware/not-k8s/actions/runs/36871609082)
+tested branch SHA `b4cb4142fb7eebe3dbd55625cffc8d20136c0fe2`. The Docker
+five-node lane used exactly three control planes (`cp-1`, `cp-2`, `cp-3`) and
+two workers (`worker-1`, `worker-2`); this is the required 3+2 topology. The
+full source → nodestore → returned migration passed in 52m32s and all five
+Nodes returned Ready. All 113 source-discovered listable API resources stayed
+exposed, normalized source API data matched, and returned workload, Secret,
+certificate, PVC, and PV data checks passed. The K3s and upstream single-node
+round trips also passed in 23m06s and 26m00s. The `cp-1` host alias and
+Gateway API manifest retry fixes are verified by this run. No general build
+or full e2e gate ran. See [CI status](NODEMIGRATE_CI_STATUS.md) for details.
+
+## Previous branch-runtime matrix 36865090999
 
 At SHA `15bd4c1d44064bbffe39fed8d1ce1e2f8eca4842`, K3s passed its full
 round trip in 26m17s. The isolated upstream cluster used exactly three

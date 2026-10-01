@@ -2,7 +2,22 @@
 
 Last updated: 2026-10-01
 
-## Latest branch-runtime matrix 36865090999
+## Latest branch-runtime matrix 36871609082
+
+Run [36871609082](https://github.com/centerionware/not-k8s/actions/runs/36871609082)
+tested SHA `b4cb4142fb7eebe3dbd55625cffc8d20136c0fe2` with
+`runtime_source=branch`, Cilium KPR disabled, and five-node migration enabled.
+K3s passed in 23m06s and upstream Kubernetes passed in 26m00s. The five-node
+Docker lane is exactly **3 control planes + 2 workers**: `cp-1`, `cp-2`,
+`cp-3`, `worker-1`, and `worker-2`. It passed in 52m32s, returned all five
+Nodes Ready, and passed source → nodestore → returned checks for all 113
+source-discovered listable API resources and matching normalized state and
+fixture data, including retained PV/PVC data. The `cp-1` host-alias fix and
+bounded Gateway API manifest download retry both passed. The branch combined
+runtime was built by the migration workflow. No general build or full e2e
+gate ran.
+
+## Previous branch-runtime matrix 36865090999
 
 Run [36865090999](https://github.com/centerionware/not-k8s/actions/runs/36865090999)
 tested SHA `15bd4c1d44064bbffe39fed8d1ce1e2f8eca4842` with

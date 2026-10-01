@@ -2,7 +2,21 @@
 
 Last updated: 2026-10-01
 
-## Branch-runtime matrix 36865090999
+## Branch-runtime matrix 36871609082
+
+Run [36871609082](https://github.com/centerionware/not-k8s/actions/runs/36871609082)
+at branch SHA `b4cb4142fb7eebe3dbd55625cffc8d20136c0fe2` verified two recent
+fixes. The five-node Docker migration used exactly three control planes
+(`cp-1`–`cp-3`) and two workers (`worker-1`, `worker-2`), completed the full
+round trip, and passed all 113 resource and fixture-state checks. All five
+kube-proxy Pods resolved `cp-1` through the configured host alias, and API
+Service probes passed from all five node hosts. The upstream fixture's
+bounded retry for downloading the pinned Gateway API manifest also passed;
+the upstream round trip completed. K3s passed as well. This resolves the
+corresponding harness issues recorded below; no general build or full e2e
+gate ran.
+
+## Previous branch-runtime matrix 36865090999
 
 The exact 3-control-plane/2-worker lane completed the full bidirectional
 migration and all source, nodestore, and returned fixture checks. The kube-
