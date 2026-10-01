@@ -2,6 +2,26 @@
 
 Last updated: 2026-10-01
 
+## Latest branch-runtime matrix 36861277281
+
+Run [36861277281](https://github.com/centerionware/not-k8s/actions/runs/36861277281)
+tested SHA `0ab2a408676153b1027c33688b83f065f34f50da` with
+`runtime_source=branch`, Cilium KPR disabled, and five-node migration enabled.
+K3s and upstream Kubernetes passed their round trips in 27m31s and 26m58s.
+The Docker lane retained exactly three control planes (`cp-1`–`cp-3`) and two
+workers (`worker-1`, `worker-2`), and passed isolation, Cilium readiness,
+control-plane loss/recovery, kube-proxy rollout, and API Service VIP checks.
+It failed before the first migration while cert-manager waited for
+`ClusterIssuer/migration-selfsigned`: webhook calls timed out. Kube-proxy logs
+showed repeated DNS failures resolving its configured API endpoint `cp-1`
+from node Pods, so the workers could not reliably refresh Service rules. The
+Docker fixture now pins `cp-1` to its isolated node IP in all five kube-proxy
+Pods, verifies that mapping, and probes the API Service VIP on every node.
+This fix still needs 3+2 runtime verification. Job log:
+`/tmp/nodemigrate-36861277281-docker-job.log`; artifact:
+`/tmp/nodemigrate-36861277281-docker-artifact/nodemigrate-docker-preflight.log`.
+No general build or full e2e gate ran.
+
 ## Latest branch-runtime matrix 36857298075
 
 Run [36857298075](https://github.com/centerionware/not-k8s/actions/runs/36857298075)

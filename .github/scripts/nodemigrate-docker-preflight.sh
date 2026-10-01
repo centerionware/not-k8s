@@ -608,12 +608,24 @@ docker exec "$cp2" env KUBECONFIG=/etc/kubernetes/admin.conf \
     kubectl --request-timeout=20s get nodes -o wide
 
 if [[ "$CILIUM_KPR" == false ]]; then
-    echo "Refreshing kube-proxy after Cilium and all five nodes are Ready"
+    echo "Pinning kube-proxy's cp-1 API endpoint in all five node Pods"
+    kube_proxy_host_aliases="$(jq -nc --arg ip "$cp1_ip" \
+        '{spec:{template:{spec:{hostAliases:[{ip:$ip,hostnames:["cp-1"]}]}}}}')"
     docker exec "$cp1" env KUBECONFIG=/etc/kubernetes/admin.conf \
-        kubectl rollout restart daemonset/kube-proxy -n kube-system
+        kubectl patch daemonset kube-proxy -n kube-system --type=merge \
+        --patch "$kube_proxy_host_aliases"
+    echo "Waiting for kube-proxy to recover against cp-1 at $cp1_ip"
     docker exec "$cp1" env KUBECONFIG=/etc/kubernetes/admin.conf \
         kubectl rollout status daemonset/kube-proxy -n kube-system --timeout=5m
-    for host in cp-1 cp-2 cp-3; do
+    kube_proxy_aliases_ok="$(docker exec "$cp1" env KUBECONFIG=/etc/kubernetes/admin.conf \
+        kubectl get pods -n kube-system -l k8s-app=kube-proxy -o json \
+        | jq -r --arg ip "$cp1_ip" '
+            [.items[] | select(any(.spec.hostAliases[]?;
+                .ip == $ip and ((.hostnames // []) | index("cp-1") != null)))] | length')"
+    [[ "$kube_proxy_aliases_ok" == 5 ]] \
+        || fail "only $kube_proxy_aliases_ok of five kube-proxy Pods map cp-1 to $cp1_ip"
+    echo "PASS: all five kube-proxy Pods resolve cp-1 to $cp1_ip"
+    for host in "${NODES[@]}"; do
         echo "Checking host-network Kubernetes Service routing on $host"
         docker exec "$(node_container "$host")" bash -ec '
             for attempt in $(seq 1 30); do

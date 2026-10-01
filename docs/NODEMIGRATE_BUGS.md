@@ -2,6 +2,23 @@
 
 Last updated: 2026-10-01
 
+## Branch-runtime matrix 36861277281
+
+The required five-node cluster remained exactly three control planes and two
+workers. The topology, Cilium readiness, control-plane recovery, kube-proxy
+rollout, and API Service VIP checks passed. Source fixture setup then timed
+out waiting for `ClusterIssuer/migration-selfsigned`; cert-manager logs show
+repeated admission webhook timeouts, and the issuer's status was never
+persisted. Kube-proxy Pods on nodes reported DNS lookup failures for their
+configured API server endpoint `cp-1`, matching stale/missing Service rules
+on nodes where kube-proxy cannot refresh. The Docker preflight now sets a
+`hostAliases` entry mapping `cp-1` to its isolated control-plane IP in all
+five kube-proxy Pods and verifies all five mappings before probing the API
+Service VIP from every node. This is a harness networking fix; it still needs
+runtime verification with the source fixture and full migration. Logs:
+`/tmp/nodemigrate-36861277281-docker-job.log` and
+`/tmp/nodemigrate-36861277281-docker-artifact/nodemigrate-docker-preflight.log`.
+
 ## Branch-runtime matrix 36857298075
 
 The five-node cluster passed isolation, Cilium readiness, and the exact

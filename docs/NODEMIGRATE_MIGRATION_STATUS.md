@@ -2,6 +2,21 @@
 
 Last updated: 2026-10-01
 
+## Latest branch-runtime matrix 36861277281
+
+K3s and upstream Kubernetes passed full round trips on branch SHA
+`0ab2a408676153b1027c33688b83f065f34f50da`. The Docker lane used the
+required exact topology of three control planes (`cp-1`–`cp-3`) and two
+workers (`worker-1`, `worker-2`); topology, Cilium recovery, and API Service
+routing checks passed, but source fixture setup failed before migration.
+Cert-manager could not persist `ClusterIssuer/migration-selfsigned` readiness
+because webhook calls timed out. Node kube-proxy logs show `cp-1` DNS lookup
+failures. The harness now gives all five kube-proxy Pods a host alias mapping
+`cp-1` to its Docker-network IP and verifies service reachability on all five
+nodes; this needs another full 3+2 run. No five-node migration result is
+claimed from run 36861277281. See [CI status](NODEMIGRATE_CI_STATUS.md) for
+logs and the test SHA.
+
 ## Latest branch-runtime matrix 36857298075
 
 Run [36857298075](https://github.com/centerionware/not-k8s/actions/runs/36857298075)
