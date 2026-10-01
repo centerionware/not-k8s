@@ -34,9 +34,12 @@ again kept the replacement Envoy Ready, then failed when a CoreDNS replica
 remained pending termination during rollout. Other fixture Pods logged probe
 timeouts and CrashLoopBackOff. Node conditions showed no memory/disk/PID
 pressure; aggregate Pod memory limits were 164% of allocatable, which is not
-proof that this caused the timeouts. The migration-specific Envoy crash remains
-unreproduced and unexplained. Logs: `/tmp/nodemigrate-36812017038-artifacts/`.
-No general build or full e2e ran.
+proof that this caused the timeouts. The no-migration probe is now scoped to
+the Cilium clean-state and Envoy readiness assertions, with system Pod status
+captured for context; workload recovery remains covered by the migration
+checkpoints. Re-run the scoped probe, then the migration matrix with Envoy logs.
+The migration-specific Envoy crash remains unreproduced and unexplained. Logs:
+`/tmp/nodemigrate-36812017038-artifacts/`. No general build or full e2e ran.
 
 ## Previous branch migration matrix 36800539523
 

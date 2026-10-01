@@ -35,9 +35,12 @@ are saved under `/tmp/nodemigrate-36805374812-artifacts/`.
   old Pod pending termination while other fixture Pods logged probe timeouts
   and CrashLoopBackOff. Node conditions showed no memory/disk/PID pressure;
   configured memory limits totaled 164% of allocatable but this does not prove
-  the cause. Saved logs are in `/tmp/nodemigrate-36812017038-artifacts/`.
-  Normal post-cleanup Envoy restart works, but the migration-specific crash
-  remains unexplained.
+  the cause. This broad probe did not follow the migration utility's sandbox
+  recreation path. The diagnostic now gates only Cilium clean-state and Envoy
+  readiness, recording system Pod state for context; actual migration lanes
+  remain responsible for workload recovery. Saved logs are in
+  `/tmp/nodemigrate-36812017038-artifacts/`. Normal post-cleanup Envoy restart
+  works, but the migration-specific crash remains unexplained.
 - **Five-node topology clarification.** The lane is correctly configured as
   three control planes plus two workers. It passed setup and forward migration;
   the observed failure was worker role validation during reverse migration.
