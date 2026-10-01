@@ -4296,7 +4296,7 @@ async fn apply_object(
             .await
             .with_context(|| format!("reading destination {type_meta}/{kind} {name}"))?;
         let result = if let Some(existing) = existing {
-            if preserves_destination_k3s_node_password_secret(&apply_value, &existing) {
+            if preserves_destination_k3s_node_password_secret(value, &existing) {
                 eprintln!(
                     "nodemigrate: preserved the destination-issued immutable K3s node-password Secret {name}"
                 );
