@@ -30,11 +30,18 @@ source workload fixture passed. The fixture-only lane deliberately stopped
 before migration. Its saved log is
 `/tmp/nodemigrate-36830106965-docker-fixture.log`.
 
-To resolve the missing evidence, SHA `dd871a2d` adds Certificate, issuer,
-CertificateRequest, event, Secret-metadata, and cert-manager controller log
-capture when this fixture check times out. Focused fixture-only diagnostic run
+Focused fixture-only diagnostic run
 [36835859014](https://github.com/centerionware/not-k8s/actions/runs/36835859014)
-is pending; no migration retry is dispatched until the cause is understood.
+passed on SHA `dd871a2da73067f7aaf5550446e0138dbfe64435`; the Certificate became
+Ready and the timeout did not reproduce, so the added failure diagnostics did
+not run. The fixture now waits for the ClusterIssuer to become Ready and then
+waits for the Certificate immediately after creation, while retaining the
+later source and migration-stage assertions. This preserves coverage and
+verifies the issuer dependency before the rest of the fixture is exercised.
+Fixture-only verification of that ordering is running in
+[36838518158](https://github.com/centerionware/not-k8s/actions/runs/36838518158)
+at SHA `1ab4a760`; no full migration retry is dispatched until this setup
+passes.
 
 ## Previous Cilium KPR-disabled matrix 36822827036
 

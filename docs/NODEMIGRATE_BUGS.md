@@ -23,11 +23,17 @@ do not mark the five-node migration as passed. Logs:
 `/tmp/nodemigrate-36832655869-kubernetes.log`,
 `/tmp/nodemigrate-36832655869-k3s.log`.
 
-The source fixture wait now captures the Certificate, ClusterIssuer,
-CertificateRequests, relevant events, TLS Secret metadata, and cert-manager
-controller/webhook/cainjector logs on failure. Diagnostic fixture-only run
+Diagnostic fixture-only run
 [36835859014](https://github.com/centerionware/not-k8s/actions/runs/36835859014)
-is pending at SHA `dd871a2d`. Earlier fixture log:
+passed at SHA `dd871a2da73067f7aaf5550446e0138dbfe64435`; the Certificate timeout
+did not reproduce. The timeout's underlying cause remains unconfirmed. The
+failure path now captures the Certificate, ClusterIssuer, CertificateRequests,
+relevant events, TLS Secret metadata, and cert-manager controller/webhook/
+cainjector logs. The source fixture now waits for ClusterIssuer Ready followed
+by Certificate Ready immediately after creating them, while keeping the later
+stage checks. Fixture-only run
+[36838518158](https://github.com/centerionware/not-k8s/actions/runs/36838518158)
+is testing that setup at SHA `1ab4a760`. Earlier fixture log:
 `/tmp/nodemigrate-36830106965-docker-fixture.log`.
 
 ## Previous Cilium KPR-disabled matrix 36822827036

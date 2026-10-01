@@ -30,11 +30,16 @@ unconfirmed. Full logs:
 `/tmp/nodemigrate-36832655869-kubernetes.log`,
 `/tmp/nodemigrate-36832655869-k3s.log`.
 
-SHA `dd871a2d` adds targeted Certificate, issuer, CertificateRequest, event,
-Secret-metadata, and controller-log capture on this timeout. Fixture-only
-diagnostic run
+Fixture-only diagnostic run
 [36835859014](https://github.com/centerionware/not-k8s/actions/runs/36835859014)
-is pending; the full migration matrix remains unverified for KPR disabled.
+passed at SHA `dd871a2da73067f7aaf5550446e0138dbfe64435`; the Certificate became
+Ready and did not reproduce the timeout. The targeted Certificate, issuer,
+CertificateRequest, event, Secret-metadata, and controller-log capture remains
+available on failure. The source fixture now waits for ClusterIssuer Ready
+before Certificate Ready immediately after object creation, retaining all
+later stage checks. Focused 3+2 validation of that ordering is running in
+[36838518158](https://github.com/centerionware/not-k8s/actions/runs/36838518158)
+at SHA `1ab4a760`. The full KPR-disabled migration matrix remains unverified.
 
 ## Previous Cilium KPR-disabled matrix 36822827036
 
