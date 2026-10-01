@@ -32,10 +32,17 @@ successfully completed Cilium clean-state cleanup and kept the replacement
 Envoy Ready. Its follow-up fixture validation then failed because the existing
 CoreDNS Pods were not Ready after cleanup; the events show liveness/readiness
 timeouts on those stale Pods. The probe now restarts the CoreDNS Deployment to
-request fresh CNI ADDs before checking workloads. This does not reproduce the
+request fresh CNI ADDs before checking workloads. Follow-up probe
+[36812017038](https://github.com/centerionware/not-k8s/actions/runs/36812017038)
+again kept its replacement Envoy Ready, then failed during that CoreDNS rollout:
+an old CoreDNS replica remained pending termination, while other fixture Pods
+also logged probe timeouts and CrashLoopBackOff. The run reports no node memory,
+disk, or PID pressure; it does show pod memory limits totaling 164% of node
+allocatable. The output does not prove resource pressure caused the delayed
+terminations. Logs are saved under
+`/tmp/nodemigrate-36812017038-artifacts/`. These probes do not reproduce the
 Envoy crash seen during migration, so its migration-specific cause remains
-unknown. No migration retry is being started yet. No general build or full e2e
-ran.
+unknown. No general build or full e2e ran.
 
 ## Previous branch migration matrix: 36800539523
 

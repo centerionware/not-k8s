@@ -30,10 +30,14 @@ are saved under `/tmp/nodemigrate-36805374812-artifacts/`.
   Cilium clean-state completed and the replacement Envoy remained Ready. The
   probe then failed its fixture check because the existing CoreDNS Pods did
   not recover; readiness/liveness events show timeouts on the old Pods. The
-  probe now restarts the CoreDNS Deployment to force fresh CNI ADDs. This
-  confirms normal post-cleanup Envoy restart works but does not reproduce the
-  migration-specific crash. Its cause remains unknown and must be resolved
-  before declaring migration green.
+  follow-up [36812017038](https://github.com/centerionware/not-k8s/actions/runs/36812017038)
+  repeated the result: Envoy remained Ready, then the CoreDNS rollout kept an
+  old Pod pending termination while other fixture Pods logged probe timeouts
+  and CrashLoopBackOff. Node conditions showed no memory/disk/PID pressure;
+  configured memory limits totaled 164% of allocatable but this does not prove
+  the cause. Saved logs are in `/tmp/nodemigrate-36812017038-artifacts/`.
+  Normal post-cleanup Envoy restart works, but the migration-specific crash
+  remains unexplained.
 - **Five-node topology clarification.** The lane is correctly configured as
   three control planes plus two workers. It passed setup and forward migration;
   the observed failure was worker role validation during reverse migration.
