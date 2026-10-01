@@ -78,6 +78,26 @@ failure_diagnostics() {
         node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf kubectl get pods -A -o wide || true
         node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf \
             kubectl get events -A --sort-by=.lastTimestamp | tail -n 120 || true
+        for kubeconfig in /etc/kubernetes/admin.conf /etc/nodebootstrap/admin.kubeconfig; do
+            node cp-1 env KUBECONFIG="$kubeconfig" kubectl get daemonset kube-proxy -n kube-system -o yaml 2>&1 || true
+            while IFS= read -r pod; do
+                [[ -n "$pod" ]] || continue
+                echo "kube-proxy diagnostics kubeconfig=$kubeconfig pod=$pod"
+                node cp-1 env KUBECONFIG="$kubeconfig" kubectl describe -n kube-system "$pod" 2>&1 || true
+                node cp-1 env KUBECONFIG="$kubeconfig" kubectl logs -n kube-system "$pod" \
+                    --all-containers --tail=200 2>&1 || true
+                node cp-1 env KUBECONFIG="$kubeconfig" kubectl logs -n kube-system "$pod" \
+                    --all-containers --previous --tail=200 2>&1 || true
+            done < <(node cp-1 env KUBECONFIG="$kubeconfig" kubectl get pods -n kube-system \
+                -l k8s-app=kube-proxy -o name 2>/dev/null || true)
+        done
+        for host in cp-1 cp-2 cp-3; do
+            echo "Service-routing rules on $host:"
+            node "$host" bash -c '
+                iptables-save -t nat 2>/dev/null | grep -E "KUBE-SERVICES|KUBE-SVC|KUBE-SEP" | head -n 120 || true
+                nft list ruleset 2>/dev/null | grep -E "kube-proxy|kube-service" | head -n 120 || true
+            '
+        done
         for pod in $(node cp-1 env KUBECONFIG=/etc/kubernetes/admin.conf \
             kubectl get pods -n kube-system -l k8s-app=kube-dns -o name 2>/dev/null); do
             echo "CoreDNS diagnostics: $pod"

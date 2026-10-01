@@ -618,6 +618,180 @@ fn is_local_cilium_envoy_pod(pod: &Pod, node_name: &str) -> bool {
             .is_some_and(|owners| owners.iter().any(|owner| owner.kind == "DaemonSet"))
 }
 
+async fn restart_local_kube_proxy_if_needed(
+    client: &Client,
+    pods: &Api<Pod>,
+    node_name: &str,
+    runtime_endpoint: &str,
+) -> Result<()> {
+    let config_maps: Api<ConfigMap> = Api::namespaced(client.clone(), "kube-system");
+    let cilium_config = config_maps
+        .get_opt("cilium-config")
+        .await
+        .context("checking Cilium Service routing mode before kube-proxy restart")?;
+    let kube_proxy_replacement = parse_cilium_kube_proxy_replacement(
+        cilium_config
+            .as_ref()
+            .and_then(|config| config.data.as_ref())
+            .and_then(|data| data.get("kube-proxy-replacement"))
+            .map(String::as_str),
+    )?;
+    if kube_proxy_replacement {
+        return Ok(());
+    }
+    let daemonsets: Api<DaemonSet> = Api::namespaced(client.clone(), "kube-system");
+    if daemonsets
+        .get_opt("kube-proxy")
+        .await
+        .context("checking for the kube-proxy DaemonSet")?
+        .is_none()
+    {
+        return Ok(());
+    }
+
+    let selector = ListParams::default().labels("k8s-app=kube-proxy");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+    let current = loop {
+        let current_pods = pods
+            .list(&selector)
+            .await
+            .context("listing kube-proxy Pods before local restart")?;
+        if let Some(current) = current_pods.items.into_iter().find(|pod| {
+            pod.metadata.deletion_timestamp.is_none()
+                && pod.spec.as_ref().and_then(|spec| spec.node_name.as_deref()) == Some(node_name)
+                && pod
+                    .metadata
+                    .owner_references
+                    .as_ref()
+                    .is_some_and(|owners| {
+                        owners
+                            .iter()
+                            .any(|owner| owner.kind == "DaemonSet" && owner.name == "kube-proxy")
+                    })
+        }) {
+            break current;
+        }
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "kube-proxy DaemonSet has no Pod on node {node_name} within 300 seconds"
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    };
+    let name = current
+        .metadata
+        .name
+        .as_deref()
+        .context("local kube-proxy Pod has no name")?;
+    let uid = current
+        .metadata
+        .uid
+        .as_deref()
+        .context("local kube-proxy Pod has no UID")?
+        .to_owned();
+    match pods
+        .delete(
+            name,
+            &DeleteParams {
+                grace_period_seconds: Some(0),
+                preconditions: Some(Preconditions {
+                    uid: Some(uid.clone()),
+                    resource_version: None,
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+    {
+        Ok(_) => {}
+        Err(kube::Error::Api(response)) if response.code == 404 => {}
+        Err(error) => return Err(error).context("deleting the local kube-proxy Pod"),
+    }
+    eprintln!("nodemigrate: restarted local kube-proxy Pod {name} (UID {uid}) after Cilium host-state cleanup");
+
+    loop {
+        let current_pods = pods
+            .list(&selector)
+            .await
+            .context("waiting for the deleted kube-proxy Pod UID to disappear")?;
+        if !current_pods
+            .items
+            .iter()
+            .any(|pod| pod.metadata.uid.as_deref() == Some(uid.as_str()))
+        {
+            break;
+        }
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "deleted kube-proxy Pod {name} UID {uid} remained in the API for 300 seconds"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let cleanup_endpoint = runtime_endpoint.to_owned();
+    let cleanup_node = node_name.to_owned();
+    let cleanup_uid = uid.clone();
+    let (sandboxes, containers) = tokio::task::spawn_blocking(move || {
+        crate::service::with_local_pod_agents_paused(&cleanup_endpoint, || {
+            recreate_pod_sandboxes_for_uids(
+                &cleanup_endpoint,
+                &cleanup_node,
+                &BTreeSet::from([cleanup_uid]),
+            )
+        })
+    })
+    .await
+    .context("joining local kube-proxy CRI sandbox cleanup")??;
+    eprintln!("nodemigrate: removed {sandboxes} sandbox(es) and {containers} container record(s) for deleted kube-proxy Pod UID {uid} on node {node_name}");
+
+    let mut ready_since = None;
+    loop {
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "replacement kube-proxy Pod on node {node_name} did not become Ready within 300 seconds"
+        );
+        let replacement_pods = pods
+            .list(&selector)
+            .await
+            .context("waiting for replacement kube-proxy Pod")?;
+        let replacement = replacement_pods.items.into_iter().find(|pod| {
+            pod.metadata.deletion_timestamp.is_none()
+                && pod.spec.as_ref().and_then(|spec| spec.node_name.as_deref()) == Some(node_name)
+                && pod
+                    .metadata
+                    .owner_references
+                    .as_ref()
+                    .is_some_and(|owners| {
+                        owners
+                            .iter()
+                            .any(|owner| owner.kind == "DaemonSet" && owner.name == "kube-proxy")
+                    })
+                && pod
+                    .metadata
+                    .uid
+                    .as_deref()
+                    .is_some_and(|replacement_uid| replacement_uid != uid)
+        });
+        let ready = replacement.as_ref().is_some_and(|pod| {
+            pod.status.as_ref().is_some_and(|status| {
+                status.conditions.as_ref().is_some_and(|conditions| {
+                    conditions
+                        .iter()
+                        .any(|condition| condition.type_ == "Ready" && condition.status == "True")
+                })
+            })
+        });
+        if ready {
+            let since = ready_since.get_or_insert_with(tokio::time::Instant::now);
+            if since.elapsed() >= Duration::from_secs(10) {
+                eprintln!("nodemigrate: replacement kube-proxy Pod on {node_name} remained Ready for 10 seconds");
+                return Ok(());
+            }
+        } else {
+            ready_since = None;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
 async fn recreate_node_pod_sandboxes(
     client: &Client,
     node_name: &str,
@@ -657,15 +831,16 @@ async fn recreate_node_pod_sandboxes(
 
 fn is_running_standalone_nonrestartable_pod(pod: &Pod, node_name: &str) -> bool {
     pod.metadata.deletion_timestamp.is_none()
-        && pod.metadata.owner_references.as_ref().is_none_or(Vec::is_empty)
         && pod
-            .spec
+            .metadata
+            .owner_references
             .as_ref()
-            .is_some_and(|spec| {
-                spec.node_name.as_deref() == Some(node_name)
-                    && spec.host_network != Some(true)
-                    && spec.restart_policy.as_deref() == Some("Never")
-            })
+            .is_none_or(Vec::is_empty)
+        && pod.spec.as_ref().is_some_and(|spec| {
+            spec.node_name.as_deref() == Some(node_name)
+                && spec.host_network != Some(true)
+                && spec.restart_policy.as_deref() == Some("Never")
+        })
         && pod
             .status
             .as_ref()
@@ -749,7 +924,9 @@ async fn recreate_running_standalone_pods(
         namespaced_pods
             .create(&PostParams::default(), &pod)
             .await
-            .with_context(|| format!("recreating standalone Pod {namespace}/{name} after Cilium cleanup"))?;
+            .with_context(|| {
+                format!("recreating standalone Pod {namespace}/{name} after Cilium cleanup")
+            })?;
         eprintln!(
             "nodemigrate: recreated running standalone Pod {namespace}/{name} with a fresh UID after CRI sandbox cleanup"
         );
@@ -804,10 +981,22 @@ fn recreate_pod_sandboxes_for_uids(
         let containers: Value = serde_json::from_slice(&containers_output.stdout)
             .context("parsing local CRI containers after stopping a Pod sandbox")?;
         for container_id in container_ids_for_sandbox(&containers, id) {
-            let removed = crate::service::checked_cri_cleanup(runtime_endpoint, "rm", &container_id)
+            crate::service::checked_cri_cleanup(runtime_endpoint, "stop", &container_id)
                 .with_context(|| {
-                    format!("removing container {container_id} from Pod sandbox {id} on node {node_name}")
+                    format!(
+                        "stopping container {container_id} in Pod sandbox {id} on node {node_name}"
+                    )
                 })?;
+            let removed = crate::service::checked_cri_cleanup(
+                runtime_endpoint,
+                "rm",
+                &container_id,
+            )
+            .with_context(|| {
+                format!(
+                    "removing container {container_id} from Pod sandbox {id} on node {node_name}"
+                )
+            })?;
             removed_containers += usize::from(removed);
         }
 
@@ -841,13 +1030,9 @@ fn node_pod_uids_requiring_cni(pods: &[Pod], node_name: &str) -> BTreeSet<String
     pods.iter()
         .filter(|pod| {
             pod.metadata.deletion_timestamp.is_none()
-                && pod
-                    .spec
-                    .as_ref()
-                    .is_some_and(|spec| {
-                        spec.node_name.as_deref() == Some(node_name)
-                            && spec.host_network != Some(true)
-                    })
+                && pod.spec.as_ref().is_some_and(|spec| {
+                    spec.node_name.as_deref() == Some(node_name) && spec.host_network != Some(true)
+                })
         })
         .filter_map(|pod| pod.metadata.uid.clone())
         .collect()
@@ -1816,12 +2001,20 @@ impl KubeApi {
                             )
                                 .await
                                 .context("restarting the local Cilium Envoy Pod after host-state cleanup")?;
+                            restart_local_kube_proxy_if_needed(
+                                &client,
+                                &pods,
+                                node_name,
+                                &runtime_endpoint,
+                            )
+                            .await
+                            .context("restarting local kube-proxy after Cilium host-state cleanup")?;
                             eprintln!(
                                 "nodemigrate: waiting for the Kubernetes Service route to remain reachable before removing local Pod sandboxes"
                             );
                             wait_for_kubernetes_service_route_with_client(&client)
                                 .await
-                                .context("waiting for Cilium's Kubernetes Service datapath after host-state cleanup")?;
+                                .context("waiting for the Kubernetes Service route after Cilium host-state cleanup")?;
                             let standalone_pods = recreate_node_pod_sandboxes(
                                 &client,
                                 node_name,

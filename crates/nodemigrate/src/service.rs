@@ -1035,9 +1035,14 @@ fn static_pod_sandbox_ids(pods: &serde_json::Value) -> Vec<String> {
                 .pointer("/metadata/name")
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|name| {
-                    ["kube-apiserver-", "etcd-"]
-                        .iter()
-                        .any(|prefix| name.starts_with(prefix))
+                    [
+                        "kube-apiserver-",
+                        "kube-controller-manager-",
+                        "kube-scheduler-",
+                        "etcd-",
+                    ]
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
                 });
             namespace == Some("kube-system") && control_plane_name
         })
@@ -1826,9 +1831,9 @@ fn cri_cleanup_succeeded(exit_success: bool, stderr: &[u8]) -> bool {
 
 fn cri_cleanup_retryable(action: &str, stderr: &[u8]) -> bool {
     let message = String::from_utf8_lossy(stderr).to_ascii_lowercase();
-    let deadline_expired = message.contains("deadlineexceeded")
-        || message.contains("context deadline exceeded");
-    (matches!(action, "stopp" | "rmp") && deadline_expired)
+    let deadline_expired =
+        message.contains("deadlineexceeded") || message.contains("context deadline exceeded");
+    (matches!(action, "stop" | "stopp" | "rmp") && deadline_expired)
         || (action == "rm" && message.contains("container is in starting state"))
 }
 
@@ -2057,6 +2062,10 @@ mod tests {
             b"rpc error: code = DeadlineExceeded desc = context deadline exceeded"
         ));
         assert!(cri_cleanup_retryable(
+            "stop",
+            b"rpc error: code = DeadlineExceeded desc = context deadline exceeded"
+        ));
+        assert!(cri_cleanup_retryable(
             "rmp",
             b"rpc error: code = DeadlineExceeded desc = context deadline exceeded"
         ));
@@ -2116,7 +2125,7 @@ mod tests {
     }
 
     #[test]
-    fn selects_only_kubeadm_api_and_etcd_sandboxes() {
+    fn selects_all_kubeadm_control_plane_sandboxes() {
         let pods = serde_json::json!({
             "items": [
                 {
@@ -2128,8 +2137,16 @@ mod tests {
                     "metadata": {"name": "etcd-node-a", "namespace": "kube-system"}
                 },
                 {
-                    "id": "controller-sandbox",
+                    "id": "controller-manager-sandbox",
+                    "metadata": {"name": "kube-controller-manager-node-a", "namespace": "kube-system"}
+                },
+                {
+                    "id": "scheduler-sandbox",
                     "metadata": {"name": "kube-scheduler-node-a", "namespace": "kube-system"}
+                },
+                {
+                    "id": "coredns-sandbox",
+                    "metadata": {"name": "coredns-abc", "namespace": "kube-system"}
                 },
                 {
                     "id": "application-sandbox",
@@ -2140,7 +2157,12 @@ mod tests {
         });
         assert_eq!(
             static_pod_sandbox_ids(&pods),
-            ["apiserver-sandbox", "etcd-sandbox"]
+            [
+                "apiserver-sandbox",
+                "etcd-sandbox",
+                "controller-manager-sandbox",
+                "scheduler-sandbox"
+            ]
         );
     }
 

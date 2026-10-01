@@ -2,6 +2,45 @@
 
 Last updated: 2026-10-01
 
+## Latest Cilium KPR-disabled matrix 36841047899
+
+Run [36841047899](https://github.com/centerionware/not-k8s/actions/runs/36841047899)
+completed with all three lanes failing after branch combined-runtime builds
+passed. The Docker lane is the required exact five-node topology: three
+control planes (`cp-1`, `cp-2`, `cp-3`) and two workers (`worker-1`,
+`worker-2`); its script also asserts the 3+2 role counts. This is not a
+topology mismatch. During cp-3 migration, the Kubernetes Service route
+`10.96.0.1:443` failed to remain reachable within 300 seconds. The logs show
+Cilium KPR disabled and kube-proxy as the Service-routing owner. Local
+kube-proxy restart and targeted failure diagnostics are now in the working
+tree; runtime verification is pending.
+
+The K3s lane failed during return migration when CRI reported a container was
+still running during removal. Cleanup now explicitly stops each container
+before removing it. Rollback verification also observed a completed
+`migration-job-check-nodestore` Pod whose Job had not become Complete. The
+controller selected Pod suffixes only from Pods owned by the new Job UID, so
+it could collide with a lingering Pod from the earlier same-name Job. Suffix
+selection now includes every Pod in the namespace, and an AlreadyExists
+response is checked against the live Pod owner UID before retrying another
+suffix. The artifact lacks the Pod owner UID, so this mechanism is a confirmed
+code defect that plausibly explains the observed Job stall. The log also
+showed 1,480 CronJob status patches in about two
+seconds. CronJob status comparison now treats omitted and empty `active` lists
+as equivalent; whether that loop caused the Job observation remains
+unconfirmed.
+
+The upstream lane timed out waiting for the imported hostpath CSI StatefulSet
+spec update. During the same interval, the retained upstream
+`kube-controller-manager` continued renewing its Lease while no replacement
+leader was observed. The local static-pod cleanup selected the API server and
+etcd but omitted kube-controller-manager and kube-scheduler; it now includes
+all four kubeadm control-plane static Pods. This is a confirmed cleanup gap
+and a plausible Lease explanation, while runtime verification is pending.
+Saved logs: `/tmp/nodemigrate-36841047899-k3s-artifact/nodemigrate-k3s.log`,
+`/tmp/nodemigrate-36841047899-docker-artifact/nodemigrate-docker-preflight.log`,
+and `/tmp/nodemigrate-36841047899-kubernetes-artifact/nodemigrate-kubernetes.log`.
+
 ## Cilium KPR-disabled matrix 36832655869
 
 The fixture-only 3+2 CI run
@@ -41,10 +80,10 @@ later stage checks. Focused 3+2 validation of that ordering passed in
 [36838518158](https://github.com/centerionware/not-k8s/actions/runs/36838518158)
 at SHA `1ab4a760acb3d527c81bb0bae53ea19b04be0716`: all five nodes recovered,
 the issuer and certificate became Ready in order, and the source workload
-fixture passed. Full KPR-disabled matrix
+fixture passed. The subsequent full KPR-disabled matrix
 [36841047899](https://github.com/centerionware/not-k8s/actions/runs/36841047899)
-is running on SHA `847f6e22f8c5011efe71e446ca54c50f25e02679`; the migration
-result remains unverified.
+completed with all three migration lanes failing. See the latest section above
+for findings and fixes in progress.
 
 ## Previous Cilium KPR-disabled matrix 36822827036
 

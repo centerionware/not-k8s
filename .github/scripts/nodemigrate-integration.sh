@@ -1194,6 +1194,22 @@ diagnostics() {
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get nodes -o wide || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe nodes || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get pods,pvc,pv -A -o wide || true
+            echo "Batch Job status and Pod diagnostics:"
+            KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get jobs -n migration-apps -o yaml || true
+            while IFS= read -r job_name; do
+                [[ -n "$job_name" ]] || continue
+                KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe job -n migration-apps "$job_name" || true
+                while IFS= read -r job_pod; do
+                    [[ -n "$job_pod" ]] || continue
+                    KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe pod -n migration-apps "$job_pod" || true
+                    KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n migration-apps "$job_pod" \
+                        --all-containers --tail=200 || true
+                    KUBECONFIG="$CURRENT_KUBECONFIG" kubectl logs -n migration-apps "$job_pod" \
+                        --all-containers --previous --tail=200 || true
+                done < <(KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get pods -n migration-apps \
+                    -l "job-name=$job_name" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+            done < <(KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get jobs -n migration-apps \
+                -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
             echo "Aggregated metrics API diagnostics:"
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl get apiservices v1beta1.metrics.k8s.io -o yaml || true
             KUBECONFIG="$CURRENT_KUBECONFIG" kubectl describe apiservice v1beta1.metrics.k8s.io || true

@@ -2,6 +2,36 @@
 
 Last updated: 2026-10-01
 
+## Latest branch-runtime matrix 36841047899
+
+Run [36841047899](https://github.com/centerionware/not-k8s/actions/runs/36841047899)
+tested SHA `847f6e22f8c5011efe71e446ca54c50f25e02679` with branch runtime,
+Cilium KPR disabled, and five-node migration enabled. All three jobs failed
+after their branch combined-runtime builds passed. The five-node Docker job
+uses exactly three control planes (`cp-1`–`cp-3`) and two workers
+(`worker-1`, `worker-2`), and its role-count assertion passed. It failed while
+migrating cp-3 because Service route `10.96.0.1:443` did not remain reachable
+for ten seconds within 300 seconds; kube-proxy owns Service routing in this
+KPR-disabled lane. This is a routing failure, not a topology mismatch.
+
+K3s return migration failed because a CRI container was still running when
+removal was attempted. A separate rollback check saw a Completed
+`migration-job-check-nodestore` Pod while its Job was not Complete. The
+controller could reuse a deterministic Pod name still held by a Pod from the
+earlier same-name Job; suffix selection and live owner-UID collision handling
+now cover that case. The artifact did not capture the Pod owner UID, so the
+mechanism remains plausible pending runtime validation. The CI log also
+recorded 1,480 CronJob status PATCHes in roughly two seconds. The current
+fixes stop containers before CRI removal and normalize empty versus omitted
+CronJob `active` status. The upstream lane timed out on hostpath CSI
+StatefulSet spec observation while the retained kube-controller-manager kept
+renewing its Lease. Static-pod cleanup now includes kube-controller-manager
+and kube-scheduler alongside kube-apiserver and etcd. These code fixes still
+need focused CI and migration runtime validation.
+
+Full logs are saved under `/tmp/nodemigrate-36841047899-{k3s,docker,kubernetes}-artifact/`.
+No general build or full e2e gate ran.
+
 ## Cilium KPR-disabled matrix 36832655869
 
 [Run 36832655869](https://github.com/centerionware/not-k8s/actions/runs/36832655869)
@@ -44,10 +74,10 @@ passed at SHA `1ab4a760acb3d527c81bb0bae53ea19b04be0716` in 22m01s. It
 confirmed all three control planes and both workers were Ready, kube-proxy
 started with the shared conntrack limit unchanged, cp-1 loss/recovery passed,
 the ClusterIssuer became Ready before its Certificate, and the full source
-workload fixture passed. The KPR-disabled full matrix was dispatched at SHA
-`847f6e22f8c5011efe71e446ca54c50f25e02679` in
-[run 36841047899](https://github.com/centerionware/not-k8s/actions/runs/36841047899)
-and is running K3s, upstream, and the full Docker 3+2 migration lanes.
+workload fixture passed. The subsequent full KPR-disabled matrix
+[36841047899](https://github.com/centerionware/not-k8s/actions/runs/36841047899)
+completed with all three migration lanes failing; see the latest section for
+failure evidence and in-progress fixes.
 
 ## Previous Cilium KPR-disabled matrix 36822827036
 

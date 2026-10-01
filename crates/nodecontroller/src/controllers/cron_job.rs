@@ -90,7 +90,14 @@ fn status_needs_patch(current: Option<&CronJobStatus>, desired: &CronJobStatus) 
     if current.is_none() && desired == &CronJobStatus::default() {
         return false;
     }
-    current != Some(desired)
+    let normalize = |status: &CronJobStatus| {
+        let mut status = status.clone();
+        if status.active.as_ref().is_some_and(Vec::is_empty) {
+            status.active = None;
+        }
+        status
+    };
+    current.map(normalize).as_ref() != Some(&normalize(desired))
 }
 
 fn owner_reference(cj: &CronJob) -> OwnerReference {
@@ -375,6 +382,18 @@ mod tests {
     #[test]
     fn missing_empty_status_does_not_generate_a_noop_patch() {
         assert!(!status_needs_patch(None, &CronJobStatus::default()));
+    }
+
+    #[test]
+    fn empty_active_list_matches_omitted_active_list() {
+        let current = CronJobStatus {
+            active: Some(Vec::new()),
+            ..Default::default()
+        };
+        assert!(!status_needs_patch(
+            Some(&current),
+            &CronJobStatus::default()
+        ));
     }
 
     #[test]

@@ -2,6 +2,43 @@
 
 Last updated: 2026-10-01
 
+## Latest migration failures: run 36841047899
+
+The exact five-node Docker layout remains three control planes (`cp-1`–`cp-3`)
+and two workers (`worker-1`, `worker-2`); the role-count assertion passed.
+Run [36841047899](https://github.com/centerionware/not-k8s/actions/runs/36841047899)
+failed while migrating cp-3 because the Kubernetes Service route was down
+with kube-proxy as the KPR-disabled routing owner. Restarting only the local
+kube-proxy DaemonSet Pod after Cilium host-state cleanup is implemented, with
+API UID-scoped cleanup and diagnostics added. Runtime proof remains pending.
+
+- **Component: nodemigrate CRI cleanup.** K3s return migration reported a
+  container was still running during `crictl rm`. The sandbox recreation path
+  now issues checked `crictl stop` for each child container before removal.
+  The K3s log also shows a completed migration check Pod whose Job was not
+  Complete. The Job controller could reuse a deterministic Pod name still
+  held by a Pod from the prior same-name Job. Suffix selection now checks all
+  namespace Pods, and AlreadyExists collisions are verified against the live
+  owner UID before selecting another name. The artifact omitted the Pod owner
+  UID, so the suspected mechanism needs runtime validation.
+- **Component: nodecontroller CronJob status.** The run recorded 1,480
+  CronJob status PATCHes in roughly two seconds. The status comparison now
+  normalizes `active: []` to the omitted/default representation and has a
+  regression test. The logs do not prove this caused the migration Job
+  observation.
+- **Component: nodemigrate upstream control-plane cleanup.** The upstream
+  lane timed out waiting for the imported hostpath CSI StatefulSet spec to be
+  observed while the retained kube-controller-manager renewed its Lease. The
+  CRI selector omitted kube-controller-manager and kube-scheduler static
+  Pods; it now selects all four kubeadm control-plane static Pods. This
+  removes a confirmed cleanup gap; the Lease conflict remains the likely
+  mechanism pending runtime validation.
+
+Branch combined builds passed, but none of the migration lanes passed. Saved
+logs: `/tmp/nodemigrate-36841047899-k3s-artifact/nodemigrate-k3s.log`,
+`/tmp/nodemigrate-36841047899-docker-artifact/nodemigrate-docker-preflight.log`,
+and `/tmp/nodemigrate-36841047899-kubernetes-artifact/nodemigrate-kubernetes.log`.
+
 ## Cilium KPR-disabled matrix 36832655869
 
 Fixture-only run
@@ -35,10 +72,10 @@ stage checks. Fixture-only run
 [36838518158](https://github.com/centerionware/not-k8s/actions/runs/36838518158)
 passed at SHA `1ab4a760acb3d527c81bb0bae53ea19b04be0716`; it confirmed the
 issuer and certificate became Ready in sequence and source fixture validation
-passed. Full KPR-disabled migration matrix
+passed. The subsequent full KPR-disabled matrix
 [36841047899](https://github.com/centerionware/not-k8s/actions/runs/36841047899)
-is now running at SHA `847f6e22f8c5011efe71e446ca54c50f25e02679`. Earlier
-fixture log:
+completed with all three migration lanes failing; see the latest section for
+findings and fixes. Earlier fixture log:
 `/tmp/nodemigrate-36830106965-docker-fixture.log`.
 
 ## Previous Cilium KPR-disabled matrix 36822827036
