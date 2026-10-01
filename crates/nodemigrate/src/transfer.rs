@@ -737,17 +737,18 @@ async fn restart_local_kube_proxy_if_needed(
                     );
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
-                recreate_pod_sandboxes_for_uids(
+                recreate_pod_sandboxes_for_pod_name(
                     &cleanup_endpoint,
                     &cleanup_node,
-                    &BTreeSet::from([cleanup_uid]),
+                    "kube-system",
+                    "kube-proxy",
                 )
             })
         })
     })
     .await
     .context("joining local kube-proxy CRI sandbox cleanup")??;
-    eprintln!("nodemigrate: removed {sandboxes} sandbox(es) and {containers} container record(s) for deleted kube-proxy Pod UID {uid} on node {node_name}");
+    eprintln!("nodemigrate: removed {sandboxes} local kube-proxy sandbox(es) across Pod UIDs and {containers} container record(s) on node {node_name}");
 
     let mut ready_since = None;
     loop {
@@ -946,6 +947,22 @@ fn recreate_pod_sandboxes_for_uids(
     node_name: &str,
     pod_uids: &BTreeSet<String>,
 ) -> Result<(usize, usize)> {
+    let ids = pod_sandbox_ids_for_uids(&list_local_pod_sandboxes(runtime_endpoint)?, pod_uids);
+    recreate_pod_sandboxes_for_ids(runtime_endpoint, node_name, &ids)
+}
+
+fn recreate_pod_sandboxes_for_pod_name(
+    runtime_endpoint: &str,
+    node_name: &str,
+    namespace: &str,
+    name: &str,
+) -> Result<(usize, usize)> {
+    let sandboxes = list_local_pod_sandboxes(runtime_endpoint)?;
+    let ids = pod_sandbox_ids_for_pod_name(&sandboxes, namespace, name);
+    recreate_pod_sandboxes_for_ids(runtime_endpoint, node_name, &ids)
+}
+
+fn list_local_pod_sandboxes(runtime_endpoint: &str) -> Result<Value> {
     let output = Command::new("crictl")
         .args(["--runtime-endpoint", runtime_endpoint, "pods", "-o", "json"])
         .output()
@@ -955,13 +972,18 @@ fn recreate_pod_sandboxes_for_uids(
         "crictl could not list Pod sandboxes after Cilium datapath cleanup: {}",
         String::from_utf8_lossy(&output.stderr).trim()
     );
-    let sandboxes: Value = serde_json::from_slice(&output.stdout)
-        .context("parsing local CRI Pod sandboxes after Cilium datapath cleanup")?;
-    let ids = pod_sandbox_ids_for_uids(&sandboxes, pod_uids);
+    serde_json::from_slice(&output.stdout)
+        .context("parsing local CRI Pod sandboxes after Cilium datapath cleanup")
+}
 
+fn recreate_pod_sandboxes_for_ids(
+    runtime_endpoint: &str,
+    node_name: &str,
+    ids: &[String],
+) -> Result<(usize, usize)> {
     let mut removed_sandboxes = 0;
     let mut removed_containers = 0;
-    for id in &ids {
+    for id in ids {
         crate::service::checked_cri_cleanup(runtime_endpoint, "stopp", id)
             .with_context(|| format!("stopping Pod sandbox {id} on node {node_name}"))?;
 
@@ -1057,6 +1079,32 @@ fn pod_sandbox_ids_for_uids(sandboxes: &Value, pod_uids: &BTreeSet<String>) -> V
                 .or_else(|| sandbox.pointer("/metadata/uid"))
                 .and_then(Value::as_str)
                 .is_some_and(|uid| pod_uids.contains(uid))
+        })
+        .filter_map(|sandbox| {
+            sandbox
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn pod_sandbox_ids_for_pod_name(sandboxes: &Value, namespace: &str, name: &str) -> Vec<String> {
+    sandboxes
+        .get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|sandbox| {
+            sandbox
+                .pointer("/labels/io.kubernetes.pod.namespace")
+                .and_then(Value::as_str)
+                == Some(namespace)
+                && sandbox
+                    .pointer("/labels/io.kubernetes.pod.name")
+                    .and_then(Value::as_str)
+                    == Some(name)
         })
         .filter_map(|sandbox| {
             sandbox
@@ -5421,7 +5469,7 @@ mod tests {
         node_scheduling_patch, object_rank,
         node_readiness_summary,
         container_ids_for_sandbox, is_local_cilium_envoy_pod, node_pod_uids_requiring_cni,
-        pod_sandbox_ids_for_uids,
+        pod_sandbox_ids_for_pod_name, pod_sandbox_ids_for_uids,
         node_uid_has_been_replaced, object_skip_reason, object_type_label,
         owner_reference_repair_patch, parse_cilium_kube_proxy_replacement,
         pod_for_migration_restart,
@@ -6868,6 +6916,35 @@ current-context: test
         assert_eq!(
             pod_sandbox_ids_for_uids(&sandboxes, &["api-uid".to_owned()].into_iter().collect()),
             vec!["api-sandbox".to_owned()]
+        );
+    }
+
+    #[test]
+    fn kube_proxy_cleanup_selects_all_local_sandboxes_by_namespace_and_name() {
+        let sandboxes = serde_json::json!({"items": [
+            {"id": "current-proxy", "labels": {
+                "io.kubernetes.pod.namespace": "kube-system",
+                "io.kubernetes.pod.name": "kube-proxy",
+                "io.kubernetes.pod.uid": "current-uid"
+            }},
+            {"id": "stale-proxy", "labels": {
+                "io.kubernetes.pod.namespace": "kube-system",
+                "io.kubernetes.pod.name": "kube-proxy",
+                "io.kubernetes.pod.uid": "stale-uid"
+            }},
+            {"id": "other-namespace", "labels": {
+                "io.kubernetes.pod.namespace": "migration-apps",
+                "io.kubernetes.pod.name": "kube-proxy"
+            }},
+            {"id": "other-pod", "labels": {
+                "io.kubernetes.pod.namespace": "kube-system",
+                "io.kubernetes.pod.name": "cilium-agent"
+            }}
+        ]});
+
+        assert_eq!(
+            pod_sandbox_ids_for_pod_name(&sandboxes, "kube-system", "kube-proxy"),
+            vec!["current-proxy".to_owned(), "stale-proxy".to_owned()]
         );
     }
 

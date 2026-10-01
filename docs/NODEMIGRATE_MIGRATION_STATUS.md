@@ -2,7 +2,25 @@
 
 Last updated: 2026-10-01
 
-## Latest branch-runtime matrix 36847726197
+## Latest branch-runtime matrix 36852709698
+
+Run [36852709698](https://github.com/centerionware/not-k8s/actions/runs/36852709698)
+tested SHA `284489691bb7c94dd3bce9e396157708a02aad12` with branch runtime,
+Cilium KPR disabled, and the full five-node migration enabled. K3s and
+upstream Kubernetes both passed their full round trips in about 25 minutes.
+The Docker path verified exactly three control planes (`cp-1`–`cp-3`) and two
+workers (`worker-1`, `worker-2`), then passed five-Node recovery. cp-1/cp-2
+passed Service routing. cp-3 failed after the old kube-proxy UID and one CRI
+sandbox were removed and the replacement Pod became Ready; its logs still
+reported port 10249/10256 bind conflicts and the Kubernetes Service route was
+unreachable for 300 seconds. Exact-UID cleanup did not remove the conflicting
+listener. Current code removes every local `kube-system/kube-proxy` CRI
+sandbox across UIDs while Pod agents are paused, then resumes reconciliation.
+This addresses stale CRI sandboxes as the likely source of the duplicate
+listeners; runtime proof is pending. Saved artifact:
+`/tmp/nodemigrate-36852709698-docker-artifact/nodemigrate-docker-preflight.log`.
+
+## Branch-runtime matrix 36847726197
 
 Run [36847726197](https://github.com/centerionware/not-k8s/actions/runs/36847726197)
 tested commit `1fc139de19520716d3851e2e4c0e70d2d6580add` with branch runtime,

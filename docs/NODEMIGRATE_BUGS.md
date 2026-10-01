@@ -2,6 +2,21 @@
 
 Last updated: 2026-10-01
 
+## Branch-runtime matrix 36852709698
+
+The five-node run used exactly three control planes (`cp-1`–`cp-3`) and two
+workers (`worker-1`, `worker-2`); topology and five-Node recovery passed.
+K3s and upstream Kubernetes passed their full round trips. cp-1 and cp-2
+passed Service-route recovery after local kube-proxy restart. cp-3 still
+failed: migration removed the exact old kube-proxy UID and its CRI sandbox,
+then the replacement Pod became Ready, but kube-proxy continued to report
+`address already in use` on ports 10249 and 10256 and the Service route stayed
+down. Exact-UID cleanup was therefore insufficient. The current fix removes
+all local CRI sandboxes labeled `kube-system/kube-proxy` while local Pod agents
+are paused, covering orphaned sandboxes from earlier Pod UIDs. This targets
+the observed duplicate-listener failure; runtime verification is pending.
+Log: `/tmp/nodemigrate-36852709698-docker-artifact/nodemigrate-docker-preflight.log`.
+
 ## Branch-runtime matrix 36847726197
 
 The five-node lane used exactly three control planes (`cp-1`–`cp-3`) and two
@@ -10,11 +25,10 @@ checks passed. K3s passed in 22m58s and upstream passed in 25m26s. During
 cp-3 migration, kube-proxy's Pod became Ready after restart, but its logs
 repeatedly report `address already in use` on 127.0.0.1:10249 and
 0.0.0.0:10256, and the Kubernetes Service route stayed down. The delete path
-allowed a DaemonSet replacement to launch before local Pod reconciliation was
-paused to remove the prior UID's CRI process. The restart path now pauses
-local agents before deleting the old Pod and resumes them after exact-UID CRI
-cleanup. This is the leading cause based on timing and bind errors; runtime
-verification remains pending. Log:
+showed the replacement could not bind its local ports. The restart path now
+pauses local agents before deleting the old Pod and resumes them after
+exact-UID CRI cleanup. The following run showed exact-UID cleanup was
+insufficient; see run 36852709698 above. Log:
 `/tmp/nodemigrate-36847726197-docker-artifact/nodemigrate-docker-preflight.log`.
 
 ## Latest migration failures: run 36841047899

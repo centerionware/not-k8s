@@ -2,6 +2,26 @@
 
 Last updated: 2026-10-01
 
+## Latest branch-runtime matrix 36852709698
+
+Run [36852709698](https://github.com/centerionware/not-k8s/actions/runs/36852709698)
+tested SHA `284489691bb7c94dd3bce9e396157708a02aad12` with
+`runtime_source=branch`, `cilium_kpr=false`, and
+`five_node_migration=true`. Focused `nodemigrate` quick-check
+[36852462705](https://github.com/centerionware/not-k8s/actions/runs/36852462705)
+passed. Branch combined-runtime builds passed in all lanes; K3s and upstream
+round trips both passed in about 25 minutes. The Docker lane passed the exact
+3-control-plane/2-worker topology and five-Node recovery checks. cp-1 and cp-2
+passed Service-route recovery; cp-3 failed after its replacement kube-proxy
+Pod became Ready while ports 10249 and 10256 still reported bind conflicts,
+and Service route `10.96.0.1:443` stayed unreachable. The previous exact-UID
+CRI cleanup ran but did not resolve this. The working fix cleans all local
+CRI sandboxes labeled `kube-system/kube-proxy` while local Pod agents are
+paused, to remove stale sandboxes from prior UIDs. Revalidation is pending.
+Saved job log: `/tmp/nodemigrate-36852709698-docker-job.log`; artifact:
+`/tmp/nodemigrate-36852709698-docker-artifact/nodemigrate-docker-preflight.log`.
+No general build or full e2e gate ran.
+
 ## Branch-runtime matrix 36847726197
 
 Run [36847726197](https://github.com/centerionware/not-k8s/actions/runs/36847726197)
