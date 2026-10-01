@@ -16,6 +16,22 @@ the upstream round trip completed. K3s passed as well. This resolves the
 corresponding harness issues recorded below; no general build or full e2e
 gate ran.
 
+## Confirmed full-migration gap: HPA reconciliation
+
+The migration acceptance inventory requires autoscaler behavior at source,
+nodestore, and returned-source checkpoints. `nodecontroller` currently has
+only the disruption controller; its module documentation explicitly scopes
+out `horizontalpodautoscaler-controller`, and there is no HPA reconciliation
+implementation in its controller set. API object transfer and semantic
+comparison therefore cannot prove that an HPA continues scaling after the
+destination becomes authoritative. This is an acceptance gap in
+`nodecontroller`, exercised by the `nodemigrate` fixtures, not a failure in
+the passing run 36871609082. The next implementation must provide bounded
+HPA reconciliation against the aggregated metrics API and the Scale
+subresource, then add a live CPU-utilization scale-up/scale-down scenario to
+the K3s and upstream source → nodestore → returned fixtures. No HPA behavior
+is claimed as tested yet.
+
 ## Previous branch-runtime matrix 36865090999
 
 The exact 3-control-plane/2-worker lane completed the full bidirectional

@@ -17,6 +17,15 @@ bounded Gateway API manifest download retry both passed. The branch combined
 runtime was built by the migration workflow. No general build or full e2e
 gate ran.
 
+The PR validation triggered by documentation commit
+`58a4a4753291e0ffe5da4d9f361bfabfaa9e19e7` completed successfully: migration
+workflow script validation passed in
+[36878774379](https://github.com/centerionware/not-k8s/actions/runs/36878774379),
+and nodemigrate crate tests plus packaging checks passed in
+[36878774030](https://github.com/centerionware/not-k8s/actions/runs/36878774030).
+The PR-triggered workflow skipped its runtime migration jobs by design; the
+latest runtime evidence remains run 36871609082 at SHA `b4cb4142` above.
+
 ## Previous branch-runtime matrix 36865090999
 
 Run [36865090999](https://github.com/centerionware/not-k8s/actions/runs/36865090999)
