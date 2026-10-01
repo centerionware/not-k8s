@@ -5350,10 +5350,20 @@ mod tests {
         }))
         .unwrap();
 
+        assert_eq!(destination.data.get("immutable"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(
+            destination
+                .metadata
+                .owner_references
+                .as_ref()
+                .and_then(|references| references.first())
+                .map(|reference| (reference.kind.as_str(), reference.name.as_str())),
+            Some(("Node", "node-a"))
+        );
         assert!(preserves_destination_k3s_node_password_secret(
             &source,
             &destination
-        ));
+        ), "source={source}, destination={destination:?}");
 
         let unrelated = serde_json::json!({
             "apiVersion": "v1",
