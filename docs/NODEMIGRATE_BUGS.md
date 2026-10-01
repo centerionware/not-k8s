@@ -2,16 +2,32 @@
 
 Last updated: 2026-10-01
 
-## Cilium KPR-disabled migration matrix in progress: 36832655869
+## Cilium KPR-disabled matrix 36832655869
 
 Fixture-only run
 [36830106965](https://github.com/centerionware/not-k8s/actions/runs/36830106965)
 passed on branch SHA `55bbeb534a749dfb788e243e2da74636dbc1efc6`. It verified
 the exact three-control-plane/two-worker topology, kube-proxy startup with
 `conntrack.maxPerCore=0`, cp-1 loss/recovery, and source workload fixture; it
-stopped before migration. Full KPR-disabled migration matrix
+stopped before migration. Matrix
 [36832655869](https://github.com/centerionware/not-k8s/actions/runs/36832655869)
-is now running on the same SHA. Fixture log:
+passed K3s (26m32s) and upstream Kubernetes (24m26s). The Docker 3+2 lane
+passed kube-proxy startup, five-node readiness, and cp-1 loss/recovery, then
+failed before nodemigrate because the source fixture's self-signed
+`Certificate/migration-test` did not become Ready within five minutes.
+Cert-manager deployments were Available and other fixture workloads ran, but
+the failed run did not record CertificateRequest or controller reconciliation
+state. This is a confirmed fixture readiness timeout with unconfirmed cause;
+do not mark the five-node migration as passed. Logs:
+`/tmp/nodemigrate-36832655869-docker-failure.log`,
+`/tmp/nodemigrate-36832655869-kubernetes.log`,
+`/tmp/nodemigrate-36832655869-k3s.log`.
+
+The source fixture wait now captures the Certificate, ClusterIssuer,
+CertificateRequests, relevant events, TLS Secret metadata, and cert-manager
+controller/webhook/cainjector logs on failure. Diagnostic fixture-only run
+[36835859014](https://github.com/centerionware/not-k8s/actions/runs/36835859014)
+is pending at SHA `dd871a2d`. Earlier fixture log:
 `/tmp/nodemigrate-36830106965-docker-fixture.log`.
 
 ## Previous Cilium KPR-disabled matrix 36822827036

@@ -2,14 +2,26 @@
 
 Last updated: 2026-10-01
 
-## Cilium KPR-disabled matrix in progress: 36832655869
+## Cilium KPR-disabled matrix 36832655869
 
 [Run 36832655869](https://github.com/centerionware/not-k8s/actions/runs/36832655869)
 was dispatched on SHA `55bbeb534a749dfb788e243e2da74636dbc1efc6` with
 `runtime_source=branch`, `cilium_kpr=false`, and
 `five_node_migration=true`. It includes K3s, upstream single-node, and the
-full Docker 3-control-plane/2-worker round trip. The Docker fixture-only
-preflight passed first in
+full Docker 3-control-plane/2-worker round trip. K3s passed in 26m32s and
+upstream Kubernetes passed in 24m26s. The Docker lane passed combined builds,
+kube-proxy startup with the shared conntrack limit unchanged, five-node
+readiness, and cp-1 loss/recovery. It then failed before nodemigrate started:
+the source fixture's self-signed Certificate `migration-test` did not become
+Ready within five minutes. The cert-manager deployments were available and
+the other fixture workloads ran, but the failure collector did not preserve
+CertificateRequest or controller reconciliation details. This remains an
+unconfirmed fixture failure, not a migration result. Logs:
+`/tmp/nodemigrate-36832655869-docker-failure.log`,
+`/tmp/nodemigrate-36832655869-kubernetes.log`,
+`/tmp/nodemigrate-36832655869-k3s.log`.
+
+The Docker fixture-only preflight passed first in
 [run 36830106965](https://github.com/centerionware/not-k8s/actions/runs/36830106965)
 on the same SHA in 23m31s. The combined `nodemigrate` and `notk8s --features
 cri` builds passed; kube-proxy rollout passed with its conntrack limit left
@@ -17,6 +29,12 @@ unchanged; all five Nodes recovered after control-plane loss; and the complete
 source workload fixture passed. The fixture-only lane deliberately stopped
 before migration. Its saved log is
 `/tmp/nodemigrate-36830106965-docker-fixture.log`.
+
+To resolve the missing evidence, SHA `dd871a2d` adds Certificate, issuer,
+CertificateRequest, event, Secret-metadata, and cert-manager controller log
+capture when this fixture check times out. Focused fixture-only diagnostic run
+[36835859014](https://github.com/centerionware/not-k8s/actions/runs/36835859014)
+is pending; no migration retry is dispatched until the cause is understood.
 
 ## Previous Cilium KPR-disabled matrix 36822827036
 

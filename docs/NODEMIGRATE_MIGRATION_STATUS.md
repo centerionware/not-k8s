@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-01
 
-## Cilium KPR-disabled validation in progress: 36832655869
+## Cilium KPR-disabled matrix 36832655869
 
 The fixture-only 3+2 CI run
 [36830106965](https://github.com/centerionware/not-k8s/actions/runs/36830106965)
@@ -13,10 +13,28 @@ plus `worker-1`/`worker-2`, rolled out kube-proxy with
 passed source fixture validation. It stopped before migration by design.
 Saved log: `/tmp/nodemigrate-36830106965-docker-fixture.log`.
 
-Full branch-runtime KPR-disabled matrix
+KPR-disabled matrix
 [36832655869](https://github.com/centerionware/not-k8s/actions/runs/36832655869)
-is now running on the same SHA. It covers K3s, upstream Kubernetes, and the
-full five-node migration.
+completed with upstream Kubernetes passing in 24m26s and K3s passing in
+26m32s. Both successful lanes built branch `nodemigrate` and combined
+`notk8s --features cri`; upstream checkpoints retained 119 source-discovered
+listable API resources, normalized object data, fixture state, CA continuity,
+and kube-proxy Service routing. The 3+2 lane built the combined runtime and
+completed five-node readiness and cp-1 loss/recovery, but stopped before
+nodemigrate: `Certificate/migration-test` failed to become Ready within five
+minutes during the source fixture. Other fixture workloads ran and all five
+nodes remained network reachable. The first failure log lacked
+CertificateRequest and cert-manager controller state, so the cause remains
+unconfirmed. Full logs:
+`/tmp/nodemigrate-36832655869-docker-failure.log`,
+`/tmp/nodemigrate-36832655869-kubernetes.log`,
+`/tmp/nodemigrate-36832655869-k3s.log`.
+
+SHA `dd871a2d` adds targeted Certificate, issuer, CertificateRequest, event,
+Secret-metadata, and controller-log capture on this timeout. Fixture-only
+diagnostic run
+[36835859014](https://github.com/centerionware/not-k8s/actions/runs/36835859014)
+is pending; the full migration matrix remains unverified for KPR disabled.
 
 ## Previous Cilium KPR-disabled matrix 36822827036
 
@@ -55,7 +73,7 @@ All five nodes remained reachable through Cilium. The Docker harness now sets
 kube-proxy `conntrack.maxPerCore=0` in this nested KPR-disabled fixture, so
 kube-proxy keeps Service routing but leaves the shared host's conntrack limit
 unchanged. Fixture-only CI subsequently verified kube-proxy readiness and the
-complete source workload fixture before migration validation resumed. Full log:
+complete source workload fixture. Full log:
 `/tmp/nodemigrate-36827390978-docker-fixture.log`. Earlier full matrix log:
 [36822827036](https://github.com/centerionware/not-k8s/actions/runs/36822827036),
 `/tmp/nodemigrate-36822827036-artifacts/`.
