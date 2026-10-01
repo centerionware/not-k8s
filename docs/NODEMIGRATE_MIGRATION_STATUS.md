@@ -26,11 +26,16 @@ The current source change limits the control-plane role requirement to
 already staged retained cluster. A focused worker-to-worker regression passed
 the `nodemigrate` quick-check at SHA `eca452a1` in
 [36809748353](https://github.com/centerionware/not-k8s/actions/runs/36809748353).
-Envoy termination state and current/previous container logs are now collected,
-and a no-migration upstream Cilium cleanup/Envoy restart probe is available to
-reproduce the failure mechanism. That probe has not run yet. No migration retry
-is being started while the upstream Envoy crash cause is still unknown. No
-general build or full e2e ran.
+Envoy termination state and current/previous container logs are now collected.
+No-migration probe [36810231370](https://github.com/centerionware/not-k8s/actions/runs/36810231370)
+successfully completed Cilium clean-state cleanup and kept the replacement
+Envoy Ready. Its follow-up fixture validation then failed because the existing
+CoreDNS Pods were not Ready after cleanup; the events show liveness/readiness
+timeouts on those stale Pods. The probe now restarts the CoreDNS Deployment to
+request fresh CNI ADDs before checking workloads. This does not reproduce the
+Envoy crash seen during migration, so its migration-specific cause remains
+unknown. No migration retry is being started yet. No general build or full e2e
+ran.
 
 ## Previous branch migration matrix: 36800539523
 

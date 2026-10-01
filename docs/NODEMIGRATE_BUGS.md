@@ -25,10 +25,15 @@ are saved under `/tmp/nodemigrate-36805374812-artifacts/`.
   repeatedly failed its readiness probe (`127.0.0.1:9878` connection refused)
   and entered CrashLoopBackOff. The integration artifacts omitted Envoy
   current/previous container logs and last termination state, so the crash
-  cause is unknown. The integration capture now records those details, and a
-  no-migration upstream Cilium cleanup and Envoy restart probe is available but
-  has not run. Establish the failure mechanism before another migration
-  attempt; a five-minute deadline alone does not diagnose or fix the issue.
+  cause is unknown. The integration capture now records those details. In
+  no-migration probe [36810231370](https://github.com/centerionware/not-k8s/actions/runs/36810231370),
+  Cilium clean-state completed and the replacement Envoy remained Ready. The
+  probe then failed its fixture check because the existing CoreDNS Pods did
+  not recover; readiness/liveness events show timeouts on the old Pods. The
+  probe now restarts the CoreDNS Deployment to force fresh CNI ADDs. This
+  confirms normal post-cleanup Envoy restart works but does not reproduce the
+  migration-specific crash. Its cause remains unknown and must be resolved
+  before declaring migration green.
 - **Five-node topology clarification.** The lane is correctly configured as
   three control planes plus two workers. It passed setup and forward migration;
   the observed failure was worker role validation during reverse migration.

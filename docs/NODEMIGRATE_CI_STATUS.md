@@ -23,10 +23,14 @@ regression for worker return with `skip-api-export`; focused `nodemigrate`
 quick-check passed at SHA `eca452a1` in
 [36809748353](https://github.com/centerionware/not-k8s/actions/runs/36809748353).
 The integration diagnostics now collect Envoy current/previous logs and last
-termination state. A dedicated no-migration upstream Cilium cleanup/Envoy
-restart probe has been added but is not yet dispatched. Do not rerun the
-migration matrix until the upstream Envoy failure is diagnosed. No general
-build or full e2e ran.
+termination state. No-migration probe
+[36810231370](https://github.com/centerionware/not-k8s/actions/runs/36810231370)
+successfully restarted Envoy after Cilium cleanup, but subsequent fixture
+verification failed because stale CoreDNS Pods did not recover from the clean
+state. The candidate now rolls CoreDNS to force fresh CNI ADDs before workload
+checks. This probe did not reproduce the Envoy failure from migration; its
+migration-specific cause remains unknown. The corrected probe must pass before
+another full migration matrix. No general build or full e2e ran.
 
 ## Previous branch migration matrix 36800539523
 

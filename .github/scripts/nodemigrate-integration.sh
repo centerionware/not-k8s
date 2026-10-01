@@ -4754,6 +4754,11 @@ main() {
         capture_cilium_datapath "$SOURCE_KUBECONFIG"
         reset_cilium_state_for_probe "$SOURCE_KUBECONFIG"
         restart_cilium_envoy_for_probe "$SOURCE_KUBECONFIG"
+        echo "Restarting CoreDNS to request fresh CNI ADDs after Cilium host-state cleanup"
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl rollout restart deployment/coredns \
+            -n kube-system
+        KUBECONFIG="$SOURCE_KUBECONFIG" kubectl rollout status deployment/coredns \
+            -n kube-system --timeout=10m
         verify_stage upstream-envoy-restarted "$SOURCE_KUBECONFIG"
         echo "PASS upstream Cilium clean-state and Envoy restart diagnostic; nodemigrate remains disabled"
         return 0
