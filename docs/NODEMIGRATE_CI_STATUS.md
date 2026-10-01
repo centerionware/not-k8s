@@ -45,11 +45,16 @@ UID-preconditioned delete. Follow-up
 tested the exact path at SHA `f6fa945c1233bfa688f254c1ac07e27a5c623499`; build
 and fixture setup passed, but the probe stopped before sending the deletion
 because this runner's `kubectl delete` does not recognize `--preconditions`.
-This is a harness command limitation and provides no evidence about the utility
-delete itself. The working tree now sends the Kubernetes `DeleteOptions` body
-through authenticated `kubectl proxy`, including grace period zero and the UID
-precondition. Rerun the focused probe before the migration matrix. The
-migration-specific Envoy crash remains unreproduced and unexplained. Logs:
+This was a harness command limitation and provided no evidence about the
+utility delete itself. The helper now sends Kubernetes `DeleteOptions` through
+authenticated `kubectl proxy`, including grace period zero and the UID
+precondition. The corrected focused probe
+[36817021594](https://github.com/centerionware/not-k8s/actions/runs/36817021594)
+passed at SHA `3d77f575a41c14940c6fcf7c9b762b2333ba50d3`: Cilium clean-state
+recovery succeeded, the UID-preconditioned Envoy delete returned the matching
+Pod, and its replacement became Ready. Rerun the branch-runtime migration
+matrix with Cilium KPR and five-node migration enabled. The migration-specific
+Envoy crash remains unreproduced and unexplained. Logs:
 `/tmp/nodemigrate-36812017038-artifacts/`. No general build or full e2e ran.
 
 ## Previous branch migration matrix 36800539523

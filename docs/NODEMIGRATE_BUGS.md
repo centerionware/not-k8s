@@ -49,7 +49,10 @@ are saved under `/tmp/nodemigrate-36805374812-artifacts/`.
   exercise UID-preconditioned deletion or migration behavior. The integration
   helper now sends Kubernetes `DeleteOptions` with grace period zero and the
   expected UID through an authenticated `kubectl proxy`, and validates the
-  returned Pod UID. Focused probe rerun is pending.
+  returned Pod UID. The corrected helper passed its focused run
+  [36817021594](https://github.com/centerionware/not-k8s/actions/runs/36817021594)
+  at SHA `3d77f575`; the previous failure was confined to the unsupported
+  command-line flag.
 - **Five-node topology clarification.** The lane is correctly configured as
   three control planes plus two workers. It passed setup and forward migration;
   the observed failure was worker role validation during reverse migration.
