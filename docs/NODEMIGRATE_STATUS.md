@@ -1,6 +1,6 @@
 # nodemigrate status dashboard
 
-Last updated: 2026-09-30
+Last updated: 2026-10-01
 
 This dashboard tracks the full nodemigrate goal in
 [NODEMIGRATION_GOAL.md](NODEMIGRATION_GOAL.md). Detailed status is kept in the
@@ -8,7 +8,7 @@ separate living documents below.
 
 ## Current state
 
-The latest completed migration run, [36786000022](https://github.com/centerionware/not-k8s/actions/runs/36786000022), tested SHA `355fe289` with branch-built components, Cilium KPR, and the five-node path. Upstream and five-node return imports failed because the cert-manager webhook ClusterIP route was unavailable. K3s return cleanup hit a `StopPodSandbox` deadline while API Service and Pod routes were failing. The current candidate moves reverse import after local Cilium recovery and verifies stable API ClusterIP reachability before CRI sandbox cleanup. Focused `nodemigrate` quick-check passed at SHA `7bda107d` in [36791941985](https://github.com/centerionware/not-k8s/actions/runs/36791941985); runtime verification is next. No regular build or general e2e gate ran.
+The latest completed migration run, [36805374812](https://github.com/centerionware/not-k8s/actions/runs/36805374812), tested branch-built components with Cilium KPR and the correct five-node topology of three control planes plus two workers. K3s completed its round trip. The five-node lane passed setup, forward migration, workload checks, and all three control-plane returns, then exposed a `nodemigrate` validation bug when `worker-1` was incorrectly rejected for `skip-api-export`. Upstream completed import and Cilium agent/socket recovery but its replacement Envoy Pod crashed; the container termination output was not captured, so the cause is unknown. The worker validation fix and regression are in progress; do not retry the matrix until the quick-check passes and the Envoy crash is diagnosed. No regular build or general e2e gate ran.
 
 The prior Docker failure in run [36578066781](https://github.com/centerionware/not-k8s/actions/runs/36578066781) exposed a two-second CRI removal timeout while stopping Cilium. The branch now gives sandbox stop/removal 60 seconds and removes the local Cilium agent last. Nodemigrate-only quick-check [36582679193](https://github.com/centerionware/not-k8s/actions/runs/36582679193) passed all 115 tests. The latest migration run confirms the timeout/order fix did not regress either single-node round trip.
 
@@ -18,15 +18,15 @@ No regular build gate or full e2e workflow ran. The nodemigrate-specific migrati
 
 | Area | State | Detail |
 | --- | --- | --- |
-| Full bidirectional migration implementation | Latest run 36786000022 did not pass a complete round trip: webhook Service connectivity blocked upstream and five-node imports, and K3s CRI cleanup timed out. The combined recovery candidate passed focused `nodemigrate` quick-check; runtime verification is next. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
+| Full bidirectional migration implementation | Latest run 36805374812: K3s passed; five-node reached reverse worker return but hit role validation; upstream Envoy replacement crashed after import. The worker fix is pending focused CI; Envoy cause is unknown. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Workload and API-kind parity | The fixture includes the required workload, storage, Helm, routing, RBAC/admission, CRD, and discovered-resource checks. Five-node API parity now exposed control-plane join overwrites and a known CSI fixture mount delta; focused checks and a clean strict comparison are pending. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Bugs found and component fixes | Run 366504 exposed an internal Pod binding storage conflict and a kubelet-to-Nodelet CRI label handoff failure. Both fixes passed focused `nodeapiserver,nodelet` quick-check; migration runtime evidence is pending. | [Bug and fix tracker](NODEMIGRATE_BUGS.md) |
 | Existing nodestore member replacement and new control-plane joins | Node replacement ordering and Raft learner catch-up/promotion logic are implemented. The existing-cluster join/replacement scenario remains unverified by a completed migration run. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | Worker-node migration | K3s agent, upstream kubelet, and not-k8s nodelet roles are inventoried; paths avoid cluster-wide re-import and preserve node-local PV data. Multi-node worker replacement behavior remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
 | K3s external-CNI uninstall preservation | Configured CNI paths are detected and snapshotted/restored around explicit uninstall. Cilium migration without uninstall passed the single-node round trip; explicit K3s+Cilium uninstall remains unverified. | [Migration status](NODEMIGRATE_MIGRATION_STATUS.md) |
-| K3s/Cilium and upstream Kubernetes/Cilium test lanes | Run 36786000022 failed during Cilium recovery: K3s sandbox stop timed out, and upstream import could not reach the cert-manager webhook Service. New ordering and Service-route gates passed focused quick-check; runtime confirmation is pending. | [CI status](NODEMIGRATE_CI_STATUS.md) |
-| Nodemigrate merge gates | Required K3s single-node and three-control-plane/two-worker round trips are not green. Runtime retry follows focused validation of all fixes from run 36786000022. | [CI status](NODEMIGRATE_CI_STATUS.md) |
-| Docker five-node isolation and migration | Five-node return import failed because cert-manager webhook connectivity was unavailable. Shared return-path ordering was changed; validation is pending. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| K3s/Cilium and upstream Kubernetes/Cilium test lanes | K3s passed in 36805374812. Upstream Envoy replacement crashed after import; root cause is not captured. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| Nodemigrate merge gates | K3s single-node round trip passed in 36805374812. The three-control-plane/two-worker round trip is incomplete due to worker role validation; upstream Envoy crash diagnosis is also pending before another matrix run. | [CI status](NODEMIGRATE_CI_STATUS.md) |
+| Docker five-node isolation and migration | The 3-CP/2-worker topology passed setup, forward migration, and control-plane return; reverse worker return exposed a role-validation bug. | [CI status](NODEMIGRATE_CI_STATUS.md) |
 | Standalone artifact and shared-version behavior | Release design present; nodemigrate publication not recorded | [Release status](NODEMIGRATE_RELEASE_STATUS.md) |
 
 ## Current verification

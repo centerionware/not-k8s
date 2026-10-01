@@ -2,7 +2,33 @@
 
 Last updated: 2026-10-01
 
-## Latest branch migration matrix: 36800539523
+## Latest branch migration matrix: 36805374812
+
+[Run 36805374812](https://github.com/centerionware/not-k8s/actions/runs/36805374812)
+tested SHA `b140095b15f230941b2d4ad179fc0be2955ffc06` with branch runtime,
+Cilium KPR, and the full five-node topology: three control planes and two
+workers. This topology provisioned, passed its source checks, migrated to
+nodestore, and returned all three control planes. Reverse migration then
+stopped at `worker-1` because nodemigrate incorrectly required
+`skip-api-export` nodes to be control planes. This is a role-validation bug;
+the worker belongs in the return path and the topology is correct.
+
+K3s completed its full round trip in 27m06s. Upstream Kubernetes imported the
+destination state and recovered the Cilium agent/socket LB, then failed when
+the replacement Cilium Envoy Pod stayed in CrashLoopBackOff and its readiness
+probe could not connect to port 9878 for 300 seconds. The Envoy container's
+termination output was not captured, so its underlying crash cause remains
+unknown. Full logs and artifacts are in
+`/tmp/nodemigrate-36805374812-artifacts/`.
+
+The current source change limits the control-plane role requirement to
+`stage-target`; `skip-api-export` is allowed for returning workers into an
+already staged retained cluster. A focused regression covers worker-to-worker
+return. `git diff --check` passed; the `nodemigrate` quick-check is pending.
+No migration retry is being started while the upstream Envoy crash cause is
+still unknown. No general build or full e2e ran.
+
+## Previous branch migration matrix: 36800539523
 
 [Run 36800539523](https://github.com/centerionware/not-k8s/actions/runs/36800539523)
 tested SHA `dda5227b117c0dc42ba0353cc638bcaabe7901d7` with the branch runtime,

@@ -2,7 +2,40 @@
 
 Last updated: 2026-10-01
 
-## Migration matrix 36800539523
+## Migration matrix 36805374812
+
+Branch-runtime run
+[36805374812](https://github.com/centerionware/not-k8s/actions/runs/36805374812)
+tested SHA `b140095b15f230941b2d4ad179fc0be2955ffc06` with Cilium KPR and the
+required three-control-plane/two-worker Docker topology. Logs and artifacts
+are saved under `/tmp/nodemigrate-36805374812-artifacts/`.
+
+- **Component: reverse worker return validation.** Five-node setup, forward
+  migration, nodestore workload checks, and return of all three control planes
+  passed. `worker-1` was then rejected because
+  `validate_reverse_control_plane_options` required both installations to be
+  control planes whenever either `stage-target` or `skip-api-export` was set.
+  Only `stage-target` needs that constraint; workers must return without
+  re-exporting cluster API state. The candidate now applies the role check only
+  to `stage-target` and adds a worker-to-worker `skip-api-export` regression.
+  `git diff --check` passed; `nodemigrate` quick-check is pending.
+- **Component: upstream Cilium Envoy recovery.** Upstream destination import
+  completed and the Cilium agent/socket LB recovered. The replacement Envoy Pod
+  repeatedly failed its readiness probe (`127.0.0.1:9878` connection refused)
+  and entered CrashLoopBackOff. The integration artifacts omitted Envoy
+  current/previous container logs and last termination state, so the crash
+  cause is unknown. Add those diagnostics and establish the failure mechanism
+  before another migration attempt; a five-minute deadline alone does not
+  diagnose or fix the issue.
+- **Five-node topology clarification.** The lane is correctly configured as
+  three control planes plus two workers. It passed setup and forward migration;
+  the observed failure was worker role validation during reverse migration.
+
+K3s passed its full round trip in 27m06s. Do not rerun the full matrix until
+the worker validation fix is focused-checked and the upstream Envoy crash is
+diagnosed.
+
+## Previous migration matrix 36800539523
 
 Branch-runtime run
 [36800539523](https://github.com/centerionware/not-k8s/actions/runs/36800539523)

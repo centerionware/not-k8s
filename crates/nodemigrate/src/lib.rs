@@ -1507,12 +1507,11 @@ fn validate_reverse_control_plane_options(
     source: &detect::Installation,
     target: &detect::Installation,
 ) -> Result<()> {
-    let requested = request.stage_target || request.skip_api_export;
     ensure!(
-        !requested
+        !request.stage_target
             || (source.role == detect::NodeRole::ControlPlane
                 && target.role == detect::NodeRole::ControlPlane),
-        "stage-target and skip-api-export require both source and retained target to be control planes"
+        "stage-target requires both source and retained target to be control planes"
     );
     ensure!(
         !request.skip_api_export || !request.stage_target,
@@ -2802,5 +2801,33 @@ mod tests {
             validate_reverse_control_plane_options(&request, &control_plane, &worker_target)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn reverse_worker_return_can_skip_api_export() {
+        let request = MigrationRequest::parse(&[
+            "to=kubernetes".to_string(),
+            "from=nodestore".to_string(),
+            "skip-api-export=true".to_string(),
+        ])
+        .unwrap();
+        let source = Installation {
+            distribution: Distribution::Nodestore,
+            role: NodeRole::Worker,
+            runtime_endpoint: None,
+            service_manager: None,
+            service_name: "nodestore".to_string(),
+            service_file: None,
+            binary: None,
+            config_files: Vec::new(),
+            cluster: None,
+        };
+        let target = Installation {
+            distribution: Distribution::Kubernetes,
+            service_name: "kubelet".to_string(),
+            ..source.clone()
+        };
+
+        assert!(validate_reverse_control_plane_options(&request, &source, &target).is_ok());
     }
 }

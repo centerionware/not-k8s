@@ -2,7 +2,29 @@
 
 Last updated: 2026-10-01
 
-## Branch migration matrix 36800539523
+## Branch migration matrix 36805374812
+
+[Run 36805374812](https://github.com/centerionware/not-k8s/actions/runs/36805374812)
+tested SHA `b140095b15f230941b2d4ad179fc0be2955ffc06` with
+`runtime_source=branch`, `cilium_kpr=true`, and `five_node_migration=true`.
+The five-node lane is the required 3-control-plane/2-worker topology; setup,
+forward migration, the nodestore workload checkpoint, and return of all three
+control planes passed. Reverse migration stopped at `worker-1` because
+`skip-api-export=true` was incorrectly rejected for a worker. This is a
+confirmed nodemigrate validation defect, not a topology setup failure.
+K3s passed the full round trip in 27m06s. Upstream imported destination state
+and recovered Cilium agent/socket LB, then failed because the replacement
+Cilium Envoy Pod repeatedly crashed and stayed unready for 300 seconds; the
+captured artifacts lack its container termination output, so the crash cause
+is unconfirmed. Logs and artifacts: `/tmp/nodemigrate-36805374812-artifacts/`.
+
+The worktree now requires control-plane roles only for `stage-target` and adds
+a regression for worker return with `skip-api-export`. `git diff --check`
+passed; focused `nodemigrate` quick-check is pending. Do not rerun the migration
+matrix until the upstream Envoy failure is diagnosed. No general build or full
+e2e ran.
+
+## Previous branch migration matrix 36800539523
 
 [Run 36800539523](https://github.com/centerionware/not-k8s/actions/runs/36800539523)
 tested SHA `dda5227b117c0dc42ba0353cc638bcaabe7901d7` with
