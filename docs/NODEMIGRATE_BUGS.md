@@ -8,13 +8,24 @@ Last updated: 2026-10-01
 passed its K3s round trip. The required Docker topology remained three control
 planes plus two workers, but its cert-manager fixture failed before migration:
 `cert-manager-startupapicheck` hit `BackoffLimitExceeded`; kube-proxy on cp-1
-and cp-2 was CrashLoopBackOff. The failing run did not capture the container
-logs needed to determine why. Base preflight-only run
+and cp-2 was CrashLoopBackOff. Fixture-only follow-up
+[36827390978](https://github.com/centerionware/not-k8s/actions/runs/36827390978)
+captured their errors; base preflight-only run
 [36826217648](https://github.com/centerionware/not-k8s/actions/runs/36826217648)
 passed five-node readiness and control-plane recovery, but did not install the
-workload fixture. A fixture-only mode now installs the source applications,
-captures failed/restarting Pod and Job details, and stops before migration; it
-is pending.
+workload fixture. Fixture-only run
+[36827390978](https://github.com/centerionware/not-k8s/actions/runs/36827390978)
+confirmed the exact required topology (`cp-1`, `cp-2`, `cp-3`, `worker-1`,
+`worker-2`) and captured the cause: kube-proxy on cp-1 and cp-2 exited after
+permission was denied writing `/proc/sys/net/netfilter/nf_conntrack_max`.
+The cert-manager startup API-check Job then reached `BackoffLimitExceeded`;
+this is downstream of the fixture networking failure. Cilium reported all
+five nodes reachable. The Docker harness now sets kube-proxy
+`conntrack.maxPerCore=0` for this nested KPR-disabled fixture, retaining
+kube-proxy Service routing while leaving the shared host's conntrack limit
+unchanged. Shell syntax validation passed; fixture-only CI remains the
+required verification before migration validation resumes. Full log:
+`/tmp/nodemigrate-36827390978-docker-fixture.log`.
 
 - **Component: nodemigrate Cilium Envoy restart.** The upstream migration
   rolled back after the replacement Envoy process failed to bind its
@@ -28,7 +39,8 @@ is pending.
   [36826217674](https://github.com/centerionware/not-k8s/actions/runs/36826217674);
   runtime migration validation remains pending.
 
-Failure logs: `/tmp/nodemigrate-36822827036-artifacts/`.
+Failure logs: `/tmp/nodemigrate-36827390978-docker-fixture.log` and
+`/tmp/nodemigrate-36822827036-artifacts/`.
 
 ## Branch migration matrix 36818085887
 

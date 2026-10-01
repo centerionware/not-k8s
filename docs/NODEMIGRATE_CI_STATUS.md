@@ -29,8 +29,21 @@ passed five-node readiness and cp-1 recovery at SHA
 workload fixture and did not exercise the missing diagnostics. The workflow
 now supports a fixture-only 3+2 run that installs the application fixture,
 captures failed/restarting Pod and Job details, and stops before migration;
-that diagnostic run is pending. Full prior logs:
-`/tmp/nodemigrate-36822827036-artifacts/`.
+the fixture-only run
+[36827390978](https://github.com/centerionware/not-k8s/actions/runs/36827390978)
+at SHA `128c45f7193c9fa5512069e4347e6cfbd0ee0a48` confirmed this is not a
+topology mismatch: its five nodes were `cp-1`, `cp-2`, `cp-3`, `worker-1`,
+and `worker-2`. It failed before migration while installing the source
+fixture. Captured kube-proxy logs show cp-1 and cp-2 exiting because they could
+not write `/proc/sys/net/netfilter/nf_conntrack_max` (`permission denied`);
+the cert-manager startup API-check Job then reached `BackoffLimitExceeded`.
+The kubeadm Cilium network reported all five nodes reachable. The harness now
+sets kube-proxy `conntrack.maxPerCore=0` in the nested KPR-disabled fixture so
+it leaves the host's existing conntrack limit unchanged while remaining the
+Service proxy. Shell syntax validation passed; fixture-only CI still needs to
+verify this adjustment before another migration matrix. Full log:
+`/tmp/nodemigrate-36827390978-docker-fixture.log`.
+Full prior matrix logs: `/tmp/nodemigrate-36822827036-artifacts/`.
 
 ## Branch migration matrix 36818085887
 

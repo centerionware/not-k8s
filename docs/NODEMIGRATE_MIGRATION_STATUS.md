@@ -19,14 +19,28 @@ runtime migration validation remains pending.
 The Docker-isolated 3-control-plane/2-worker lane failed before nodemigrate
 started, during cert-manager fixture installation. The `startupapicheck` Job
 hit `BackoffLimitExceeded`; kube-proxy on cp-1 and cp-2 was CrashLoopBackOff.
-The failure log did not include those containers' current/previous output, so
-the proximate kube-proxy and cert-manager errors remain unconfirmed. Base
+Fixture-only follow-up [36827390978](https://github.com/centerionware/not-k8s/actions/runs/36827390978)
+captured the kube-proxy cause: permission denied writing
+`/proc/sys/net/netfilter/nf_conntrack_max`. The cert-manager failure was
+downstream of this broken fixture networking. Base
 preflight-only run
 [36826217648](https://github.com/centerionware/not-k8s/actions/runs/36826217648)
 passed five-node readiness and cp-1 recovery, but did not install the workload
 fixture. A fixture-only 3+2 workflow mode now installs and validates the source
 fixture, collects failed/restarting Pod and Job diagnostics, and stops before
-migration; it is pending. Run and logs:
+migration. Fixture-only run
+[36827390978](https://github.com/centerionware/not-k8s/actions/runs/36827390978)
+confirmed the required topology was exactly `cp-1`, `cp-2`, `cp-3`,
+`worker-1`, and `worker-2`; the failure was not a topology mismatch. Kube-proxy
+on cp-1 and cp-2 exited because the Docker node containers could not write
+`/proc/sys/net/netfilter/nf_conntrack_max` (`permission denied`). The
+cert-manager startup API-check Job subsequently hit `BackoffLimitExceeded`.
+All five nodes remained reachable through Cilium. The Docker harness now sets
+kube-proxy `conntrack.maxPerCore=0` in this nested KPR-disabled fixture, so
+kube-proxy keeps Service routing but leaves the shared host's conntrack limit
+unchanged. Shell syntax validation passed; fixture-only CI must verify the
+adjustment before migration validation resumes. Full log:
+`/tmp/nodemigrate-36827390978-docker-fixture.log`. Earlier full matrix log:
 [36822827036](https://github.com/centerionware/not-k8s/actions/runs/36822827036),
 `/tmp/nodemigrate-36822827036-artifacts/`.
 

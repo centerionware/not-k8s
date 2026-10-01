@@ -418,6 +418,38 @@ if ! docker exec "$cp1" kubeadm init "${KUBEADM_INIT_ARGS[@]}" \
     exit 1
 fi
 
+# Nested privileged Docker nodes share the CI host kernel, whose proc sysctls
+# may be mounted read-only. Keep kube-proxy and its Service routing enabled in
+# the KPR-disabled scenario, but do not ask it to change the host's conntrack
+# table limit. Kubernetes defines maxPerCore=0 as leaving the existing limit
+# unchanged (and ignoring conntrack.min).
+if [[ "$CILIUM_KPR" == false ]]; then
+    docker exec "$cp1" bash -ec '
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        config="$(kubectl get configmap kube-proxy -n kube-system \
+            -o jsonpath="{.data.config\\.conf}")"
+        [[ -n "$config" ]] || { echo "FAIL: kube-proxy config is empty" >&2; exit 1; }
+        updated="$(printf "%s\n" "$config" \
+            | sed -E "/^conntrack:/,/^[^ ]/ s/^  maxPerCore: .*/  maxPerCore: 0/")"
+        grep -A2 "^conntrack:" <<<"$updated" | grep -Fxq "  maxPerCore: 0" || {
+            echo "FAIL: could not set kube-proxy conntrack.maxPerCore=0" >&2
+            printf "%s\n" "$config" >&2
+            exit 1
+        }
+        patch="$(jq -n --arg config "$updated" \
+            "{data:{\"config.conf\":\$config}}")"
+        kubectl patch configmap kube-proxy -n kube-system \
+            --type=merge --patch "$patch"
+        kubectl rollout restart daemonset/kube-proxy -n kube-system
+        kubectl rollout status daemonset/kube-proxy -n kube-system --timeout=3m
+        echo "PASS: kube-proxy remains enabled without changing the nested host conntrack limit"
+    ' || {
+        echo "kube-proxy nested-host conntrack configuration failed; collecting diagnostics"
+        collect_cluster_diagnostics
+        exit 1
+    }
+fi
+
 join_command="$(docker exec "$cp1" kubeadm token create --ttl 2h --print-join-command)"
 certificate_key="$(docker exec "$cp1" kubeadm init phase upload-certs --upload-certs \
     | tail -n 1)"
