@@ -17,12 +17,16 @@ had no reachable endpoint. Logs are saved at
 `/tmp/nodemigrate-36792261326-job-110147660066.log`, and
 `/tmp/nodemigrate-36792261326-job-110147660255.log`.
 
-At `e14a992a`, the K3s cleanup leaves its combined API/runtime process live,
+At `e14a992a`, K3s cleanup leaves its combined API/runtime process live, and
 five-node return waits for all Nodes, Cilium rollout, webhook rollout, and
-webhook ClusterIP reachability before protected import, and the Cilium failure
-path records Pod inventory and recent events. Focused `nodemigrate`
+webhook ClusterIP reachability before protected import. Focused `nodemigrate`
 quick-check passed in
 [36797519104](https://github.com/centerionware/not-k8s/actions/runs/36797519104).
+At `a83a7ca9`, failure diagnostics also record Cilium DaemonSet generation
+and status plus returned Node labels, taints, and conditions. The first
+quick-check for those diagnostics caught a counter-type compile error; the
+correction passed in
+[36798954063](https://github.com/centerionware/not-k8s/actions/runs/36798954063).
 No migration matrix has exercised this fix batch yet. The upstream
 no-replacement cause remains unresolved; do not count this matrix or the
 quick-check as migration success. No general build or full e2e ran.

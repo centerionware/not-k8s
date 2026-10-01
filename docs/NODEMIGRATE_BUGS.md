@@ -18,6 +18,10 @@ paths failed. Logs are saved at `/tmp/nodemigrate-36792261326-job-*.log`.
   unresolved. At `e14a992a`, deadline diagnostics now capture all Cilium Pods
   and recent kube-system events; the focused check passed in
   [36797519104](https://github.com/centerionware/not-k8s/actions/runs/36797519104).
+  At `a83a7ca9`, they also capture DaemonSet generation/status and returned
+  Node scheduling metadata. The first check found counter-type compile errors;
+  after correction, the `nodemigrate` quick-check passed in
+  [36798954063](https://github.com/centerionware/not-k8s/actions/runs/36798954063).
   This is diagnostic coverage, not a confirmed runtime fix.
 - **Component: K3s CRI cleanup coordination.** The workflow paused K3s' main
   process before stopping a local Pod sandbox, leaving the CNI DEL path

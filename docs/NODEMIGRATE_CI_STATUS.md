@@ -22,14 +22,21 @@ builds and setup passed; all three runtime lanes failed:
 
 The saved logs are `/tmp/nodemigrate-36792261326-job-110147659893.log`,
 `/tmp/nodemigrate-36792261326-job-110147660066.log`, and
-`/tmp/nodemigrate-36792261326-job-110147660255.log`. The follow-up at
-`e14a992a` keeps K3s' API live during sandbox cleanup, returns all five nodes
-and waits for Cilium plus webhook routing before five-node import, and adds
-Cilium Pod/event diagnostics for the unresolved upstream case. Focused
-`nodemigrate` quick-check passed at
+`/tmp/nodemigrate-36792261326-job-110147660255.log`. At `e14a992a`, K3s
+cleanup leaves its API live and five-node return waits for all nodes plus
+Cilium and webhook routing before protected import. Focused `nodemigrate`
+quick-check passed at
 [36797519104](https://github.com/centerionware/not-k8s/actions/runs/36797519104).
-The fixes still need branch-runtime migration evidence; the upstream cause is
-not yet confirmed. No general build or full e2e ran.
+At `a83a7ca9`, failure diagnostics were extended to record Cilium DaemonSet
+generation/status and returned Node scheduling metadata. The first focused
+check for that extension,
+[36798677311](https://github.com/centerionware/not-k8s/actions/runs/36798677311),
+caught four status-counter type mismatches; after correction, the rerun passed
+at [36798954063](https://github.com/centerionware/not-k8s/actions/runs/36798954063).
+PR validation [36798179242](https://github.com/centerionware/not-k8s/actions/runs/36798179242)
+passed script and jq checks, with migration jobs skipped. The fixes still need
+branch-runtime migration evidence; the upstream cause is not yet confirmed. No
+general build or full e2e ran.
 
 ## Branch migration matrix 36786000022
 
