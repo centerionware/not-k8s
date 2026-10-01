@@ -27,8 +27,7 @@ termination state. No-migration probe
 [36810231370](https://github.com/centerionware/not-k8s/actions/runs/36810231370)
 successfully restarted Envoy after Cilium cleanup, but subsequent fixture
 verification failed because stale CoreDNS Pods did not recover from the clean
-state. The candidate now rolls CoreDNS to force fresh CNI ADDs before workload
-checks. Follow-up probe
+state. Follow-up probe
 [36812017038](https://github.com/centerionware/not-k8s/actions/runs/36812017038)
 again kept the replacement Envoy Ready, then failed when a CoreDNS replica
 remained pending termination during rollout. Other fixture Pods logged probe
@@ -36,9 +35,15 @@ timeouts and CrashLoopBackOff. Node conditions showed no memory/disk/PID
 pressure; aggregate Pod memory limits were 164% of allocatable, which is not
 proof that this caused the timeouts. The no-migration probe is now scoped to
 the Cilium clean-state and Envoy readiness assertions, with system Pod status
-captured for context; workload recovery remains covered by the migration
-checkpoints. Re-run the scoped probe, then the migration matrix with Envoy logs.
-The migration-specific Envoy crash remains unreproduced and unexplained. Logs:
+captured for context; it no longer rolls CoreDNS or runs broad workload checks.
+Run [36814377031](https://github.com/centerionware/not-k8s/actions/runs/36814377031)
+passed at SHA `50854109f8bd3a1e9e907dcc631ed649db1b14f4`; build, CSI setup, clean
+Cilium state recovery, and Envoy replacement readiness all passed. This probe
+used a graceful delete, so it does not yet match nodemigrate's immediate
+UID-preconditioned delete. The working tree now matches both delete parameters;
+run that probe before rerunning the migration matrix with the improved Envoy
+diagnostics. The migration-specific Envoy crash remains unreproduced and
+unexplained. Logs:
 `/tmp/nodemigrate-36812017038-artifacts/`. No general build or full e2e ran.
 
 ## Previous branch migration matrix 36800539523

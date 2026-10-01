@@ -939,7 +939,7 @@ restart_cilium_envoy_for_probe() {
     old_pod_uid="$(jq -er '.metadata.uid' <<<"$old_pod_json")" || return 1
     echo "Restarting Cilium Envoy $old_pod_name UID=$old_pod_uid after clean agent state"
     KUBECONFIG="$kubeconfig" kubectl delete pod "$old_pod_name" -n kube-system \
-        --wait=true --timeout=120s || return 1
+        --preconditions="uid=$old_pod_uid" --grace-period=0 --wait=false || return 1
 
     replacement_json=""
     for _ in $(seq 1 300); do
