@@ -1,6 +1,40 @@
 # nodemigrate bug and fix tracker
 
-Last updated: 2026-09-30
+Last updated: 2026-10-01
+
+## Migration matrix 36792261326 failures
+
+Branch-runtime run
+[36792261326](https://github.com/centerionware/not-k8s/actions/runs/36792261326)
+tested SHA `d93048bb10a97a717b9c0e36ffec869dc06fe752`, Cilium KPR, and the
+five-node lane. Component builds passed; upstream, K3s, and five-node return
+paths failed. Logs are saved at `/tmp/nodemigrate-36792261326-job-*.log`.
+
+- **Component: retained Kubernetes Cilium recovery.** After return, the
+  retained API and Node were ready. Nodemigrate deleted the old local Cilium
+  agent Pod, but observed no replacement for five minutes. This run's
+  diagnostics did not preserve the Pod inventory or events that would explain
+  why the DaemonSet controller did not produce a replacement. The cause is
+  unresolved. At `e14a992a`, deadline diagnostics now capture all Cilium Pods
+  and recent kube-system events; the focused check passed in
+  [36797519104](https://github.com/centerionware/not-k8s/actions/runs/36797519104).
+  This is diagnostic coverage, not a confirmed runtime fix.
+- **Component: K3s CRI cleanup coordination.** The workflow paused K3s' main
+  process before stopping a local Pod sandbox, leaving the CNI DEL path
+  waiting on an API that the same process served. The current candidate keeps
+  K3s live during sandbox cleanup and has a focused regression test. It passed
+  `nodemigrate` quick-check at `e14a992a`; runtime behavior is pending.
+- **Component: five-node return ordering.** The workflow imported protected
+  objects before returning the remaining control planes and workers. The
+  cert-manager webhook ClusterIP consequently had no route. The current
+  candidate returns all nodes and waits for Node readiness, Cilium and webhook
+  rollouts, and webhook ClusterIP reachability before import. It passed the
+  focused `nodemigrate` quick-check at `e14a992a`; the migration lane remains
+  unverified.
+
+Do not classify the batch as fixed until branch-runtime migration verifies all
+three paths. Do not retry the matrix until the upstream Cilium cause is
+addressed or a bounded, evidence-backed recovery change is made.
 
 ## Migration matrix 36786000022 failures
 

@@ -1,6 +1,35 @@
 # nodemigrate CI and integration status
 
-Last updated: 2026-09-30
+Last updated: 2026-10-01
+
+## Branch migration matrix 36792261326
+
+[Run 36792261326](https://github.com/centerionware/not-k8s/actions/runs/36792261326)
+tested SHA `d93048bb10a97a717b9c0e36ffec869dc06fe752` with
+`runtime_source=branch`, Cilium KPR, and five-node migration enabled. Component
+builds and setup passed; all three runtime lanes failed:
+
+- Upstream Kubernetes job `110147659893` failed during return Cilium recovery.
+  The retained API and Node became ready, but after deleting the old local
+  Cilium agent Pod no replacement was observed for five minutes. The job's
+  failure diagnostics did not retain the Cilium Pod inventory or relevant
+  events, so the controller/scheduling cause is unresolved.
+- K3s job `110147660066` failed while `StopPodSandbox` ran with the K3s API
+  process paused. The CNI DEL path did not finish before the CRI deadline.
+- Five-node job `110147660255` restored the returning control planes but tried
+  protected API import before returning the workers; the cert-manager webhook
+  ClusterIP had no route.
+
+The saved logs are `/tmp/nodemigrate-36792261326-job-110147659893.log`,
+`/tmp/nodemigrate-36792261326-job-110147660066.log`, and
+`/tmp/nodemigrate-36792261326-job-110147660255.log`. The follow-up at
+`e14a992a` keeps K3s' API live during sandbox cleanup, returns all five nodes
+and waits for Cilium plus webhook routing before five-node import, and adds
+Cilium Pod/event diagnostics for the unresolved upstream case. Focused
+`nodemigrate` quick-check passed at
+[36797519104](https://github.com/centerionware/not-k8s/actions/runs/36797519104).
+The fixes still need branch-runtime migration evidence; the upstream cause is
+not yet confirmed. No general build or full e2e ran.
 
 ## Branch migration matrix 36786000022
 

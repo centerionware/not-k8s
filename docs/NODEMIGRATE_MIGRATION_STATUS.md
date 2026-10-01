@@ -1,6 +1,31 @@
 # nodemigrate implementation and integration status
 
-Last updated: 2026-09-30
+Last updated: 2026-10-01
+
+## Latest branch migration matrix: 36792261326
+
+[Run 36792261326](https://github.com/centerionware/not-k8s/actions/runs/36792261326)
+tested `d93048bb10a97a717b9c0e36ffec869dc06fe752` with the branch runtime,
+Cilium KPR, and the three-control-plane/two-worker Docker lane. All three
+runtime lanes failed after component setup/builds passed. Upstream return
+migration restored the retained API and Node but failed to observe a
+replacement Cilium agent Pod within five minutes. K3s return cleanup timed out
+stopping a sandbox while its API process was paused. Five-node return import
+ran before the two workers had returned, so the cert-manager webhook Service
+had no reachable endpoint. Logs are saved at
+`/tmp/nodemigrate-36792261326-job-110147659893.log`,
+`/tmp/nodemigrate-36792261326-job-110147660066.log`, and
+`/tmp/nodemigrate-36792261326-job-110147660255.log`.
+
+At `e14a992a`, the K3s cleanup leaves its combined API/runtime process live,
+five-node return waits for all Nodes, Cilium rollout, webhook rollout, and
+webhook ClusterIP reachability before protected import, and the Cilium failure
+path records Pod inventory and recent events. Focused `nodemigrate`
+quick-check passed in
+[36797519104](https://github.com/centerionware/not-k8s/actions/runs/36797519104).
+No migration matrix has exercised this fix batch yet. The upstream
+no-replacement cause remains unresolved; do not count this matrix or the
+quick-check as migration success. No general build or full e2e ran.
 
 ## Latest branch migration matrix: 36786000022
 
