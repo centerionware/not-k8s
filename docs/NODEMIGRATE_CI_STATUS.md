@@ -2,7 +2,23 @@
 
 Last updated: 2026-10-01
 
-## Cilium KPR-disabled matrix 36822827036
+## Cilium KPR-disabled matrix in progress: 36832655869
+
+[Run 36832655869](https://github.com/centerionware/not-k8s/actions/runs/36832655869)
+was dispatched on SHA `55bbeb534a749dfb788e243e2da74636dbc1efc6` with
+`runtime_source=branch`, `cilium_kpr=false`, and
+`five_node_migration=true`. It includes K3s, upstream single-node, and the
+full Docker 3-control-plane/2-worker round trip. The Docker fixture-only
+preflight passed first in
+[run 36830106965](https://github.com/centerionware/not-k8s/actions/runs/36830106965)
+on the same SHA in 23m31s. The combined `nodemigrate` and `notk8s --features
+cri` builds passed; kube-proxy rollout passed with its conntrack limit left
+unchanged; all five Nodes recovered after control-plane loss; and the complete
+source workload fixture passed. The fixture-only lane deliberately stopped
+before migration. Its saved log is
+`/tmp/nodemigrate-36830106965-docker-fixture.log`.
+
+## Previous Cilium KPR-disabled matrix 36822827036
 
 [Run 36822827036](https://github.com/centerionware/not-k8s/actions/runs/36822827036)
 tested SHA `a9a7d826a94d1a164ced858eed65030151554268` with
@@ -40,8 +56,8 @@ the cert-manager startup API-check Job then reached `BackoffLimitExceeded`.
 The kubeadm Cilium network reported all five nodes reachable. The harness now
 sets kube-proxy `conntrack.maxPerCore=0` in the nested KPR-disabled fixture so
 it leaves the host's existing conntrack limit unchanged while remaining the
-Service proxy. Shell syntax validation passed; fixture-only CI still needs to
-verify this adjustment before another migration matrix. Full log:
+Service proxy. The fixture-only run above verified the adjustment, the 3+2
+cluster setup, and source fixture. Full log:
 `/tmp/nodemigrate-36827390978-docker-fixture.log`.
 Full prior matrix logs: `/tmp/nodemigrate-36822827036-artifacts/`.
 

@@ -2,7 +2,19 @@
 
 Last updated: 2026-10-01
 
-## Cilium KPR-disabled matrix 36822827036
+## Cilium KPR-disabled migration matrix in progress: 36832655869
+
+Fixture-only run
+[36830106965](https://github.com/centerionware/not-k8s/actions/runs/36830106965)
+passed on branch SHA `55bbeb534a749dfb788e243e2da74636dbc1efc6`. It verified
+the exact three-control-plane/two-worker topology, kube-proxy startup with
+`conntrack.maxPerCore=0`, cp-1 loss/recovery, and source workload fixture; it
+stopped before migration. Full KPR-disabled migration matrix
+[36832655869](https://github.com/centerionware/not-k8s/actions/runs/36832655869)
+is now running on the same SHA. Fixture log:
+`/tmp/nodemigrate-36830106965-docker-fixture.log`.
+
+## Previous Cilium KPR-disabled matrix 36822827036
 
 [Run 36822827036](https://github.com/centerionware/not-k8s/actions/runs/36822827036)
 passed its K3s round trip. The required Docker topology remained three control
@@ -23,8 +35,8 @@ this is downstream of the fixture networking failure. Cilium reported all
 five nodes reachable. The Docker harness now sets kube-proxy
 `conntrack.maxPerCore=0` for this nested KPR-disabled fixture, retaining
 kube-proxy Service routing while leaving the shared host's conntrack limit
-unchanged. Shell syntax validation passed; fixture-only CI remains the
-required verification before migration validation resumes. Full log:
+unchanged. Fixture-only CI subsequently verified kube-proxy startup, all five
+Nodes, and the complete source workload fixture. Full log:
 `/tmp/nodemigrate-36827390978-docker-fixture.log`.
 
 - **Component: nodemigrate Cilium Envoy restart.** The upstream migration
