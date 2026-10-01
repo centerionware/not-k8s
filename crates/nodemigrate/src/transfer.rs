@@ -16,7 +16,7 @@ use anyhow::{bail, ensure, Context, Result};
 use base64::Engine;
 use k8s_openapi::api::{
     apps::v1::DaemonSet,
-    core::v1::{ConfigMap, Event, Namespace, Pod, Service},
+    core::v1::{ConfigMap, Event, Namespace, Node, Pod, Service},
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{
@@ -1499,6 +1499,7 @@ impl KubeApi {
                 loop {
                     if tokio::time::Instant::now() >= deadline {
                         capture_cilium_cleanup_diagnostics(
+                            &client,
                             &pods,
                             &events,
                             node_name,
@@ -1528,6 +1529,7 @@ impl KubeApi {
                         Ok(current_pods) => current_pods,
                         Err(error) => {
                             capture_cilium_cleanup_diagnostics(
+                                &client,
                                 &pods,
                                 &events,
                                 node_name,
@@ -1716,6 +1718,7 @@ impl KubeApi {
                                 .as_deref()
                                 .context("ready Cilium replacement Pod has no name")?;
                             reattach_cilium_socket_lb(
+                                &client,
                                 &pods,
                                 &events,
                                 &config,
@@ -2448,6 +2451,7 @@ fn remove_cilium_socket_lb_pins(bpf_root: &Path) -> Result<usize> {
 }
 
 async fn reattach_cilium_socket_lb(
+    client: &Client,
     pods: &Api<Pod>,
     events: &Api<Event>,
     config: &Api<ConfigMap>,
@@ -2503,6 +2507,7 @@ async fn reattach_cilium_socket_lb(
                     (replacement_name.clone(), replacement_uid.clone())
                 });
                 capture_cilium_cleanup_diagnostics(
+                    client,
                     pods,
                     events,
                     node_name,
@@ -2696,6 +2701,7 @@ where
 }
 
 async fn capture_cilium_cleanup_diagnostics(
+    client: &Client,
     pods: &Api<Pod>,
     events: &Api<Event>,
     node_name: &str,
@@ -2703,6 +2709,89 @@ async fn capture_cilium_cleanup_diagnostics(
     last_state: Option<&str>,
 ) {
     eprintln!("nodemigrate: Cilium recovery deadline diagnostics on {node_name}: state={}", last_state.unwrap_or("no replacement Pod observed"));
+    let daemonsets: Api<DaemonSet> = Api::namespaced(client.clone(), "kube-system");
+    match tokio::time::timeout(Duration::from_secs(5), daemonsets.get_opt("cilium")).await {
+        Ok(Ok(Some(daemonset))) => {
+            let selector = daemonset
+                .spec
+                .as_ref()
+                .map(|spec| serde_json::to_string(&spec.selector).unwrap_or_default())
+                .unwrap_or_else(|| "<none>".to_owned());
+            let template = daemonset
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.template.spec.as_ref());
+            let node_selector = template
+                .and_then(|spec| spec.node_selector.as_ref())
+                .map(|selector| serde_json::to_string(selector).unwrap_or_default())
+                .unwrap_or_else(|| "<none>".to_owned());
+            let tolerations = template
+                .and_then(|spec| spec.tolerations.as_ref())
+                .map(|tolerations| serde_json::to_string(tolerations).unwrap_or_default())
+                .unwrap_or_else(|| "<none>".to_owned());
+            let status = daemonset.status.as_ref();
+            eprintln!(
+                "nodemigrate: Cilium DaemonSet at recovery deadline generation={} observed_generation={} desired={} current={} ready={} available={} misscheduled={} selector={selector} node_selector={node_selector} tolerations={tolerations}",
+                daemonset.metadata.generation.unwrap_or_default(),
+                status.and_then(|status| status.observed_generation).unwrap_or_default(),
+                status.and_then(|status| status.desired_number_scheduled).unwrap_or_default(),
+                status.and_then(|status| status.current_number_scheduled).unwrap_or_default(),
+                status.and_then(|status| status.number_ready).unwrap_or_default(),
+                status.and_then(|status| status.number_available).unwrap_or_default(),
+                status.and_then(|status| status.number_misscheduled).unwrap_or_default(),
+            );
+        }
+        Ok(Ok(None)) => eprintln!("nodemigrate: Cilium DaemonSet is absent at recovery deadline"),
+        Ok(Err(error)) => eprintln!("nodemigrate: unable to read Cilium DaemonSet at recovery deadline: {error:#}"),
+        Err(_) => eprintln!("nodemigrate: reading Cilium DaemonSet at recovery deadline timed out"),
+    }
+    let nodes: Api<Node> = Api::all(client.clone());
+    match tokio::time::timeout(Duration::from_secs(5), nodes.get_opt(node_name)).await {
+        Ok(Ok(Some(node))) => {
+            let labels = node
+                .metadata
+                .labels
+                .as_ref()
+                .map(|labels| serde_json::to_string(labels).unwrap_or_default())
+                .unwrap_or_else(|| "<none>".to_owned());
+            let taints = node
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.taints.as_ref())
+                .map(|taints| serde_json::to_string(taints).unwrap_or_default())
+                .unwrap_or_else(|| "<none>".to_owned());
+            let conditions = node
+                .status
+                .as_ref()
+                .and_then(|status| status.conditions.as_ref())
+                .map(|conditions| {
+                    conditions
+                        .iter()
+                        .map(|condition| {
+                            format!(
+                                "{}={}:{}:{}",
+                                condition.type_,
+                                condition.status,
+                                condition.reason.as_deref().unwrap_or(""),
+                                condition.message.as_deref().unwrap_or("")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .unwrap_or_else(|| "<none>".to_owned());
+            eprintln!(
+                "nodemigrate: returned Node at Cilium recovery deadline labels={} taints={} unschedulable={} deleting={} conditions=[{conditions}]",
+                labels,
+                taints,
+                node.spec.as_ref().and_then(|spec| spec.unschedulable).unwrap_or(false),
+                node.metadata.deletion_timestamp.is_some(),
+            );
+        }
+        Ok(Ok(None)) => eprintln!("nodemigrate: returned Node {node_name} is absent at Cilium recovery deadline"),
+        Ok(Err(error)) => eprintln!("nodemigrate: unable to read returned Node {node_name} at recovery deadline: {error:#}"),
+        Err(_) => eprintln!("nodemigrate: reading returned Node {node_name} at recovery deadline timed out"),
+    }
     let Some((pod_name, pod_uid)) = replacement else {
         let params = ListParams::default().labels("k8s-app=cilium");
         match tokio::time::timeout(Duration::from_secs(5), pods.list(&params)).await {
