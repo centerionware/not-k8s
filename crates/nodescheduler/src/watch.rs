@@ -73,6 +73,9 @@ use crate::framework::ChangedObject;
 use crate::queue::SchedulingQueue;
 use futures::{stream::BoxStream, StreamExt};
 use k8s_openapi::api::core::v1::{Node, Pod};
+use kube::api::DynamicObject;
+use kube::core::GroupVersionKind;
+use kube::discovery::ApiResource;
 use kube::runtime::utils::{Backoff, WatchStreamExt};
 use kube::runtime::watcher;
 use kube::runtime::watcher::Event;
@@ -335,7 +338,7 @@ type Pv = k8s_openapi::api::core::v1::PersistentVolume;
 type Pvc = k8s_openapi::api::core::v1::PersistentVolumeClaim;
 type Sc = k8s_openapi::api::storage::v1::StorageClass;
 type CsiNode = k8s_openapi::api::storage::v1::CSINode;
-type CsiDriver = k8s_openapi::api::storage::v1::CSIDriver;
+type CsiDriver = DynamicObject;
 type CsiStorageCapacity = k8s_openapi::api::storage::v1::CSIStorageCapacity;
 type VolumeAttachment = k8s_openapi::api::storage::v1::VolumeAttachment;
 type ResourceClaim = crate::cache::dra::RawResourceClaim;
@@ -412,7 +415,15 @@ fn watch_csi_nodes(client: &Client) -> BoxStream<'static, watcher::Result<Event<
     watcher(Api::<CsiNode>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
 }
 fn watch_csi_drivers(client: &Client) -> BoxStream<'static, watcher::Result<Event<CsiDriver>>> {
-    watcher(Api::<CsiDriver>::all(client.clone()), watcher::Config::default()).backoff(WatchBackoffPolicy::default()).boxed()
+    // Keep this watch dynamic: the target's generated typed client is based
+    // on Kubernetes 1.34, while newer API servers may serve additive fields
+    // on CSIDriver. Decoding through the older typed struct would discard
+    // fields needed by scheduler behavior.
+    let gvk = GroupVersionKind::gvk("storage.k8s.io", "v1", "CSIDriver");
+    let resource = ApiResource::from_gvk(&gvk);
+    watcher(Api::<CsiDriver>::all_with(client.clone(), &resource), watcher::Config::default())
+        .backoff(WatchBackoffPolicy::default())
+        .boxed()
 }
 fn watch_csi_storage_capacities(
     client: &Client,
@@ -1220,6 +1231,21 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, sweep: &mut RelistSweep
             let key = pod_key(&pod);
             sweep.observe(&key);
             let previous = mirror.pods.insert(key.clone(), pod.clone());
+            if let Some(old) = previous
+                .as_ref()
+                .filter(|old| old.metadata.uid != pod.metadata.uid)
+            {
+                tracing::info!(
+                    pod = %key,
+                    old_uid = ?old.metadata.uid,
+                    new_uid = ?pod.metadata.uid,
+                    "replacing same-name pod with a new UID"
+                );
+                // A same-name replacement is a new scheduling identity. Clear
+                // every queue, assumption, nomination, and cache entry for the
+                // old UID before routing the replacement below.
+                remove_pod(old.clone(), targets);
+            }
             let mut projected = PodInfo::from_pod(&pod, k8s_openapi::jiff::Timestamp::now());
             if targets.preserve_extender_objects {
                 projected.api_object = Some(Box::new(pod.clone()));
@@ -1327,8 +1353,17 @@ fn handle_pod_event(ev: Event<Pod>, mirror: &mut Mirror, sweep: &mut RelistSweep
         }
         Event::Delete(pod) => {
             let key = pod_key(&pod);
-            sweep.forget(&key);
-            mirror.pods.remove(&key);
+            // Watch delivery can lag behind a same-name recreation. A Delete
+            // for the old UID must not evict the newer object from the mirror
+            // or erase its relist bookkeeping.
+            let stale_delete = mirror
+                .pods
+                .get(&key)
+                .is_some_and(|current| current.metadata.uid != pod.metadata.uid);
+            if !stale_delete {
+                sweep.forget(&key);
+                mirror.pods.remove(&key);
+            }
             remove_pod(pod, targets);
         }
     }
@@ -1561,7 +1596,7 @@ mod tests {
     // that let a pod or node deleted mid-disconnect stay committed to a
     // node's capacity forever.
 
-    fn api_pod(uid: &str, node_name: Option<&str>) -> Pod {
+    fn api_pod_named(name: &str, uid: &str, node_name: Option<&str>) -> Pod {
         use k8s_openapi::api::core::v1::{PodSpec, ResourceRequirements};
         use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
         use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -1569,7 +1604,7 @@ mod tests {
 
         Pod {
             metadata: ObjectMeta {
-                name: Some(uid.to_string()),
+                name: Some(name.to_string()),
                 namespace: Some("default".to_string()),
                 uid: Some(uid.to_string()),
                 ..Default::default()
@@ -1592,6 +1627,10 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    fn api_pod(uid: &str, node_name: Option<&str>) -> Pod {
+        api_pod_named(uid, uid, node_name)
     }
 
     fn api_node(name: &str) -> Node {
@@ -1789,5 +1828,51 @@ mod tests {
             !targets.assumed.lock().unwrap().is_assumed("u"),
             "a pod deleted between being assumed and being confirmed must not stay reserved forever"
         );
+    }
+
+    #[test]
+    fn same_name_replacement_clears_old_uid_and_stale_delete_preserves_new_pod() {
+        let targets = test_targets();
+        let mut mirror = Mirror::default();
+        let mut sweep = RelistSweep::default();
+
+        handle_pod_event(
+            Event::Apply(api_pod_named("stable", "old-uid", None)),
+            &mut mirror,
+            &mut sweep,
+            &targets,
+        );
+        assert_eq!(targets.queue.active_len(), 1);
+
+        handle_pod_event(Event::Init, &mut mirror, &mut sweep, &targets);
+        handle_pod_event(
+            Event::InitApply(api_pod_named("stable", "new-uid", None)),
+            &mut mirror,
+            &mut sweep,
+            &targets,
+        );
+        handle_pod_event(
+            Event::Delete(api_pod_named("stable", "old-uid", None)),
+            &mut mirror,
+            &mut sweep,
+            &targets,
+        );
+        handle_pod_event(Event::InitDone, &mut mirror, &mut sweep, &targets);
+        assert_eq!(
+            mirror
+                .pods
+                .get("default/stable")
+                .and_then(|pod| pod.metadata.uid.as_deref()),
+            Some("new-uid"),
+            "a delayed delete for the old UID must not remove the replacement from the mirror"
+        );
+        assert_eq!(targets.queue.active_len(), 1);
+
+        // The stale Delete must not erase the current key's relist history;
+        // a later relist that omits the replacement still has to sweep it.
+        handle_pod_event(Event::Init, &mut mirror, &mut sweep, &targets);
+        handle_pod_event(Event::InitDone, &mut mirror, &mut sweep, &targets);
+        assert!(!mirror.pods.contains_key("default/stable"));
+        assert_eq!(targets.queue.active_len(), 0);
     }
 }

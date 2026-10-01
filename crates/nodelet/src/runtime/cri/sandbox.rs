@@ -284,6 +284,20 @@ pub(crate) fn sandbox_config(
     }
 }
 
+/// CRI repeats the sandbox configuration on CreateContainer. containerd uses
+/// that copy to choose each container's cgroup path, so setting the parent only
+/// on RunPodSandbox leaves containers at the runtime default (`/k8s.io/<id>`).
+pub(crate) fn sandbox_config_with_cgroup_parent(
+    mut config: PodSandboxConfig,
+    cgroup_parent: &str,
+) -> PodSandboxConfig {
+    config
+        .linux
+        .get_or_insert_with(LinuxPodSandboxConfig::default)
+        .cgroup_parent = cgroup_parent.to_owned();
+    config
+}
+
 
 impl CriRuntime {
     /// Look up our sandbox for a pod by namespace+name. These labels are always
@@ -309,7 +323,7 @@ impl CriRuntime {
             .list_pod_sandbox(ListPodSandboxRequest { filter: Some(filter) })
             .await?
             .into_inner();
-        Ok(resp.items.into_iter().next().map(|s| (s.id, s.state)))
+        Ok(select_pod_sandbox(resp.items, None).map(|(id, state, _)| (id, state)))
     }
 
     /// Same lookup as `find_sandbox()`, but also returns the sandbox's own
@@ -329,23 +343,74 @@ impl CriRuntime {
     /// can't clean this up either — its own orphan check is keyed by the
     /// same namespace+name, and a live pod with that key still exists (just
     /// a different UID), so the stale sandbox never looks orphaned.
-    pub(crate) async fn find_sandbox_with_uid(&self, namespace: &str, name: &str) -> Result<Option<(String, i32, String)>> {
+    pub(crate) async fn find_sandbox_with_uid(
+        &self,
+        namespace: &str,
+        name: &str,
+        expected_uid: &str,
+    ) -> Result<Option<(String, i32, String)>> {
+        let candidates = self.list_sandboxes_for_pod(namespace, name).await?;
+        Ok(select_pod_sandbox(candidates, Some(expected_uid)))
+    }
+
+    /// Return every CRI sandbox for this Pod key. During a runtime handoff,
+    /// source kubelet and nodelet records can coexist; selecting one sandbox
+    /// is enough for status, but replacement must clean duplicate same-UID
+    /// sandboxes because CRI container names are reserved across sandboxes.
+    pub(crate) async fn list_sandboxes_for_pod(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Vec<v1::PodSandbox>> {
         let mut rt = self.rt.clone();
-        let filter = PodSandboxFilter {
+        let list_by_labels = |namespace_label: &str, name_label: &str| PodSandboxFilter {
             label_selector: HashMap::from([
-                (POD_NS_LABEL.to_string(), namespace.to_string()),
-                (POD_NAME_LABEL.to_string(), name.to_string()),
+                (namespace_label.to_string(), namespace.to_string()),
+                (name_label.to_string(), name.to_string()),
             ]),
             ..Default::default()
         };
-        let resp = rt
-            .list_pod_sandbox(ListPodSandboxRequest { filter: Some(filter) })
+        let owned = rt
+            .list_pod_sandbox(ListPodSandboxRequest {
+                filter: Some(list_by_labels(POD_NS_LABEL, POD_NAME_LABEL)),
+            })
             .await?
-            .into_inner();
-        Ok(resp.items.into_iter().next().map(|s| {
-            let uid = s.metadata.map(|m| m.uid).unwrap_or_default();
-            (s.id, s.state, uid)
-        }))
+            .into_inner()
+            .items;
+        // Sandboxes created by kubelet (the source runtime during migration)
+        // use the Kubernetes CRI labels, while nodelet-created sandboxes use
+        // nodelet.dev labels. Discover both sets together: a stale source
+        // sandbox can still reserve the CRI-generated name even when another
+        // nodelet sandbox with the same Pod name is present.
+        let upstream = rt
+            .list_pod_sandbox(ListPodSandboxRequest {
+                filter: Some(list_by_labels(
+                    "io.kubernetes.pod.namespace",
+                    "io.kubernetes.pod.name",
+                )),
+            })
+            .await?
+            .into_inner()
+            .items;
+        let mut candidates = owned;
+        candidates.extend(upstream);
+        if candidates.is_empty() {
+            // Some older CRI implementations omit one or both standard
+            // labels on retained sandboxes. Their PodSandboxMetadata still
+            // carries the exact namespace/name and UID, so use that narrow
+            // identity fallback before attempting RunPodSandbox.
+            candidates = rt
+                .list_pod_sandbox(ListPodSandboxRequest::default())
+                .await?
+                .into_inner()
+                .items
+                .into_iter()
+                .filter(|sandbox| sandbox_matches_pod(sandbox, namespace, name))
+                .collect();
+        }
+        let mut seen = HashSet::new();
+        candidates.retain(|sandbox| seen.insert(sandbox.id.clone()));
+        Ok(candidates)
     }
 
     pub(crate) async fn run_sandbox(
@@ -379,12 +444,20 @@ impl CriRuntime {
         } else {
             None
         };
-        let mut config = sandbox_config(id, userns_mapping, hostname, sysctls, pod_sc, privileged);
+        let mut config = sandbox_config_with_cgroup_parent(
+            sandbox_config(id, userns_mapping, hostname, sysctls, pod_sc, privileged),
+            &cgroup_parent,
+        );
         config.dns_config = dns;
         config.port_mappings = port_mappings;
         let linux = config.linux.get_or_insert_with(LinuxPodSandboxConfig::default);
-        linux.cgroup_parent = cgroup_parent;
         linux.overhead = overhead;
+        info!(
+            pod = %format!("{}/{}", id.namespace, id.name),
+            uid = %id.uid,
+            cgroup_parent = %linux.cgroup_parent,
+            "creating pod sandbox with CRI cgroup parent"
+        );
         let resp = rt
             .run_pod_sandbox(RunPodSandboxRequest { config: Some(config), runtime_handler })
             .await?
@@ -414,4 +487,63 @@ impl CriRuntime {
         }
     }
 
+}
+
+fn sandbox_matches_pod(sandbox: &v1::PodSandbox, namespace: &str, name: &str) -> bool {
+    sandbox.metadata.as_ref().is_some_and(|metadata| {
+        metadata.namespace == namespace && metadata.name == name
+    })
+}
+
+/// CRI can retain multiple sandbox records for a reused pod name. Prefer a
+/// sandbox matching the current Pod UID when one exists; otherwise return a
+/// stale candidate for ensure_pod() to replace. Name-only status and exec
+/// operations prefer a ready, newer sandbox.
+pub(crate) fn select_pod_sandbox(
+    sandboxes: Vec<v1::PodSandbox>,
+    expected_uid: Option<&str>,
+) -> Option<(String, i32, String)> {
+    let ready = v1::PodSandboxState::SandboxReady as i32;
+    let mut matching: Vec<_> = sandboxes
+        .into_iter()
+        .map(|sandbox| {
+            let uid = sandbox
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.uid.clone())
+                .unwrap_or_default();
+            (sandbox, uid)
+        })
+        .collect();
+    if let Some(expected) = expected_uid {
+        if matching.iter().any(|(_, uid)| uid == expected) {
+            matching.retain(|(_, uid)| uid == expected);
+        }
+    }
+    matching
+        .drain(..)
+        .max_by_key(|(sandbox, _)| (sandbox.state == ready, sandbox.created_at))
+        .map(|(sandbox, uid)| (sandbox.id, sandbox.state, uid))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metadata_fallback_matches_only_the_requested_pod() {
+        let sandbox = v1::PodSandbox {
+            metadata: Some(v1::PodSandboxMetadata {
+                name: "coredns-abc".to_string(),
+                namespace: "kube-system".to_string(),
+                uid: "pod-uid".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert!(sandbox_matches_pod(&sandbox, "kube-system", "coredns-abc"));
+        assert!(!sandbox_matches_pod(&sandbox, "default", "coredns-abc"));
+        assert!(!sandbox_matches_pod(&sandbox, "kube-system", "coredns-other"));
+    }
 }

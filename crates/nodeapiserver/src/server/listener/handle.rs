@@ -140,7 +140,10 @@ async fn handle(
         // itself answers `NotApplicable` for and which the generic REST
         // dispatch further down handles instead — that path, by far the
         // hottest one in practice, never pays this extra `LIST`.
-        let (crds, aggregated) = if parts.first().map(String::as_str) == Some("apis")
+        let needs_aggregated_resources = parts.len() == 1
+            && parts[0] == "apis"
+            && wants_aggregated_discovery(accept_header);
+        let (crds, aggregated, aggregated_resource_lists) = if parts.first().map(String::as_str) == Some("apis")
             && parts.len() <= 3
         {
             match storage.clone() {
@@ -159,10 +162,7 @@ async fn handle(
                     // request, never the hot resource-request path.
                     // `discovery::merged_group_version_map`'s own doc
                     // comment covers why this is group-level only.
-                    let aggregated = match aggregator::route::discoverable_group_versions(
-                        &mut client,
-                        Some(&cache_registry),
-                    )
+                    let aggregated = match aggregator::route::discoverable_group_versions(&mut client)
                     .await
                     {
                         Ok(pairs) => pairs,
@@ -171,14 +171,32 @@ async fn handle(
                             Vec::new()
                         }
                     };
-                    (crds, aggregated)
+                    let aggregated_resource_lists = if needs_aggregated_resources {
+                        aggregator::route::fetch_discovery_resource_lists(
+                            &mut client,
+                            &aggregated,
+                            aggregation_proxy_identity.as_deref(),
+                        )
+                        .await
+                    } else {
+                        Vec::new()
+                    };
+                    let mut aggregated = aggregated;
+                    if needs_aggregated_resources {
+                        aggregated.retain(|(group, version)| {
+                            aggregated_resource_lists.iter().any(|(resource_group, resource_version, _)| {
+                                resource_group == group && resource_version == version
+                            })
+                        });
+                    }
+                    (crds, aggregated, aggregated_resource_lists)
                 }
-                None => (Vec::new(), Vec::new()),
+                None => (Vec::new(), Vec::new(), Vec::new()),
             }
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new())
         };
-        match route_discovery(&parts, accept_header, &crds, &aggregated) {
+        match route_discovery(&parts, accept_header, &crds, &aggregated, &aggregated_resource_lists) {
             DiscoveryRoute::Found(doc) => {
                 let mut response = json_response_with_content_type(
                     StatusCode::OK,
@@ -235,7 +253,7 @@ async fn handle(
                 {
                     if let Some(mut client) = storage.clone() {
                         if let Ok(Some(api_service)) =
-                            aggregator::route::resolve(&mut client, group, version, Some(&cache_registry)).await
+                            aggregator::route::resolve(&mut client, group, version).await
                         {
                             return Ok(aggregate_proxy(
                                 req,
@@ -289,12 +307,12 @@ async fn handle(
         return Ok(proxy_resource(
             req,
             storage,
-            &cache_registry,
-            &info,
-            &method,
-            &path_str,
-            &query,
-            &identity,
+            cache_registry.clone(),
+            info.clone(),
+            method.clone(),
+            path_str.clone(),
+            query.clone(),
+            identity.clone(),
             enforce_rbac,
             kubelet_tls,
         )

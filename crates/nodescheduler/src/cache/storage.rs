@@ -17,9 +17,8 @@
 use k8s_openapi::api::core::v1::{
     NodeSelector, PersistentVolume, PersistentVolumeClaim, TopologySelectorTerm,
 };
-use k8s_openapi::api::storage::v1::{
-    CSIDriver, CSINode, CSIStorageCapacity, StorageClass, VolumeAttachment,
-};
+use k8s_openapi::api::storage::v1::{CSINode, CSIStorageCapacity, StorageClass, VolumeAttachment};
+use kube::api::DynamicObject;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use std::collections::BTreeMap;
 
@@ -285,16 +284,26 @@ impl CsiNodeInfo {
     }
 }
 
-/// A CSIDriver, projected. The only field `NodeVolumeLimits`/`VolumeBinding`
-/// read off it today.
+/// A CSIDriver, projected to scheduler behavior that consumes it.
 #[derive(Clone, Debug, Default)]
 pub struct CsiDriverInfo {
     pub storage_capacity: bool,
+    pub prevent_pod_scheduling_if_missing: bool,
 }
 
 impl CsiDriverInfo {
-    pub fn from_api(driver: &CSIDriver) -> Self {
-        CsiDriverInfo { storage_capacity: driver.spec.storage_capacity.unwrap_or(false) }
+    pub fn from_api(driver: &DynamicObject) -> Self {
+        let spec = driver.data.get("spec");
+        CsiDriverInfo {
+            storage_capacity: spec
+                .and_then(|spec| spec.get("storageCapacity"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            prevent_pod_scheduling_if_missing: spec
+                .and_then(|spec| spec.get("preventPodSchedulingIfMissing"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        }
     }
 }
 
@@ -401,5 +410,27 @@ mod tests {
         assert_eq!(projected_pv.storage_class_name, "legacy-class");
         assert_eq!(projected_pvc.storage_class_name.as_deref(), Some("legacy-class"));
         assert_eq!(projected_pvc.selected_node.as_deref(), Some("worker-1"));
+    }
+
+    #[test]
+    fn dynamic_csidriver_projection_reads_newer_optional_scheduling_field() {
+        let driver: DynamicObject = serde_json::from_value(serde_json::json!({
+            "metadata": {"name": "example.csi.test"},
+            "spec": {
+                "storageCapacity": true,
+                "preventPodSchedulingIfMissing": true
+            }
+        }))
+        .unwrap();
+        let info = CsiDriverInfo::from_api(&driver);
+        assert!(info.storage_capacity);
+        assert!(info.prevent_pod_scheduling_if_missing);
+
+        let older_driver: DynamicObject = serde_json::from_value(serde_json::json!({
+            "metadata": {"name": "old.csi.test"},
+            "spec": {"storageCapacity": false}
+        }))
+        .unwrap();
+        assert!(!CsiDriverInfo::from_api(&older_driver).prevent_pod_scheduling_if_missing);
     }
 }

@@ -1,10 +1,19 @@
 [workspace]
 resolver = "2"
-# crates/notk8s is the combined single-binary packaging of the components
-# above — it links them, it isn't a component itself. Adding a new component
-# crate means adding it here *and* as an optional dependency of notk8s, so
-# both build layouts (split / combined) cover it.
-members = ["crates/nodelet", "crates/nodeproxy", "crates/nodescheduler", "crates/nodestore", "crates/nodecontroller", "crates/nodeapiserver", "crates/node-leaderelection", "crates/nodebootstrap", "crates/notk8s"]
+# `notk8s` packages runtime components. `nodemigrate` is a separate operator
+# utility: it is a workspace member, but must not be linked into `notk8s`.
+members = [
+    "crates/nodelet",
+    "crates/nodeproxy",
+    "crates/nodescheduler",
+    "crates/nodestore",
+    "crates/nodecontroller",
+    "crates/nodeapiserver",
+    "crates/node-leaderelection",
+    "crates/nodebootstrap",
+    "crates/notk8s",
+    "crates/nodemigrate",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,7 +26,7 @@ tokio = { version = "1", features = ["full"] }
 kube = { version = "4.0", default-features = false, features = ["client", "config", "runtime", "rustls-tls", "ws"] }
 k8s-openapi = { version = "0.28", features = ["v1_34"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"

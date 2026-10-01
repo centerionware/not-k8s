@@ -145,6 +145,7 @@ fn upstream_controller_sa(name: &str) -> &'static str {
         "endpoint-slice" => "endpointslice-controller",
         "resource-quota" => "resourcequota-controller",
         "replica-set" => "replicaset-controller",
+        "replication-controller" => "replication-controller",
         "deployment" => "deployment-controller",
         // Confirmed against a real cluster's bootstrap ClusterRoles
         // (docs/E2E_FINDINGS.md finding 22): the real name has a hyphen
@@ -284,6 +285,7 @@ pub async fn run() -> Result<()> {
     let endpoint_slice_client = client_for!("endpoint-slice");
     let resource_quota_client = client_for!("resource-quota");
     let replica_set_client = client_for!("replica-set");
+    let replication_controller_client = client_for!("replication-controller");
     let deployment_client = client_for!("deployment");
     let daemon_set_client = client_for!("daemon-set");
     let stateful_set_client = client_for!("stateful-set");
@@ -343,6 +345,7 @@ pub async fn run() -> Result<()> {
         spawn_controller!("endpoint-slice", endpoint_slice_client, endpoint_slice);
         spawn_controller!("resource-quota", resource_quota_client, resource_quota);
         spawn_controller!("replica-set", replica_set_client, replica_set);
+        spawn_controller!("replication-controller", replication_controller_client, replication_controller);
         spawn_controller!("deployment", deployment_client, deployment);
         spawn_controller!("daemon-set", daemon_set_client, daemon_set);
         spawn_controller!("stateful-set", stateful_set_client, stateful_set);

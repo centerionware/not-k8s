@@ -32,7 +32,7 @@ macro_rules! handle_aggregate {
     // "resource requests only" scope for its aggregation proxy handler.
     if $info.is_resource_request && !$info.api_group.is_empty() {
         if let Some(mut client) = $storage.clone() {
-            match aggregator::route::resolve(&mut client, &$info.api_group, &$info.api_version, Some(&$cache_registry)).await {
+            match aggregator::route::resolve(&mut client, &$info.api_group, &$info.api_version).await {
                 Ok(Some(api_service)) => return Ok(aggregate_proxy($req, &$method, &api_service, client, &$path_str, &$query, $identity.as_ref(), $aggregation_proxy_identity.as_deref()).await),
                 Ok(None) => {}
                 Err(e) => warn!(path = %$path_str, error = ?e, "aggregation: looking up a matching APIService failed"),
@@ -100,9 +100,6 @@ macro_rules! handle_aggregate {
             }
             Err(proxy::pod_stream::Error::Pod(proxy::pod_log::Error::NoNodeAddress)) => {
                 return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
-            }
-            Err(proxy::pod_stream::Error::MissingPort) => {
-                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, "at least one port is required for port-forward")));
             }
             Err(proxy::pod_stream::Error::InvalidPort(port)) => {
                 return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &format!("invalid port {port}"))));

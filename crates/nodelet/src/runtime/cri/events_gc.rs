@@ -108,12 +108,40 @@ pub(crate) async fn run_cri_events(channel: &Channel, tx: &UnboundedSender<Strin
                 loop {
                     match stream.message().await {
                         Ok(Some(ev)) => {
-                            if let Some(meta) = ev.pod_sandbox_status.and_then(|s| s.metadata) {
-                                let key = crate::runtime::pod_key(&meta.namespace, &meta.name);
-                                debug!(pod = %key, "CRI container event");
+                            let has_pod_metadata = ev.pod_sandbox_status.as_ref().and_then(|s| s.metadata.as_ref()).is_some();
+                            let key = if let Some(meta) = ev.pod_sandbox_status.as_ref().and_then(|s| s.metadata.as_ref()) {
+                                Some(crate::runtime::pod_key(&meta.namespace, &meta.name))
+                            } else if let Some(container_id) = container_event_lookup_id(&ev) {
+                                // CRI permits events without an embedded sandbox status. Still
+                                // reconcile them by resolving the event's container ID through
+                                // the CRI labels; otherwise a successful init-container exit can
+                                // leave the Pod status stale and permanently block later init
+                                // containers on this watch-driven controller.
+                                lookup_pod_by_cid(channel.clone(), container_id)
+                                    .await
+                                    .map(|(namespace, name)| crate::runtime::pod_key(&namespace, &name))
+                            } else {
+                                None
+                            };
+                            let is_cilium_pod = key.as_deref().is_some_and(|key| key.starts_with("kube-system/cilium-"));
+                            if !has_pod_metadata || is_cilium_pod {
+                                info!(
+                                    pod = key.as_deref().unwrap_or("<unmapped>"),
+                                    container_id = %ev.container_id,
+                                    event_type = ev.container_event_type,
+                                    has_pod_metadata,
+                                    "CRI container event resolved for migration lifecycle diagnostics"
+                                );
+                            }
+                            if let Some(key) = key {
+                                debug!(pod = %key, container_id = %ev.container_id, event_type = ev.container_event_type,
+                                    "CRI container event");
                                 if tx.send(key).is_err() {
                                     return EventOutcome::ReceiverGone;
                                 }
+                            } else {
+                                debug!(container_id = %ev.container_id, event_type = ev.container_event_type,
+                                    "CRI container event could not be mapped to a Pod");
                             }
                         }
                         Ok(None) => break, // stream ended; reconnect
@@ -128,6 +156,55 @@ pub(crate) async fn run_cri_events(channel: &Channel, tx: &UnboundedSender<Strin
             Err(e) => warn!(error = ?e, "failed to open CRI event stream"),
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// A CRI event without PodSandboxStatus still carries the container identity
+/// needed for a label lookup. Keep the fallback predicate pure so this edge
+/// case is covered independently of a live runtime.
+fn container_event_lookup_id(event: &v1::ContainerEventResponse) -> Option<&str> {
+    let has_pod_metadata = event
+        .pod_sandbox_status
+        .as_ref()
+        .and_then(|status| status.metadata.as_ref())
+        .is_some();
+    (!has_pod_metadata && !event.container_id.is_empty()).then_some(event.container_id.as_str())
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+
+    #[test]
+    fn cri_event_without_sandbox_status_uses_container_id_lookup() {
+        let event = v1::ContainerEventResponse {
+            container_id: "container-123".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(container_event_lookup_id(&event), Some("container-123"));
+    }
+
+    #[test]
+    fn cri_event_with_pod_metadata_does_not_need_container_lookup() {
+        let event = v1::ContainerEventResponse {
+            container_id: "container-123".to_string(),
+            pod_sandbox_status: Some(v1::PodSandboxStatus {
+                metadata: Some(v1::PodSandboxMetadata {
+                    namespace: "kube-system".to_string(),
+                    name: "cilium-0".to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(container_event_lookup_id(&event), None);
+    }
+
+    #[test]
+    fn cri_event_without_sandbox_status_or_container_id_is_ignored() {
+        let event = v1::ContainerEventResponse::default();
+        assert_eq!(container_event_lookup_id(&event), None);
     }
 }
 

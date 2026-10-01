@@ -1,0 +1,343 @@
+name: Nodemigrate tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      docker_only:
+        description: Run the isolated five-node kubeadm/Cilium preflight only
+        required: false
+        type: boolean
+        default: false
+      runtime_source:
+        description: Runtime to test for the single-node migration lanes
+        required: false
+        type: choice
+        options:
+          - release
+          - branch
+        default: branch
+      cilium_kpr:
+        description: Test Cilium's eBPF replacement for kube-proxy
+        required: false
+        type: choice
+        options:
+          - "false"
+          - "true"
+        default: "false"
+      five_node_migration:
+        description: Run the full upstream 3-control-plane/2-worker round trip
+        required: false
+        type: boolean
+        default: false
+      five_node_fixture_only:
+        description: Install and validate the 3+2 workload fixture, then stop before migration
+        required: false
+        type: boolean
+        default: false
+      k3s_cilium_restart_probe:
+        description: Exercise Cilium cleanup and K3s restart without nodemigrate
+        required: false
+        type: boolean
+        default: false
+      upstream_cilium_envoy_restart_probe:
+        description: Exercise Cilium cleanup and Envoy restart without nodemigrate
+        required: false
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - '.github/scripts/nodemigrate-integration.sh'
+      - '.github/scripts/check_nodemigrate_helm_snapshot.sh'
+      - '.github/scripts/check_nodemigrate_api_inventory.sh'
+      - '.github/scripts/check_nodemigrate_diagnostics.sh'
+      - '.github/scripts/nodemigrate-docker-preflight.sh'
+      - '.github/scripts/nodemigrate-five-node-fixture.sh'
+      - '.github/scripts/nodemigrate-five-node-integration.sh'
+      - '.github/scripts/nodemigrate-snapshot-normalize.jq'
+      - '.github/scripts/nodemigrate-application-snapshot.jq'
+      - '.github/scripts/check_nodemigrate_snapshot_filter.sh'
+      - '.github/nodemigrate/**'
+      - '.github/workflows/nodemigrate-integration.yml'
+      - 'crates/nodemigrate/**'
+      - 'crates/nodeapiserver/**'
+      - 'crates/nodebootstrap/**'
+      - 'crates/nodecontroller/**'
+      - 'crates/nodelet/**'
+      - 'crates/nodeproxy/**'
+      - 'crates/nodescheduler/**'
+      - 'crates/nodestore/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'docs/NODEMIGRATE.md'
+      - 'docs/NODEMIGRATION_GOAL.md'
+      - 'docs/NODEMIGRATE_BUGS.md'
+      - 'docs/NODEMIGRATE_CI_STATUS.md'
+      - 'docs/NODEMIGRATE_MIGRATION_STATUS.md'
+      - 'docs/NODEMIGRATE_RELEASE_STATUS.md'
+      - 'docs/NODEMIGRATE_STATUS.md'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check shell syntax
+        run: |
+          bash -n .github/scripts/nodemigrate-integration.sh
+          bash -n .github/scripts/nodemigrate-docker-preflight.sh
+          bash -n .github/scripts/nodemigrate-five-node-fixture.sh
+          bash -n .github/scripts/nodemigrate-five-node-integration.sh
+          bash -n .github/scripts/check_nodemigrate_diagnostics.sh
+
+      - name: Check snapshot jq
+        run: bash .github/scripts/check_nodemigrate_snapshot_filter.sh
+
+      - name: Check Helm state
+        run: bash .github/scripts/check_nodemigrate_helm_snapshot.sh
+
+      - name: Check API inventory
+        run: bash .github/scripts/check_nodemigrate_api_inventory.sh
+
+      - name: Check diag JSON
+        run: bash .github/scripts/check_nodemigrate_diagnostics.sh
+
+  docker-preflight:
+    if: github.event_name == 'workflow_dispatch' && inputs.k3s_cilium_restart_probe != true && inputs.upstream_cilium_envoy_restart_probe != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        if: inputs.five_node_migration
+        uses: ./.github/actions/setup-toolchain
+
+      - name: Build nodemigrate
+        if: inputs.five_node_migration
+        run: cargo build --release -p nodemigrate
+
+      - name: Build notk8s
+        if: inputs.five_node_migration
+        run: cargo build --release --features cri -p notk8s
+
+      - name: Fetch hostpath setup
+        if: inputs.five_node_migration
+        run: |
+          git fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
+          git show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > "$RUNNER_TEMP/nodemigrate-hostpath-setup.sh"
+          grep -q '^# ── DRA: ' "$RUNNER_TEMP/nodemigrate-hostpath-setup.sh"
+
+      - name: Build node image
+        run: docker build --pull --file .github/nodemigrate/five-node.Dockerfile --tag nodemigrate-ci-node:ubuntu-24.04 .github/nodemigrate
+
+      - name: Probe kubeadm nodes
+        timeout-minutes: 180
+        env:
+          NODEMIGRATE_NODE_IMAGE: nodemigrate-ci-node:ubuntu-24.04
+          NODEMIGRATE_PREFLIGHT_LOG: ${{ runner.temp }}/nodemigrate-docker-preflight.log
+          NODEMIGRATE_CILIUM_KPR: ${{ inputs.cilium_kpr }}
+          NODEMIGRATE_FIVE_NODE_MIGRATION: ${{ inputs.five_node_migration }}
+          NODEMIGRATE_FIVE_NODE_FIXTURE_ONLY: ${{ inputs.five_node_fixture_only }}
+          NODEMIGRATE_HOSTPATH_SETUP: ${{ runner.temp }}/nodemigrate-hostpath-setup.sh
+        run: bash .github/scripts/nodemigrate-docker-preflight.sh
+
+      - name: Upload probe log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nodemigrate-docker-preflight-${{ github.run_id }}
+          path: ${{ runner.temp }}/nodemigrate-docker-preflight.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Summarize probe
+        if: always()
+        env:
+          NODEMIGRATE_PREFLIGHT_LOG: ${{ runner.temp }}/nodemigrate-docker-preflight.log
+        run: |
+          if [[ -r "$NODEMIGRATE_PREFLIGHT_LOG" ]]; then
+            {
+              echo '### Docker probe log tail'
+              echo '```text'
+              tail -n 160 "$NODEMIGRATE_PREFLIGHT_LOG"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Docker probe log was not created.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  k3s-cilium-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.k3s_cilium_restart_probe == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
+
+      - name: Build notk8s
+        run: cargo build --release --features cri -p notk8s
+
+      - name: Fetch CSI setup
+        run: |
+          git fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
+          git show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > "$RUNNER_TEMP/nodemigrate-hostpath-setup.sh"
+          grep -q '^# ── DRA: ' "$RUNNER_TEMP/nodemigrate-hostpath-setup.sh"
+
+      - name: Run restart probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NODEMIGRATE_K3S_CILIUM_RESTART_PROBE: "true"
+          NODEMIGRATE_CILIUM_KPR: "true"
+          NODEMIGRATE_SOURCE_DIST: k3s
+          NODEMIGRATE_TEST_LOG: ${{ runner.temp }}/nodemigrate-k3s-cilium-restart.log
+          NODEMIGRATE_HOSTPATH_SETUP: ${{ runner.temp }}/nodemigrate-hostpath-setup.sh
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,GH_TOKEN,NODEMIGRATE_K3S_CILIUM_RESTART_PROBE,NODEMIGRATE_CILIUM_KPR,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG,NODEMIGRATE_HOSTPATH_SETUP \
+            bash .github/scripts/nodemigrate-integration.sh
+
+      - name: Upload probe log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nodemigrate-k3s-cilium-restart-${{ github.run_id }}
+          path: ${{ runner.temp }}/nodemigrate-k3s-cilium-restart.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  upstream-cilium-envoy-probe:
+    name: Envoy probe
+    if: github.event_name == 'workflow_dispatch' && inputs.upstream_cilium_envoy_restart_probe == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
+
+      - name: Build notk8s
+        run: cargo build --release --features cri -p notk8s
+
+      - name: Fetch CSI setup
+        run: |
+          git fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
+          git show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > "$RUNNER_TEMP/nodemigrate-hostpath-setup.sh"
+          grep -q '^# ── DRA: ' "$RUNNER_TEMP/nodemigrate-hostpath-setup.sh"
+
+      - name: Run Envoy probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NODEMIGRATE_UPSTREAM_CILIUM_ENVOY_RESTART_PROBE: "true"
+          NODEMIGRATE_CILIUM_KPR: "true"
+          NODEMIGRATE_SOURCE_DIST: kubernetes
+          NODEMIGRATE_TEST_LOG: ${{ runner.temp }}/nodemigrate-upstream-envoy-restart.log
+          NODEMIGRATE_HOSTPATH_SETUP: ${{ runner.temp }}/nodemigrate-hostpath-setup.sh
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,GH_TOKEN,NODEMIGRATE_UPSTREAM_CILIUM_ENVOY_RESTART_PROBE,NODEMIGRATE_CILIUM_KPR,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG,NODEMIGRATE_HOSTPATH_SETUP \
+            bash .github/scripts/nodemigrate-integration.sh
+
+      - name: Upload probe log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nodemigrate-upstream-envoy-${{ github.run_id }}
+          path: ${{ runner.temp }}/nodemigrate-upstream-envoy-restart.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  migrate:
+    if: github.event_name == 'workflow_dispatch' && inputs.docker_only != true && inputs.k3s_cilium_restart_probe != true && inputs.upstream_cilium_envoy_restart_probe != true
+    runs-on: ubuntu-latest
+    # Checkout, toolchain setup, both release builds, and migration need a
+    # larger total window than the migration step's own bounded runtime.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [k3s, kubernetes]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-toolchain
+
+      - name: Build nodemigrate
+        run: cargo build --release -p nodemigrate
+
+      - name: Build branch runtime
+        run: cargo build --release --features cri -p notk8s
+
+      - name: Fetch latest runtime
+        if: inputs.runtime_source != 'branch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == x86_64 ]]
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest")"
+          tag="$(jq -r '.tag_name' <<<"$release")"
+          version="${tag#v}"
+          [[ "$tag" =~ ^v[0-9]+(\.[0-9]+){2,3}$ ]]
+          asset="notk8s-${version}-linux-x86_64-release"
+          url="$(jq -r --arg asset "$asset" '.assets[] | select(.name == $asset) | .browser_download_url' <<<"$release")"
+          digest="$(jq -r --arg asset "$asset" '.assets[] | select(.name == $asset) | .digest' <<<"$release")"
+          [[ "$url" == https://github.com/* && "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p target/release
+          curl --fail --location --retry 3 "$url" -o target/release/notk8s
+          printf '%s  %s\n' "${digest#sha256:}" target/release/notk8s | sha256sum --check --status
+          chmod 0755 target/release/notk8s
+          echo "Testing nodemigrate against regular release $tag ($asset)"
+          components="$(target/release/notk8s components)"
+          for required in nodebootstrap nodeapiserver nodestore nodelet; do
+            grep -Fqx "$required" <<<"$components" || {
+              echo "regular release $tag runtime is missing component $required" >&2
+              exit 1
+            }
+          done
+          printf '%s\n' "$components"
+
+      - name: Run migration
+        timeout-minutes: 60
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NODEMIGRATE_SOURCE_DIST: ${{ matrix.source }}
+          NODEMIGRATE_TEST_LOG: ${{ runner.temp }}/nodemigrate-${{ matrix.source }}.log
+          NODEMIGRATE_CILIUM_KPR: ${{ inputs.cilium_kpr }}
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,GH_TOKEN,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG,NODEMIGRATE_CILIUM_KPR \
+            bash .github/scripts/nodemigrate-integration.sh
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nodemigrate-${{ matrix.source }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/nodemigrate-${{ matrix.source }}.log
+          if-no-files-found: warn
+          retention-days: 7

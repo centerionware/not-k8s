@@ -63,3 +63,14 @@ fn remove_an_unknown_name_is_a_harmless_no_op() {
 fn remove_from_an_empty_list_stays_empty() {
     assert!(remove_driver(Vec::new(), "anything").is_empty());
 }
+
+#[test]
+fn csi_node_owner_reference_tracks_the_current_node_identity() {
+    let owner = node_owner_reference("worker-1", "node-uid-new");
+    assert_eq!(owner.api_version, "v1");
+    assert_eq!(owner.kind, "Node");
+    assert_eq!(owner.name, "worker-1");
+    assert_eq!(owner.uid, "node-uid-new");
+    assert_eq!(owner.controller, None);
+    assert_eq!(owner.block_owner_deletion, None);
+}

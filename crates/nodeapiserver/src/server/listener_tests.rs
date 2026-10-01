@@ -13,6 +13,21 @@ mod tests {
              serde_json::json!({"preconditions":{"uid":"original-uid"}})),
             ("authorization.k8s.io", "SelfSubjectAccessReview", "io.k8s.api.authorization.v1.SelfSubjectAccessReview",
              serde_json::json!({"spec":{"resourceAttributes":{"verb":"get","resource":"pods"}}})),
+            (
+                "",
+                "Binding",
+                "io.k8s.api.core.v1.Binding",
+                serde_json::json!({
+                    "metadata": {"name": "scheduled", "namespace": "default"},
+                    "target": {"apiVersion": "v1", "kind": "Node", "name": "worker-1"}
+                }),
+            ),
+            (
+                "authentication.k8s.io",
+                "TokenRequest",
+                "io.k8s.api.authentication.v1.TokenRequest",
+                serde_json::json!({"spec":{"expirationSeconds":600}}),
+            ),
         ] {
             let version = if group.is_empty() { "v1".to_string() } else { format!("{group}/v1") };
             let raw = crate::codec::protobuf::encode_message(schema, &value).unwrap();
@@ -21,13 +36,18 @@ mod tests {
             for (key, expected) in value.as_object().unwrap() {
                 assert_eq!(&decoded[key], expected);
             }
+            if kind == "TokenRequest" {
+                let request = crate::authn::service_account::parse_token_request(&decoded).unwrap();
+                assert_eq!(request.audiences, Vec::<String>::new());
+                assert_eq!(request.expiration_seconds, Some(600));
+            }
             assert!(decode_virtual_request(&wire, Some("application/vnd.kubernetes.protobuf"), group, "v1", "WrongKind").is_err());
         }
     }
 
     #[test]
     fn api_root_serves_api_versions() {
-        let route = route_discovery(&parts("/api"), None, &[], &[]);
+        let route = route_discovery(&parts("/api"), None, &[], &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {
             panic!("expected Found")
         };
@@ -36,7 +56,7 @@ mod tests {
 
     #[test]
     fn api_v1_serves_the_core_group_resource_list() {
-        let route = route_discovery(&parts("/api/v1"), None, &[], &[]);
+        let route = route_discovery(&parts("/api/v1"), None, &[], &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {
             panic!("expected Found")
         };
@@ -46,7 +66,7 @@ mod tests {
 
     #[test]
     fn apis_root_serves_the_group_list() {
-        let route = route_discovery(&parts("/apis"), None, &[], &[]);
+        let route = route_discovery(&parts("/apis"), None, &[], &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {
             panic!("expected Found")
         };
@@ -56,7 +76,7 @@ mod tests {
     #[test]
     fn apis_root_serves_aggregated_discovery_when_the_client_asks_for_it() {
         let accept = "application/json;as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io";
-        let route = route_discovery(&parts("/apis"), Some(accept), &[], &[]);
+        let route = route_discovery(&parts("/apis"), Some(accept), &[], &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {
             panic!("expected Found")
         };
@@ -66,7 +86,7 @@ mod tests {
     #[test]
     fn api_root_serves_aggregated_discovery_when_the_client_asks_for_it() {
         let accept = "application/json;as=APIGroupDiscoveryList;v=v2;g=apidiscovery.k8s.io";
-        let route = route_discovery(&parts("/api"), Some(accept), &[], &[]);
+        let route = route_discovery(&parts("/api"), Some(accept), &[], &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {
             panic!("expected Found")
         };
@@ -88,7 +108,7 @@ mod tests {
         // which this build doesn't separately model — must not be served
         // the v2 shape as if it matched.
         let accept = "application/json;as=APIGroupDiscoveryList;v=v2beta1;g=apidiscovery.k8s.io";
-        let route = route_discovery(&parts("/apis"), Some(accept), &[], &[]);
+        let route = route_discovery(&parts("/apis"), Some(accept), &[], &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {
             panic!("expected Found")
         };
@@ -100,7 +120,7 @@ mod tests {
 
     #[test]
     fn apis_group_serves_the_group_document() {
-        let route = route_discovery(&parts("/apis/apps"), None, &[], &[]);
+        let route = route_discovery(&parts("/apis/apps"), None, &[], &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {
             panic!("expected Found")
         };
@@ -110,7 +130,7 @@ mod tests {
 
     #[test]
     fn apis_group_version_serves_the_resource_list() {
-        let route = route_discovery(&parts("/apis/apps/v1"), None, &[], &[]);
+        let route = route_discovery(&parts("/apis/apps/v1"), None, &[], &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {
             panic!("expected Found")
         };
@@ -167,15 +187,15 @@ mod tests {
     #[test]
     fn an_unknown_group_is_a_real_not_found_not_a_fallthrough() {
         assert!(matches!(
-            route_discovery(&parts("/apis/totally.made.up"), None, &[], &[]),
+            route_discovery(&parts("/apis/totally.made.up"), None, &[], &[], &[]),
             DiscoveryRoute::NotFound
         ));
         assert!(matches!(
-            route_discovery(&parts("/apis/apps/v999"), None, &[], &[]),
+            route_discovery(&parts("/apis/apps/v999"), None, &[], &[], &[]),
             DiscoveryRoute::NotFound
         ));
         assert!(matches!(
-            route_discovery(&parts("/api/v999"), None, &[], &[]),
+            route_discovery(&parts("/api/v999"), None, &[], &[], &[]),
             DiscoveryRoute::NotFound
         ));
     }
@@ -183,7 +203,7 @@ mod tests {
     #[test]
     fn a_resource_shaped_path_is_not_applicable_to_discovery_routing() {
         assert!(matches!(
-            route_discovery(&parts("/api/v1/namespaces/default/pods"), None, &[], &[]),
+            route_discovery(&parts("/api/v1/namespaces/default/pods"), None, &[], &[], &[]),
             DiscoveryRoute::NotApplicable
         ));
         assert!(matches!(
@@ -191,19 +211,20 @@ mod tests {
                 &parts("/apis/apps/v1/namespaces/default/deployments"),
                 None,
                 &[],
+                &[],
                 &[]
             ),
             DiscoveryRoute::NotApplicable
         ));
         assert!(matches!(
-            route_discovery(&parts("/"), None, &[], &[]),
+            route_discovery(&parts("/"), None, &[], &[], &[]),
             DiscoveryRoute::NotApplicable
         ));
     }
 
     #[test]
     fn openapi_v3_root_serves_the_root_index() {
-        let route = route_discovery(&parts("/openapi/v3"), None, &[], &[]);
+        let route = route_discovery(&parts("/openapi/v3"), None, &[], &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {
             panic!("expected Found")
         };
@@ -217,7 +238,7 @@ mod tests {
 
     #[test]
     fn openapi_v2_serves_a_swagger_document() {
-        let route = route_discovery(&parts("/openapi/v2"), None, &[], &[]);
+        let route = route_discovery(&parts("/openapi/v2"), None, &[], &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {
             panic!("expected Found")
         };
@@ -233,7 +254,7 @@ mod tests {
     fn openapi_v2_honors_kubectl_protobuf_accept_and_quality_exclusions() {
         assert_eq!(openapi::V2_PROTOBUF_CONTENT_TYPE, "application/com.github.proto-openapi.spec.v2.v1.0+protobuf");
         assert_eq!(openapi::negotiate_v2(Some(openapi::V2_PROTOBUF_CONTENT_TYPE)), Some(true));
-        let route = route_discovery(&parts("/openapi/v2"), Some(openapi::V2_PROTOBUF_LEGACY_ACCEPT), &[], &[]);
+        let route = route_discovery(&parts("/openapi/v2"), Some(openapi::V2_PROTOBUF_LEGACY_ACCEPT), &[], &[], &[]);
         let DiscoveryRoute::FoundOpenApiProtobuf(bytes) = route else { panic!("kubectl requires gnostic protobuf") };
         let pool = prost_reflect::DescriptorPool::decode(
             include_bytes!(concat!(env!("OUT_DIR"), "/openapi-v2-descriptor.bin")).as_slice()
@@ -250,12 +271,12 @@ mod tests {
         }));
         assert_eq!(openapi::negotiate_v2(Some("application/json;q=0,*/*;q=1")), Some(true));
         assert_eq!(openapi::negotiate_v2(Some("application/xml")), None);
-        assert!(matches!(route_discovery(&parts("/openapi/v2"), Some("application/xml"), &[], &[]), DiscoveryRoute::NotAcceptable));
+        assert!(matches!(route_discovery(&parts("/openapi/v2"), Some("application/xml"), &[], &[], &[]), DiscoveryRoute::NotAcceptable));
     }
 
     #[test]
     fn openapi_v3_a_multi_segment_path_serves_the_raw_vendored_document() {
-        let route = route_discovery(&parts("/openapi/v3/apis/apps/v1"), None, &[], &[]);
+        let route = route_discovery(&parts("/openapi/v3/apis/apps/v1"), None, &[], &[], &[]);
         let DiscoveryRoute::FoundRaw(bytes) = route else {
             panic!("expected FoundRaw")
         };
@@ -270,6 +291,7 @@ mod tests {
                 &parts("/openapi/v3/apis/totally.made.up/v1"),
                 None,
                 &[],
+                &[],
                 &[]
             ),
             DiscoveryRoute::NotFound
@@ -278,7 +300,7 @@ mod tests {
 
     #[test]
     fn version_serves_the_real_version_info_document() {
-        let route = route_discovery(&parts("/version"), None, &[], &[]);
+        let route = route_discovery(&parts("/version"), None, &[], &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {
             panic!("expected Found")
         };
@@ -360,6 +382,21 @@ mod tests {
         assert_eq!(status["reason"], "Conflict");
         assert_eq!(status["code"], 409);
         assert_ne!(status["reason"], conflict_status("x")["reason"]);
+    }
+
+    #[test]
+    fn binding_conflict_status_reports_the_failed_pod_precondition() {
+        let message = crate::server::rest::BindConflict::ResourceVersionMismatch {
+            requested: "41".to_string(),
+            current: 42,
+        }
+        .message();
+        let status = binding_conflict_status("/api/v1/namespaces/default/pods/web/binding", &message);
+        assert_eq!(status["kind"], "Status");
+        assert_eq!(status["reason"], "Conflict");
+        assert_eq!(status["code"], 409);
+        assert!(status["message"].as_str().unwrap().contains("requested 41, current 42"));
+        assert_eq!(status["details"]["causes"][0]["message"], message);
     }
 
     #[test]

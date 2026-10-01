@@ -198,6 +198,45 @@ pub(crate) async fn lifecycle_http_get(host: &str, port: u16, path: &str) {
 
 
 impl CriRuntime {
+    /// Remove abandoned containers for one exact Pod UID before creating a
+    /// sandbox. CRI container names are runtime-wide, so a container whose
+    /// sandbox disappeared can still block CreateContainer for this Pod.
+    /// Restrict cleanup to the UID labels written by nodelet or kubelet.
+    pub(crate) async fn remove_orphaned_pod_uid_containers(&self, pod_uid: &str, keep_sandbox: Option<&str>) -> Result<()> {
+        let mut rt = self.rt.clone();
+        let mut containers = Vec::new();
+        for uid_label in [POD_UID_LABEL, "io.kubernetes.pod.uid"] {
+            let filter = ContainerFilter {
+                label_selector: HashMap::from([(uid_label.to_string(), pod_uid.to_string())]),
+                ..Default::default()
+            };
+            containers.extend(
+                rt.list_containers(ListContainersRequest { filter: Some(filter) })
+                    .await?
+                    .into_inner()
+                    .containers,
+            );
+        }
+        let mut seen = HashSet::new();
+        for container in containers {
+            if !seen.insert(container.id.clone()) || keep_sandbox == Some(container.pod_sandbox_id.as_str()) {
+                continue;
+            }
+            tracing::warn!(container_id = %container.id, pod_uid, sandbox_id = %container.pod_sandbox_id,
+                "removing abandoned CRI container for the current Pod UID");
+            let _ = rt
+                .stop_container(StopContainerRequest {
+                    container_id: container.id.clone(),
+                    timeout: 0,
+                })
+                .await;
+            rt.remove_container(RemoveContainerRequest { container_id: container.id })
+                .await
+                .context("removing an abandoned container for the current Pod UID")?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn list_pod_containers(&self, sandbox_id: &str) -> Result<Vec<v1::Container>> {
         let mut rt = self.rt.clone();
         let filter = ContainerFilter {
@@ -214,10 +253,7 @@ impl CriRuntime {
     /// Find a container's CRI id within a sandbox by its `nodelet.dev/container-name` label.
     pub(crate) async fn find_container_id(&self, sandbox_id: &str, container_name: &str) -> Result<Option<String>> {
         let existing = self.list_pod_containers(sandbox_id).await?;
-        Ok(existing
-            .into_iter()
-            .find(|c| c.labels.get(CTR_NAME_LABEL).map(|n| n == container_name).unwrap_or(false))
-            .map(|c| c.id))
+        Ok(select_container_for_name(&existing, container_name).map(|container| container.id.clone()))
     }
 
     /// Resolve `{username, password}` for pulling `image` out of the given
@@ -650,7 +686,7 @@ impl CriRuntime {
             if c.state != running_v {
                 continue;
             }
-            let Some(name) = c.labels.get(CTR_NAME_LABEL) else { continue };
+            let Some(name) = container_name_from_labels(c) else { continue };
             if let Some(pre_stop) = spec_containers
                 .iter()
                 .chain(spec_init_containers.iter())
@@ -741,4 +777,140 @@ impl CriRuntime {
         resp.status.context("ContainerStatus response had no status")
     }
 
+}
+
+/// CRI retains exited attempts until garbage collection. Prefer a running
+/// attempt for operations such as exec, and otherwise use the newest record
+/// so stale exited attempts cannot shadow the current container.
+pub(crate) fn container_name_from_labels(container: &v1::Container) -> Option<&str> {
+    container
+        .labels
+        .get(CTR_NAME_LABEL)
+        .or_else(|| container.labels.get("io.kubernetes.container.name"))
+        .map(String::as_str)
+}
+
+pub(crate) fn container_has_type(container: &v1::Container, label: &str) -> bool {
+    match label {
+        CTR_INIT_LABEL => {
+            container
+                .labels
+                .get(CTR_INIT_LABEL)
+                .is_some_and(|value| value == "true")
+                || container
+                    .labels
+                    .get("io.kubernetes.container.type")
+                    .is_some_and(|value| value == "init")
+        }
+        CTR_EPHEMERAL_LABEL => {
+            container
+                .labels
+                .get(CTR_EPHEMERAL_LABEL)
+                .is_some_and(|value| value == "true")
+                || container
+                    .labels
+                    .get("io.kubernetes.container.type")
+                    .is_some_and(|value| value == "ephemeral")
+        }
+        _ => container.labels.contains_key(label),
+    }
+}
+
+pub(crate) fn is_regular_container(container: &v1::Container) -> bool {
+    !container_has_type(container, CTR_INIT_LABEL)
+        && !container_has_type(container, CTR_EPHEMERAL_LABEL)
+}
+
+pub(crate) fn select_container_for_name<'a>(
+    containers: &'a [v1::Container],
+    container_name: &str,
+) -> Option<&'a v1::Container> {
+    let running = ContainerState::ContainerRunning as i32;
+    containers
+        .iter()
+        .filter(|container| container_name_from_labels(container) == Some(container_name))
+        .max_by_key(|container| (container.state == running, container.created_at))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn container(id: &str, name: &str, state: ContainerState, created_at: i64) -> v1::Container {
+        v1::Container {
+            id: id.to_string(),
+            state: state as i32,
+            created_at,
+            labels: HashMap::from([(CTR_NAME_LABEL.to_string(), name.to_string())]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn container_lookup_prefers_running_attempt_over_newer_exited_attempt() {
+        let containers = vec![
+            container("old-exited", "write-test", ContainerState::ContainerExited, 10),
+            container("running", "write-test", ContainerState::ContainerRunning, 20),
+            container("new-exited", "write-test", ContainerState::ContainerExited, 30),
+        ];
+
+        assert_eq!(select_container_for_name(&containers, "write-test").map(|c| c.id.as_str()), Some("running"));
+    }
+
+    #[test]
+    fn container_lookup_uses_newest_attempt_when_none_are_running() {
+        let containers = vec![
+            container("old-exited", "write-test", ContainerState::ContainerExited, 10),
+            container("new-exited", "write-test", ContainerState::ContainerExited, 30),
+        ];
+
+        assert_eq!(select_container_for_name(&containers, "write-test").map(|c| c.id.as_str()), Some("new-exited"));
+    }
+
+    #[test]
+    fn container_lookup_recognizes_kubelet_cri_labels_during_runtime_handoff() {
+        let legacy = v1::Container {
+            id: "kubelet-container".to_string(),
+            state: ContainerState::ContainerRunning as i32,
+            labels: HashMap::from([
+                ("io.kubernetes.container.name".to_string(), "app".to_string()),
+                ("io.kubernetes.container.type".to_string(), "container".to_string()),
+            ]),
+            ..Default::default()
+        };
+
+        assert_eq!(container_name_from_labels(&legacy), Some("app"));
+        assert!(is_regular_container(&legacy));
+        assert_eq!(
+            select_container_for_name(&[legacy], "app").map(|c| c.id.as_str()),
+            Some("kubelet-container")
+        );
+    }
+
+    #[test]
+    fn container_kind_lookup_recognizes_kubelet_init_and_ephemeral_labels() {
+        let init = v1::Container {
+            labels: HashMap::from([("io.kubernetes.container.type".to_string(), "init".to_string())]),
+            ..Default::default()
+        };
+        let ephemeral = v1::Container {
+            labels: HashMap::from([(
+                "io.kubernetes.container.type".to_string(),
+                "ephemeral".to_string(),
+            )]),
+            ..Default::default()
+        };
+
+        assert!(container_has_type(&init, CTR_INIT_LABEL));
+        assert!(!is_regular_container(&init));
+        assert!(container_has_type(&ephemeral, CTR_EPHEMERAL_LABEL));
+        assert!(!is_regular_container(&ephemeral));
+    }
+
+    #[test]
+    fn container_lookup_does_not_match_another_container_name() {
+        let containers = vec![container("sidecar", "sidecar", ContainerState::ContainerRunning, 10)];
+
+        assert!(select_container_for_name(&containers, "write-test").is_none());
+    }
 }

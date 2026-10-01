@@ -1,18 +1,12 @@
-//! Node cgroup hierarchy: a QoS-scoped `cgroup_parent` per pod sandbox (so
-//! pods actually land under `kubepods/<qos>/pod<uid>`, matching real
-//! kubelet, instead of an unscoped flat cgroup tree with no relationship
-//! between QoS class and cgroup placement) and node allocatable enforcement
+//! Node cgroup hierarchy: a QoS-scoped `cgroup_parent` per pod sandbox (the
+//! runtime adds the sandbox-specific child beneath this parent, matching
+//! real kubelet) and node allocatable enforcement
 //! (capping the top-level `kubepods` cgroup at `Node.status.allocatable`,
 //! cgroup v2 only).
 //!
-//! CRI's own `LinuxPodSandboxConfig.cgroup_parent` proto comment says: "The
-//! cgroupfs style syntax will be used, but the container runtime can
-//! convert it to systemd semantics if needed" — so this always builds a
-//! cgroupfs-style path regardless of what cgroup driver the runtime is
-//! actually configured with. That's CRI's documented contract, not a
-//! nodelet simplification: it means nodelet doesn't need to detect or
-//! configure a cgroup driver at all, unlike real kubelet's
-//! `--cgroup-driver` flag.
+//! CRI implementations do not consistently translate cgroupfs-style paths
+//! when configured for systemd. Query the runtime's CRI `RuntimeConfig` and
+//! construct the matching hierarchy, as kubelet does for the same runtime.
 
 use crate::eviction::QosClass;
 use std::path::Path;
@@ -24,18 +18,31 @@ use tracing::warn;
 /// feature nodelet doesn't otherwise implement).
 pub const CGROUP_ROOT_NAME: &str = "kubepods";
 
-/// The cgroupfs-style parent path CRI expects for a pod sandbox, scoped by
-/// QoS class exactly like real kubelet: `Guaranteed` pods sit directly
-/// under `kubepods` (no QoS subdirectory — a Guaranteed pod's resources are
-/// exact, so there's nothing to additionally bound at the QoS level),
-/// `Burstable`/`BestEffort` get their own subdirectory so cgroup-aware
-/// tooling (and a human debugging with `systemd-cgls`/`cat
-/// /sys/fs/cgroup/.../cgroup.procs`) can see QoS grouping at a glance.
-pub fn cgroup_parent_for(qos: QosClass, pod_uid: &str) -> String {
-    match qos {
-        QosClass::Guaranteed => format!("/{CGROUP_ROOT_NAME}/pod{pod_uid}"),
-        QosClass::Burstable => format!("/{CGROUP_ROOT_NAME}/burstable/pod{pod_uid}"),
-        QosClass::BestEffort => format!("/{CGROUP_ROOT_NAME}/besteffort/pod{pod_uid}"),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Driver {
+    Cgroupfs,
+    Systemd,
+}
+
+/// The parent path CRI expects for a pod sandbox, scoped by QoS class exactly
+/// like real kubelet. The runtime creates the unique per-pod cgroup below this
+/// parent, so this value must not include the pod UID. CRI accepts cgroupfs
+/// style paths for either driver and converts them to systemd semantics when
+/// needed.
+pub fn cgroup_parent_for(qos: QosClass, driver: Driver) -> String {
+    match driver {
+        Driver::Cgroupfs => match qos {
+            QosClass::Guaranteed => format!("/{CGROUP_ROOT_NAME}"),
+            QosClass::Burstable => format!("/{CGROUP_ROOT_NAME}/burstable"),
+            QosClass::BestEffort => format!("/{CGROUP_ROOT_NAME}/besteffort"),
+        },
+        Driver::Systemd => {
+            match qos {
+                QosClass::Guaranteed => format!("/{CGROUP_ROOT_NAME}.slice"),
+                QosClass::Burstable => format!("/{CGROUP_ROOT_NAME}.slice/kubepods-burstable.slice"),
+                QosClass::BestEffort => format!("/{CGROUP_ROOT_NAME}.slice/kubepods-besteffort.slice"),
+            }
+        }
     }
 }
 

@@ -273,8 +273,12 @@ impl Config {
     /// configured with `--cidr6`. IPv4 remains the primary ClusterIP so an
     /// IPv4-only installation is unchanged.
     pub fn cluster_dns_ip6(&self) -> Option<String> {
-        self.service_cidr6()
-            .map(|cidr| service_cidr_address6(&cidr, 10).to_string())
+        std::env::var("NODEBOOTSTRAP_CLUSTER_DNS_IP6")
+            .ok()
+            .or_else(|| {
+                self.service_cidr6()
+                    .map(|cidr| service_cidr_address6(&cidr, 10).to_string())
+            })
     }
 
     pub fn cluster_dns_ips(&self) -> Vec<String> {

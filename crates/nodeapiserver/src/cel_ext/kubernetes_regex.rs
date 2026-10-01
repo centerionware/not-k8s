@@ -1,8 +1,10 @@
 //! Kubernetes' `kubernetes.regex` CEL extension library.
 //!
 //! This is the runtime surface of upstream's regex library: `find` returns
-//! the first matching substring and `findAll` returns every matching
-//! substring, optionally capped by a non-negative limit.
+//! the first matching substring, `findAll` returns every matching substring,
+//! and `matches` tests whether a string contains a match for a regular
+//! expression. `matches` is also used as a global function by Gateway API's
+//! `safe-upgrades` ValidatingAdmissionPolicy.
 
 use cel::extractors::{Arguments, This};
 use cel::{ExecutionError, FunctionContext, Value};
@@ -52,6 +54,19 @@ pub fn find_all_binding(
     Ok(Value::List(Arc::new(matches)))
 }
 
+/// Return whether `text` contains a substring matching `pattern`.
+pub fn matches_binding(
+    ftx: &FunctionContext,
+    Arguments(arguments): Arguments,
+) -> Result<Value, ExecutionError> {
+    let (text, pattern) = match arguments.as_slice() {
+        [Value::String(text), Value::String(pattern)] => (text, pattern),
+        _ => return Err(ftx.error("matches() requires a string and a string pattern")),
+    };
+    let regex = compile_regex(ftx, pattern)?;
+    Ok(Value::Bool(regex.is_match(text)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,4 +85,5 @@ mod tests {
         assert_eq!(matches, vec!["123", "456"]);
         assert_eq!(matches.into_iter().take(1).collect::<Vec<_>>(), vec!["123"]);
     }
+
 }

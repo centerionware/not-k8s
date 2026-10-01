@@ -3,6 +3,47 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn csidriver_spec_round_trips_prevent_pod_scheduling_if_missing() {
+        let message = "io.k8s.api.storage.v1.CSIDriverSpec";
+        let value = json!({"preventPodSchedulingIfMissing": true});
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert!(decoded["preventPodSchedulingIfMissing"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn statefulset_protobuf_round_trip_preserves_hostpath_device_volume() {
+        let message = schema_for_gvk("apps", "v1", "StatefulSet").unwrap();
+        let volume = json!({
+            "name": "dev-dir",
+            "hostPath": {"path": "/dev", "type": "Directory"}
+        });
+        let value = json!({
+            "apiVersion": "apps/v1",
+            "kind": "StatefulSet",
+            "metadata": {"name": "csi-hostpathplugin", "namespace": "default"},
+            "spec": {
+                "selector": {"matchLabels": {"app": "csi-hostpathplugin"}},
+                "serviceName": "csi-hostpathplugin",
+                "template": {
+                    "metadata": {"labels": {"app": "csi-hostpathplugin"}},
+                    "spec": {
+                        "containers": [{"name": "hostpath", "image": "hostpath:test"}],
+                        "volumes": [volume]
+                    }
+                }
+            }
+        });
+
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(
+            decoded["spec"]["template"]["spec"]["volumes"][0],
+            value["spec"]["template"]["spec"]["volumes"][0]
+        );
+    }
+
     /// The real bug that motivated `is_inline_embedded_field`: found live
     /// via a `ValidatingAdmissionPolicy` round trip against a real
     /// `nodestore` -- `apiGroups`/`apiVersions`/`resources`/`operations`/
@@ -75,6 +116,39 @@ mod tests {
         assert_eq!(decoded, value);
     }
 
+    /// `IngressRule` embeds `IngressRuleValue` in Go, so its JSON shape
+    /// exposes `http` directly while the protobuf message has a nested
+    /// `ingressRuleValue` field. Dropping that embedded field silently
+    /// removes every host rule's paths and backend from persisted Ingresses.
+    #[test]
+    fn ingress_rules_round_trip_http_paths_and_backends() {
+        let message = "io.k8s.api.networking.v1.Ingress";
+        let value = json!({
+            "metadata": {"name": "migration-nginx", "namespace": "migration-apps"},
+            "spec": {
+                "ingressClassName": "traefik",
+                "rules": [{
+                    "host": "migration.test",
+                    "http": {
+                        "paths": [{
+                            "path": "/",
+                            "pathType": "Prefix",
+                            "backend": {
+                                "service": {
+                                    "name": "migration-nginx",
+                                    "port": {"number": 80}
+                                }
+                            }
+                        }]
+                    }
+                }]
+            }
+        });
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded, value);
+    }
+
     #[test]
     fn a_simple_object_meta_round_trips() {
         let message = "io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta";
@@ -122,12 +196,9 @@ mod tests {
         // really did take the {seconds, nanos} message path, not fall
         // back to string encoding.
         assert!(!bytes.is_empty());
-        let decoded = decode_time_message(
-            "io.k8s.apimachinery.pkg.apis.meta.v1.Time",
-            "Time",
-            &bytes,
-        )
-        .unwrap();
+        let decoded =
+            decode_time_message("io.k8s.apimachinery.pkg.apis.meta.v1.Time", "Time", &bytes)
+                .unwrap();
         assert_eq!(decoded, json!("2024-01-15T10:30:00Z"));
     }
 
@@ -260,12 +331,9 @@ mod tests {
         // convention this codec already established elsewhere.
         let bytes = encode_time_string("Time", "1970-01-01T00:00:00Z").unwrap();
         assert!(bytes.is_empty());
-        let decoded = decode_time_message(
-            "io.k8s.apimachinery.pkg.apis.meta.v1.Time",
-            "Time",
-            &bytes,
-        )
-        .unwrap();
+        let decoded =
+            decode_time_message("io.k8s.apimachinery.pkg.apis.meta.v1.Time", "Time", &bytes)
+                .unwrap();
         assert_eq!(decoded, json!("1970-01-01T00:00:00Z"));
     }
 
@@ -458,6 +526,20 @@ mod tests {
             decoded.get("annotations").unwrap(),
             &json!({"a": "1", "b": "2", "c": "3"})
         );
+    }
+
+    #[test]
+    fn certificate_request_extra_values_round_trip_as_json_arrays() {
+        let message = "io.k8s.api.certificates.v1.CertificateSigningRequestSpec";
+        let value = json!({
+            "extra": {
+                "scopes": ["read", "write"],
+                "empty": []
+            }
+        });
+        let encoded = encode_message(message, &value).unwrap();
+        let decoded = decode_message(message, &encoded).unwrap();
+        assert_eq!(decoded, value);
     }
 
     #[test]

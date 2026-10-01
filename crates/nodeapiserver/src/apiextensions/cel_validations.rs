@@ -406,6 +406,26 @@ mod tests {
     }
 
     #[test]
+    fn gateway_style_map_rules_pass_type_and_cost_validation() {
+        let crd = json!({
+            "spec": {"versions": [{"name": "v1", "schema": {"openAPIV3Schema": {
+                "type": "object",
+                "properties": {"spec": {"type": "object", "properties": {
+                    "infrastructure": {"type": "object", "properties": {
+                        "annotations": {"type": "object", "maxProperties": 16,
+                            "additionalProperties": {"type": "string", "maxLength": 4096},
+                            "x-kubernetes-validations": [{"rule": "self.all(key, key.matches('^[a-z]+$'))"}]
+                        }
+                    }}
+                }}}
+            }}}]}
+        });
+
+        assert!(validate_crd_cel_types(&crd).is_empty());
+        assert!(validate_crd_cel_costs(&crd).is_empty());
+    }
+
+    #[test]
     fn validate_crd_cel_costs_is_empty_for_a_crd_with_no_versions_at_all() {
         assert!(validate_crd_cel_costs(&json!({})).is_empty());
     }

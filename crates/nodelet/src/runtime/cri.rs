@@ -77,6 +77,7 @@ use v1::{
     RemoveImageRequest, RemovePodSandboxRequest, RunPodSandboxRequest, StartContainerRequest,
     StopContainerRequest, StopPodSandboxRequest, ExecSyncRequest, ReopenContainerLogRequest,
     ExecRequest, AttachRequest, PortForwardRequest, ListPodSandboxStatsRequest,
+    RuntimeConfigRequest, CgroupDriver,
     UpdateContainerResourcesRequest, security_profile::ProfileType, SecurityProfile,
     IdMapping, UserNamespace, PortMapping, Protocol, MountPropagation,
 };
@@ -175,6 +176,7 @@ pub struct CriRuntime {
     /// objects (`spec.nodeName`) when waiting on a CSI attach (see
     /// `resolve_csi_source()`).
     node_name: String,
+    cgroup_driver: crate::cgroup::Driver,
     /// `--cluster-dns`/`--cluster-domain` equivalents (see `dns_config_for()`).
     cluster_dns: Vec<String>,
     cluster_domain: String,
@@ -544,6 +546,26 @@ impl CriRuntime {
         };
         info!(runtime_name = %runtime_name, "CRI runtime version check finished");
 
+        let mut runtime_config_client = rt.clone();
+        let runtime_config = tokio::time::timeout(
+            STARTUP_RPC_TIMEOUT,
+            runtime_config_client.runtime_config(RuntimeConfigRequest {}),
+        )
+        .await
+        .context("CRI RuntimeConfig call timed out while discovering the cgroup driver")?
+        .context("CRI RuntimeConfig call failed while discovering the cgroup driver")?
+        .into_inner();
+        let cgroup_driver = match runtime_config
+            .linux
+            .map(|linux| linux.cgroup_driver)
+            .and_then(|driver| CgroupDriver::try_from(driver).ok())
+            .unwrap_or(CgroupDriver::Systemd)
+        {
+            CgroupDriver::Systemd => crate::cgroup::Driver::Systemd,
+            CgroupDriver::Cgroupfs => crate::cgroup::Driver::Cgroupfs,
+        };
+        info!(?cgroup_driver, "discovered CRI cgroup driver");
+
         // Which handlers advertise recursiveReadOnlyMounts support (round
         // 97), from the same Status RPC `runtime_handlers()` makes on
         // demand for Node.status.runtimeHandlers — cached once here so
@@ -583,7 +605,7 @@ impl CriRuntime {
         // the same channel from the runtime's current inventory so existing
         // sandboxes and containers are reconciled immediately after a nodelet
         // or host restart, even when their API status still says Running.
-        tokio::spawn(seed_existing_runtime_pods(rt.clone(), tx));
+        tokio::spawn(seed_existing_runtime_pods(rt.clone(), tx.clone()));
 
         // Best-effort: a malformed/unreadable CredentialProviderConfig
         // shouldn't block startup any more than a missing one does —
@@ -601,6 +623,7 @@ impl CriRuntime {
         };
 
         let csi = Arc::new(crate::runtime::csi::CsiDrivers::new(csi_drivers));
+        csi.set_registration_events(tx.clone());
         // Device health transitions use the priority event channel rather
         // than sharing the ordinary CRI container-event queue. They are the
         // same shape of "real state change that never touches the Pod
@@ -631,6 +654,7 @@ impl CriRuntime {
             client,
             service_cache,
             node_name,
+            cgroup_driver,
             cluster_dns,
             cluster_domain,
             rx: Mutex::new(Some(rx)),

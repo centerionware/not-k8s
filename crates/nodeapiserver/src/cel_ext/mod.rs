@@ -306,6 +306,7 @@ pub(crate) fn register_kubernetes_extensions(ctx: &mut Context) {
     ctx.add_function("patch", kubernetes_semver::patch_binding);
     ctx.add_function("find", kubernetes_regex::find_binding);
     ctx.add_function("findAll", kubernetes_regex::find_all_binding);
+    ctx.add_function("matches", kubernetes_regex::matches_binding);
     ctx.add_function("format.named", kubernetes_format::named_binding);
     ctx.add_function("validate", kubernetes_format::validate_binding);
     ctx.add_function("format.dns1123Label", kubernetes_format::dns1123_label_binding);
@@ -605,6 +606,15 @@ mod tests {
     fn a_string_field_comparison_works_end_to_end() {
         let value = json!({"metadata": {"name": "widget-1"}});
         assert_eq!(eval_bool(r#"self.metadata.name.startsWith("widget-")"#, &value, None).unwrap(), true);
+    }
+
+    #[test]
+    fn global_matches_function_evaluates_gateway_api_safe_upgrade_expression() {
+        let object = json!({"metadata": {"annotations": {
+            "gateway.networking.k8s.io/bundle-version": "v1.6.1"
+        }}});
+        let expression = r#"!matches(object.metadata.annotations['gateway.networking.k8s.io/bundle-version'], 'v1.[0-5].\\d+')"#;
+        assert!(eval_bool_with_vars(expression, &[("object", &object)]).unwrap());
     }
 
     #[test]

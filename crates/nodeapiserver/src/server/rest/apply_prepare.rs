@@ -110,6 +110,7 @@ pub async fn apply_prepare(
             "uid",
             Value::String(uuid::Uuid::new_v4().to_string()),
         );
+        set_initial_generation(&mut object);
         // The object's identity comes from the URL, same as every other
         // verb here (`persist_update` forces `namespace` from the URL
         // the same unconditional way) -- not from whatever `config`'s
@@ -117,6 +118,9 @@ pub async fn apply_prepare(
         set_metadata_field(&mut object, "name", Value::String(name.to_string()));
         if let Some(ns) = namespace {
             set_metadata_field(&mut object, "namespace", Value::String(ns.to_string()));
+        }
+        if group == "batch" && version == "v1" && resolved.kind == "Job" {
+            crate::scheme::defaulting::default_job_selector(&mut object);
         }
         let rebuilt = crate::patch::managed_fields::rebuild_versioned_managed_fields(
             &[],

@@ -16,6 +16,7 @@ pub mod node_lifecycle;
 pub mod namespace;
 pub mod pv_binder;
 pub mod replica_set;
+pub mod replication_controller;
 pub mod resource_claim;
 pub mod resource_quota;
 pub mod root_ca_publisher;

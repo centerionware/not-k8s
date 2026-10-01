@@ -6,17 +6,15 @@
 //! `pkg/registry/authentication/selfsubjectreview` is a synthetic REST
 //! connector too.
 //!
-//! No new authentication logic at all: this only reflects whatever
-//! `authn::x509` (or, for an unauthenticated caller, the real anonymous
-//! user/group convention `server::listener` already uses everywhere
-//! else) already produced.
+//! This reflects the effective request identity after authentication and
+//! any authorized impersonation (or, for an unauthenticated caller, the
+//! real anonymous user/group convention `server::listener` already uses).
 
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-/// Real upstream's own `UserInfo` shape. `extra` remains empty because this
-/// crate does not implement impersonation headers or another authenticator-
-/// specific side channel, but authenticators that know a UID preserve it.
+/// Real upstream's own `UserInfo` shape, reflecting the effective request
+/// identity's UID, groups, and extra attributes.
 pub fn build_status(
     username: &str,
     uid: Option<&str>,
@@ -37,8 +35,16 @@ mod tests {
 
     #[test]
     fn build_status_reflects_username_and_groups() {
-        let status = build_status("alice", None, &["devs".to_string(), "system:authenticated".to_string()], &BTreeMap::new());
-        assert_eq!(status, json!({"userInfo": {"username": "alice", "groups": ["devs", "system:authenticated"], "extra": {}}}));
+        let status = build_status(
+            "alice",
+            None,
+            &["devs".to_string(), "system:authenticated".to_string()],
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            status,
+            json!({"userInfo": {"username": "alice", "groups": ["devs", "system:authenticated"], "extra": {}}})
+        );
     }
 
     #[test]

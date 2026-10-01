@@ -1,0 +1,610 @@
+# nodemigrate full migration goal
+
+Last updated: 2026-09-30
+
+This document defines the complete intended scope and acceptance criteria for
+the standalone `nodemigrate` utility. It is the task-specific authority for
+this work. The linked status documents are living records and should be
+updated as implementation, CI, and release evidence changes.
+
+## Goal
+
+Deliver a full, recoverable, bidirectional node migration utility among K3s,
+upstream Kubernetes, and not-k8s (`nodestore`), including nodes that must join
+an existing cluster to replace a member. Preserve workload behavior and
+recoverable state through each transition. Treat CNI as an installation's
+actual provider: Cilium is a required scenario, and migration must not assume
+Flannel.
+
+`nodemigrate` is a standalone release artifact. It must remain outside the
+combined `notk8s` binary. Its release uses the exact version of the latest
+regular not-k8s release, without changing or advancing the shared `VERSION`
+for a nodemigrate-only release. The intended initial utility release is
+coordinated with regular `v0.8.1`, carrying the component fixes tracked in
+[NODEMIGRATE_BUGS.md](NODEMIGRATE_BUGS.md); nodemigrate must not independently
+bump the regular release version. This is a target, not publication authority.
+
+## Required migration behavior
+
+- Detect and inspect supported local K3s, upstream Kubernetes, and nodestore
+  installations on both control-plane and worker nodes, including service
+  manager, API configuration, networking, datastore mode where available, and
+  the state needed to select a valid migration path.
+- Migrate K3s and upstream Kubernetes to nodestore, and nodestore back to a
+  retained local K3s or upstream Kubernetes installation.
+- Support a destination that joins an existing cluster, including replacement
+  of a node that previously belonged to that cluster. Use the established
+  nodebootstrap join/environment configuration and preserve its membership,
+  CA, and cluster networking requirements.
+- For an in-place migration that creates the destination control plane, retain
+  the source API serving CA so existing nodes and clients continue trusting
+  the same API endpoint. Preserve any separate source client-auth CA as an
+  additional destination client trust root (K3s has distinct server and
+  client CAs). Store the CA/key material in the protected recovery export
+  before stopping the source. A node joining an already-running destination
+  uses the destination cluster's PKI and must not replace it with source PKI.
+- Support ordered cluster migration: transfer cluster API state at the
+  control-plane stage, then replace control-plane and worker nodes against the
+  joined destination without re-importing the same cluster-wide objects from
+  every worker. Preserve all source Node scheduling metadata in the protected
+  export so later nodes can complete after the source API loses quorum; use a
+  private local copy of that export per node for node-specific volume and CNI
+  recovery data.
+- On upstream control-plane nodes, export API state, stop kubelet, remove the
+  static-pod sandboxes that must release local API/etcd ports, then stop the
+  source CRI service before data snapshots and destination startup. Retain
+  manifests and runtime data for a recoverable return migration unless a
+  destination conflict requires moving them into the protected recovery
+  export.
+- For control-plane and worker replacement, use the destination API to detect
+  and wait for node registration. If a same-name destination Node exists,
+  require the operator to explicitly select its replacement; never treat its
+  old Ready condition as proof that the new node joined. Preserve the source
+  Node's labels, annotations, taints, and unschedulable setting on the new
+  Node, and use an identity-preconditioned delete for any stale same-name Node.
+- Discover and preserve the source CNI arrangement, including Cilium. Do not
+  require Flannel, overwrite external CNI host configuration, or assume that
+  copying API objects alone recreates host networking state.
+- Detect and preserve the Service datapath mode separately from the CNI.
+  Cilium may replace kube-proxy through its eBPF Service handling; Cilium's
+  Envoy L7 proxy is a separate function. Do not run kube-proxy, not-k8s
+  `nodeproxy`, and Cilium's kube-proxy replacement as competing Service
+  datapaths. Support and test Cilium with kube-proxy replacement enabled and
+  disabled, recording which component owns ClusterIP/NodePort routing at each
+  migration stage and verifying Service behavior after every transition.
+- Transfer Kubernetes API resources, including custom resources, add-ons,
+  secrets, and persistent volume metadata, while accounting for destination
+  UIDs, controller-owned transient objects, and API compatibility. Preserve
+  standalone Pod workloads and Deployment/StatefulSet rollout history, including
+  ReplicaSets and ControllerRevisions; regenerate controller-owned Pods and
+  static-pod mirrors from their durable owners. Live
+  NodeMetrics and PodMetrics samples are collected again by their metrics
+  provider and are not persistent migration state.
+  Before handing API authority to a retained cluster, stop and remove only
+  the source runtime's nodelet-owned CRI Pod sandboxes after the protected API
+  export and after nodelet is stopped. This closes writers before local-volume
+  snapshots and prevents old projected ServiceAccount tokens or processes
+  from crossing into a cluster with potentially different token trust. Keep the
+  API objects, PV/PVC bindings, and backing payloads; let the returning
+  kubelet/controller recreate Pods from their durable owners, including
+  standalone Pods from the protected export. If cutover rolls back, restore
+  the source services and let its controllers recreate the stopped sandboxes.
+- Preserve persistent volume claims, bindings, topology, and payload access
+  across migration for the provisioners configured in the source cluster. Copy
+  node-local and hostPath payloads with their owning node and PV affinity;
+  preserve provider configuration, credentials, and attachment behavior for
+  CSI and network storage, using the provider's migration mechanism when one
+  is required. Do not exclude a volume class by assumption. If a concrete
+  provider prerequisite prevents a safe move, report the exact prerequisite
+  and recovery state instead of silently dropping or rebinding the volume.
+  Migration must not delete source PersistentVolumes, PersistentVolumeClaims,
+  or backing volumes as a cleanup or cutover step. Preserve each PV's reclaim
+  policy and each claim-to-volume binding; deleting a claim can trigger a
+  provisioner's `Delete` reclaim policy and destroy the payload. Any disposable
+  reclaim-policy test must use separately created test resources and must not
+  be part of a migration checkpoint or cleanup path.
+  For an in-place runtime replacement, preserve the source kubelet's CSI
+  global staging path and make it visible to the replacement CSI node plugin.
+  Reuse the existing provider stage where valid; do not ask a CSI driver to
+  stage the same volume at a second path while its prior stage remains active.
+  Detect an active source path from host mount state and support an explicit
+  configured root when no source stage is mounted; fail before cutover if the
+  configured root contradicts a live stage.
+- Prefer keeping the source installation stopped/disabled and recoverable after
+  cutover. A full in-place control-plane migration may need to retire or remove
+  old control-plane services, static-pod manifests, sockets, membership, or
+  other host state that conflicts with the destination's API server, datastore,
+  or networking. Detect those conflicts and use the least destructive teardown
+  that yields a working destination; do not preserve old control-plane pieces
+  at the cost of an incomplete or conflicting target. Export API and
+  node-local state first, snapshot affected configuration and data, and retain
+  a documented restoration path. Keep source etcd/datastore data and PKI while
+  they remain part of the rollback path. In a multi-control-plane migration,
+  preserve source quorum while replacing members in a safe order. Retire old
+  services and remove old member state when needed to avoid competing control
+  planes, but keep rollback material until the destination control plane has
+  quorum and its API/data have been verified. Explicit
+  `uninstall-after-migrate=true` may remove the remaining source installation
+  after migration; ordinary required conflict cleanup is not limited to that
+  optional full uninstall. On a real multi-control-plane host, use the
+  destination's verified topology to decide which old control-plane services,
+  manifests, sockets, or local member state must be retired. It is valid to
+  remove those conflicting parts after cutover; retain old data and PKI while
+  rollback or a return migration is still required. Do not make erasing
+  etcd/datastore data a prerequisite for cutover when disabling source
+  services and rebooting can provide a safe recovery path.
+- Take the source Kubernetes API export while its API is available, then stop
+  the source service stack before snapshotting node-local PV/hostPath payloads
+  so applications cannot change files during the copy. Stop an upstream
+  Kubernetes CRI service as a whole when it is separate from kubelet; retain
+  its image/container data for rollback. Do not drain or bulk-remove ordinary
+  Pod sandboxes. Remove kubeadm control-plane static-pod sandboxes when needed
+  to release local API/etcd ports, and perform targeted Cilium process and
+  sandbox cleanup plus stale-socket cleanup where needed to prevent CNI
+  conflicts. Apply broader control-plane cleanup only as required by a
+  detected destination conflict, following the scoped teardown and recovery
+  rules above. Identify standard containerd, CRI-O, and Docker-backed runtimes
+  from the CRI endpoint; use `NODEMIGRATE_RUNTIME_SERVICE` for a custom runtime
+  service. On a failed
+  snapshot or import, stop the partial destination, restore the saved local
+  PV/CNI payloads, and restart the source runtime/services; the retained source
+  must remain usable after re-enable or reboot.
+- Protect exports and secrets, retain the export for recovery, restore the
+  prior source service state when cutover has not succeeded, and report a
+  usable recovery location and state when later stages fail.
+- Make plan/inspection output actionable and ensure each operation reports
+  its selected source, target, join mode, and consequential actions.
+- Before an interactive migration, show a prominent warning about external
+  backups and the high probability of data loss, then require the exact input
+  `yes` to continue. Noninteractive migration commands write the same warning
+  to their logs and continue without waiting for input.
+
+## Migration build and validation rules
+
+- Every migration lane builds the branch's `nodemigrate` utility and runs
+  `cargo build --release --features cri -p notk8s` from the exact tested
+  commit before migration. This applies even when the migration itself uses
+  the latest regular release binary as its runtime; the release-vs-branch
+  selection chooses the binary used during migration, not whether branch
+  changes are compiled.
+- Building the combined `notk8s` binary compiles the packaged component crates
+  selected by its default features plus `cri` (including `nodelet`'s CRI
+  implementation). Do not duplicate that compile with separate component
+  builds. `nodemigrate` remains a standalone binary and is built separately.
+- PR path filters for the migration workflow include every packaged component
+  crate and the workspace manifests, so changes to a runtime component or its
+  dependencies run the migration workflow's validation path. Full migration
+  lanes remain explicitly dispatched; do not run the general full e2e or
+  regular build gates for this utility unless the user changes that policy.
+- Run focused quick-checks for changed migration/runtime crates when a change
+  needs unit-level validation. The migration round trip supplies runtime
+  evidence; successful compilation alone does not establish migration
+  behavior.
+
+## End-to-end acceptance scenarios
+
+The dedicated migration exercise must have independent starting lanes for:
+
+1. K3s with Flannel disabled and Cilium installed as the CNI.
+2. Upstream Kubernetes (kubeadm) with Cilium installed as the CNI.
+
+Each lane must install and verify upstream first, then install the hostPath
+CSI driver and exercise both static hostPath PV/PVC and dynamically provisioned
+CSI PV/PVC data. Install cert-manager, nginx, Traefik ingress, and additional
+representative cluster programs/add-ons. Record source versions and CNI
+configuration.
+
+At source, destination, and returned-source checkpoints, compare the active
+API CA fingerprint with the original source CA. The five-node scenario must
+also prove that the non-migrated nodes remain Ready and that Cilium agents can
+authenticate to the replacement API throughout the control-plane handoff.
+
+The migration fixture must cover a broad, explicit resource inventory rather
+than treating the current demo workloads as complete coverage. Every resource
+below must be present where applicable, migrated, and checked at the initial
+source, not-k8s target, and returned-source checkpoints. Checks include
+identity and durable spec/data parity plus the relevant behavior (controller
+reconciliation, scheduling, access, routing, storage, or policy); API import
+alone does not count. This includes the specifically required ConfigMaps,
+CRDs and custom resources, StatefulSets, Deployments, Helm charts/releases,
+CronJobs, DaemonSets, Ingress, Gateway API, and RBAC, along with the following
+minimum coverage:
+
+Extend the existing migration fixtures and assertions to cover this inventory
+on both the K3s and upstream Kubernetes paths, in both migration directions.
+Keep current coverage and add these resource checks to it; passing existing
+tests without the added inventory does not satisfy this goal.
+
+Treat this as an additive expansion of the existing tests: every resource and
+behavior already asserted by the migration suite must continue to be asserted,
+and the named inventory below must be added to those same end-to-end fixtures.
+Run the full fixture once from K3s and once from upstream Kubernetes. For each
+source, exercise source-to-not-k8s and not-k8s-to-retained-source transitions;
+at each source, target, and returned-source checkpoint, check that durable
+resources and their dependent behavior survive. A resource that is not
+applicable to a lane must be marked with its concrete prerequisite, while
+source-discovered API kinds must still receive a migration, regeneration, or
+lifecycle classification.
+
+- **Configuration and access:** Namespaces, ConfigMaps (including binary
+  data and immutable ConfigMaps), values consumed through environment
+  variables and projected/mounted volumes, Secrets, ServiceAccounts, Roles,
+  ClusterRoles, RoleBindings,
+  ClusterRoleBindings, ResourceQuotas, LimitRanges, and PriorityClasses.
+  Exercise allowed and denied API actions with real service-account
+  credentials. Preserve secret data securely and verify consumers can still
+  use it.
+- **Workloads and rollout state:** Deployments, ReplicaSets, StatefulSets and
+  `volumeClaimTemplates`, DaemonSets on every node, Jobs, CronJobs, and
+  standalone Pods. Check selectors, pod templates, rollout/revision history,
+  replica/readiness state, successful job execution, cron scheduling, and
+  unique application data. Scale and update representative Deployments and
+  StatefulSets so the tests exercise controller reconciliation after each
+  cutover; verify StatefulSet ordinal identity, stable storage, and
+  `volumeClaimTemplates`. Include ReplicaSet and ControllerRevision history
+  needed by owners; verify regenerated controller-owned Pods become healthy.
+- **Charts and add-ons:** Helm chart releases and release records (name,
+  namespace, chart/version, values, revision, and manifest), plus every
+  managed resource. Verify `helm list`, release inspection, workload health,
+  and a safe follow-up Helm operation after each cutover. Include cert-manager,
+  ingress controllers, Cilium, the storage driver, and other installed
+  operators/add-ons. A chart's rendered resources and its Helm release state
+  both need coverage.
+- **Services and routing:** Services, legacy Endpoints where served,
+  EndpointSlices, IngressClasses and Ingresses, and Gateway API
+  `GatewayClass`, `Gateway`, `HTTPRoute`, `GRPCRoute`, `TCPRoute`, `TLSRoute`,
+  and `UDPRoute` where supported by the selected controller. Check DNS,
+  service reachability, HTTP/TLS routing, and certificate use.
+- **RBAC and admission:** Role and cluster-role grants and bindings, service
+  accounts, admission policies, validating/mutating webhook configurations,
+  ValidatingAdmissionPolicyBindings, MutatingAdmissionPolicies and their
+  bindings where served, APIService registrations, and TokenReviews and
+  SubjectAccessReviews where applicable. Check allowed and denied requests,
+  token authentication, and that admission/webhook-backed workloads function
+  after each transition.
+- **CRDs and operator state:** CRDs and representative custom resources,
+  including Cilium configuration/policy, cert-manager Issuers,
+  ClusterIssuers, Certificates and CertificateRequests, Gateway API resources,
+  and operator-managed durable state. Verify discovery, conversion,
+  reconciliation, status, and resulting Secrets or routes. Check that CRDs
+  are established and discoverable before and after migration, and exercise
+  any served conversion versions. Install the CRDs and controllers at the
+  source before creating custom resources.
+- **Storage and data:** PVs, PVCs, StorageClasses, static hostPath/local
+  volumes, dynamic CSI volumes, CSIDrivers, CSINodes, VolumeAttachments where
+  applicable, VolumeSnapshotClasses, VolumeSnapshots, and snapshot contents.
+  Check binding, topology, provider configuration/credentials, attachment,
+  and unique payload data for every configured provisioner.
+- **Scheduling, policy, and node state:** Nodes and their labels, annotations,
+  taints, and unschedulable setting; PodDisruptionBudgets,
+  HorizontalPodAutoscalers and other installed autoscalers, NetworkPolicies,
+  RuntimeClasses, PriorityClasses, LimitRanges, ResourceQuotas, affinity,
+  tolerations, topology spread, Pod Security admission labels, and supported
+  scheduling/security constraints.
+  Check both stored policy and resulting scheduling or allow/deny behavior.
+- **Additional controllers and node APIs:** ReplicationControllers,
+  PodTemplates, PDBs, HorizontalPodAutoscalers, Lease objects, RuntimeClasses,
+  CSINodes, CSIDrivers, CSIStorageCapacity, VolumeAttachments,
+  VolumeAttributesClasses where served, and version-specific storage migration
+  resources. Exercise each installed controller or driver through observable
+  behavior, and classify infrastructure-generated state by lifecycle.
+- **Other discovered API resources:** Include Events, Leases, coordination and
+  discovery objects, token/request resources, PodTemplates,
+  ReplicationControllers, ControllerRevisions, APIService registrations,
+  StorageVersions, discovery.k8s.io EndpointSlices, events.k8s.io Events,
+  coordination.k8s.io Leases, admissionregistration.k8s.io policies/bindings,
+  certificates.k8s.io CSRs, authentication/authorization review resources,
+  flowcontrol.k8s.io FlowSchemas and PriorityLevelConfigurations,
+  resource.k8s.io DeviceClasses, ResourceClasses, ResourceClaims,
+  ResourceClaimTemplates and ResourceSlices where served, and
+  certificates.k8s.io ClusterTrustBundles where served. Include relevant API
+  subresources such as `/scale`, `/status`, `pods/exec`, `pods/attach`,
+  `pods/portforward`, `pods/ephemeralcontainers`, `pods/binding`, and
+  `pods/eviction`: verify they remain usable or document why they are
+  regenerated, transient, or outside the migration contract. Preserve
+  ephemeral-container specifications on standalone Pods by restoring them via
+  the `ephemeralcontainers` subresource after Pod creation; the debug process
+  is recreated on the destination because process memory cannot migrate.
+  Also include every other listable resource reported by source API discovery.
+  This applies
+  across core, apps, batch, networking, storage, autoscaling, policy,
+  admission, node, scheduling, certificates, authentication, authorization,
+  flow control, resource allocation, and installed custom API groups.
+  For each kind, verify migration or classify it as regenerated transient state
+  or exclude it only with a specific Kubernetes lifecycle reason. Do not
+  silently omit a kind just because it is not named in this document.
+
+Also inventory every listable API resource exposed by source discovery and
+verify it is either migrated, deliberately regenerated as transient runtime
+state, or excluded with a documented Kubernetes lifecycle reason. The named
+examples are a minimum fixture, not permission to drop other resources.
+Preserve Helm release name, namespace, chart/version, values, revision, and
+managed resources so the release remains inspectable and manageable after
+each cutover. Compare durable object specifications and identities, test RBAC
+with real authorized and denied requests, exercise scheduled and controller
+workloads, and verify attached data and network paths. At source, not-k8s, and
+returned-source checkpoints, run the same assertions and compare normalized
+state; a successful API import alone is not evidence of workload parity.
+
+At each checkpoint—initial source, after migration to nodestore, and after
+migration back—check node readiness, workload availability, ingress routing,
+certificate readiness, add-on/custom-resource availability, PV/PVC binding,
+and expected data in both volume paths. Capture diagnostics and exact artifact
+versions on failure. The scenarios must include a separate existing-cluster
+join/replacement case before full-join support can be called verified.
+
+## Nodemigrate merge gate
+
+Do not merge nodemigrate until both isolated runtime scenarios below pass:
+
+1. A single-node K3s cluster with Cilium must migrate to not-k8s and back to
+   K3s. The returned cluster must have no differences from the initial full
+   migration-state checkpoint. Verify node identity and readiness, workloads,
+   add-ons, ingress, certificates, persistent data, and Cilium state, and
+   repeat the behavioral probes at each stage.
+2. An upstream Kubernetes cluster with three control-plane nodes and two
+   worker nodes must complete the same not-k8s round trip. Check membership and
+   readiness for all five nodes, along with workloads, add-ons, ingress,
+   certificates, persistent data, Cilium state, and the existing-cluster
+   join/replacement path. Repeat the checks at each stage and compare the
+   returned cluster with the initial checkpoint.
+
+The scenarios may share one CI host when each cluster is isolated with QEMU or
+another suitable mechanism so all five upstream nodes remain distinct while
+running on that host. Docker is a candidate if the environment can fully
+simulate the cluster behaviors required by these checks, including networking,
+node identity, service management, storage, and node failure/isolation. A
+passing container-only simulation is not evidence for behavior it does not
+model. Record the
+isolation method, topology, artifact versions, per-stage results, and
+before/after state comparison in the CI status document. These are
+nodemigrate-specific merge gates; the general build and e2e gates remain
+excluded by the task-specific rules below.
+
+## Build, test, and e2e rules for this objective
+
+These task-specific rules override conflicting general build/e2e/test
+instructions in `AGENTS.md` for nodemigrate work:
+
+- The coordinated `v0.8.1` regular runtime and standalone nodemigrate release
+  will be based on this nodemigrate branch and its accepted fixes. The primary
+  migration test target is the `notk8s` runtime compiled from this branch, so
+  fixes made here are included in migration testing. Testing is not limited to
+  the released `v0.8.0` runtime; `v0.8.0` is an optional regression baseline
+  and must not block branch-fix validation.
+- Dispatch `nodemigrate-integration.yml` with `runtime_source=branch` for
+  branch-fix validation. Each migration lane builds `notk8s` from the checked
+  out PR branch with CRI support. Compiling that combined binary compiles all
+  runtime components it packages, including every modified component crate;
+  this is the required evidence that migration testing includes changes to
+  other packaged components. Do not narrow this to only selected crates or add
+  redundant component builds. A successful `notk8s --features cri` compile
+  means all included and feature-enabled component changes were compiled; it
+  does not by itself prove their runtime behavior.
+  The workflow also builds `nodemigrate`. These targeted test builds are
+  authorized and do not constitute the general build gate.
+
+- Do not run the repository's general `build.yml` gate for this objective.
+- Do not run the repository's general e2e gate for this objective.
+- Do not run local Cargo builds, Cargo tests, or local e2e on the development
+  host.
+- For nodemigrate Rust changes, use the targeted `nodemigrate checks`
+  workflow, which compiles and tests only the `nodemigrate` crate. Runtime
+  crate compilation is covered by the branch `notk8s` build in the dedicated
+  migration workflow. Run focused quick-check only when a changed behavior or
+  regression specifically needs that crate's unit/integration tests. Such runs
+  are allowed and are not a general build gate.
+- The dedicated `nodemigrate-integration.yml` workflow is the migration
+  runtime test. Its build steps compile binaries for that test, including
+  branch-built fixes, and are explicitly allowed. The user has authorized the
+  migration runtime test; dispatch it as needed and record each lane and
+  checkpoint independently.
+- Static checks such as `bash -n`, formatting checks, and documentation/link
+  review are allowed. Do not represent them as runtime migration evidence.
+- Before another migration attempt after a failed run, review the complete
+  failure output and the existing bug tracker for every confirmed actionable
+  defect in the same migration paths. Fix all such implementation and harness
+  defects together, then run the focused checks for the entire fix batch before
+  dispatching migration again. Do not rerun migration just to discover the
+  next already-known issue one at a time. When a failure mechanism is still
+  unknown, use non-migration diagnostics to establish it; do not treat another
+  migration retry as the diagnostic.
+- Historical diagnostic note: `k3s_cilium_restart_probe` installs the
+  K3s+Cilium workload fixture, recreates the Cilium agent Pod, and then
+  recreates only the Cilium sandbox before restarting K3s with the same Node
+  UID. It checks Cilium service/BPF/endpoint state and repeats functional and
+  API-state checks after each transition, then tests same-name Node
+  replacement. It does not remove ordinary Pod sandboxes and does not run
+  `nodemigrate`; it cannot satisfy either migration merge scenario. Probe
+  `36509703232` passed source restart and same-name Node replacement checks,
+  including workload/storage/API state and an active Cilium BPF backend for
+  the API ClusterIP. Corrected run `36511406969` passed source, restart, and
+  replacement checks; run `36513067748` also passed in-Pod TCP probes to the
+  API ClusterIP at each checkpoint. Run `36515656678` recreated the Cilium
+  agent Pod with a new UID and passed workload, storage, API inventory, and
+  Node replacement checks. These diagnostics do not reproduce the
+  cross-cluster migration failure. The separate all-sandbox teardown probe
+  `36518048359` failed before restarting K3s, and its retry `36519169676` was
+  canceled after the cutover design changed. That sequence is obsolete and
+  must not be reused; current migration preserves ordinary Pod sandboxes.
+  The post-migration Cilium issue remains open, so do not rerun migration
+  until the failure has a concrete fix and the focused checks pass.
+- A release workflow run is required only when carrying out the separately
+  authorized publication. The initial `v0.8.1` nodemigrate publication must
+  use the matching regular `v0.8.1` version built from this branch's accepted
+  changes; it must not independently bump shared `VERSION`. Testing is not
+  restricted to the latest published release.
+
+These rules alter only this nodemigrate objective; they do not amend the
+repository-wide merge policy for other work.
+
+## Living status documents
+
+- [Status dashboard](NODEMIGRATE_STATUS.md) — current summary and next actions.
+- [Migration implementation status](NODEMIGRATE_MIGRATION_STATUS.md) — path
+  coverage, behavior evidence, and migration risks.
+- [CI and integration status](NODEMIGRATE_CI_STATUS.md) — workflow design,
+  permitted checks, run IDs, and per-lane runtime checkpoints.
+- [Bug and fix tracker](NODEMIGRATE_BUGS.md) — confirmed defects, owning
+  components, fixes, and focused verification evidence.
+- [Release status](NODEMIGRATE_RELEASE_STATUS.md) — version source, package
+  separation, release readiness, and publication record.
+
+## Active stabilization handoff (2026-09-30)
+
+This section records the current failure evidence and the implementation work
+needed before the next migration attempt. It supplements the goal and
+acceptance criteria above; it does not claim the migration is fixed.
+
+### Checkout and verified progress
+
+Work in `/workspace/not-k8s`, branch `feat/nodemigrate-migration`, [PR
+#591](https://github.com/centerionware/not-k8s/pull/591), open against `main`.
+The previously reviewed head was `f1956b4e0bbcdad51cd237790f6c3a1fc215f729`.
+The current pushed head is `f8bfc0254bf8aa97ac6a630f75c6b93e7bb9e0e9`;
+preserve unrelated untracked directories in the checkout.
+
+The latest completed migration run is
+[36664092690](https://github.com/centerionware/not-k8s/actions/runs/36664092690),
+testing `18520d8ddb360e01bf2aa665c65cce22390762fb`:
+
+| Lane | Observed result | First unresolved boundary |
+| --- | --- | --- |
+| K3s | Full forward/return checkpoints passed; migration step took 25m21s | Preserve this result; it does not verify other lanes |
+| Upstream Kubernetes | Hit the configured 60-minute migration-step limit; no user or agent canceled it | Replacement Cilium Pod appeared, then cleanup/readiness stopped progressing |
+| Docker five-node | Failed after forward migration at nodestore workload verification | PVs required worker-1 while the CSI driver ran on worker-2 |
+
+At `f1956b4e`, focused run
+[36670163295](https://github.com/centerionware/not-k8s/actions/runs/36670163295)
+passed nodemigrate crate tests. Integration validation
+[36670163242](https://github.com/centerionware/not-k8s/actions/runs/36670163242)
+passed shell/jq checks, but all cluster migration jobs were skipped because
+that was the push-triggered validation path. Focused `quick-check` run
+[36670741332](https://github.com/centerionware/not-k8s/actions/runs/36670741332)
+also passed for `nodemigrate`. Follow-up quick-check
+[36673247341](https://github.com/centerionware/not-k8s/actions/runs/36673247341)
+on `f8bfc025` passed both Nodelet test configurations (390 non-CRI and 1216
+CRI-enabled tests) but failed compiling `nodemigrate`; the exact failures and
+working-tree corrections are recorded in the bug tracker. Older entries below or in the status documents that call
+36664092690 active or describe its checks as pending are historical.
+
+### Cilium recovery and missing failure evidence
+
+The tested code placed the deadline check and sleep after an unconditional
+loop in `KubeApi::reset_cilium_agent_state`
+(`crates/nodemigrate/src/transfer.rs`). The job log contains the compiler's
+`unreachable statement` warning at 03:23:51Z. At 03:38:41Z migration logged
+replacement Pod `cilium-8368a` on `runnervm8df0l`, then made no further
+progress before the step cap. The artifact ends at that message.
+
+Head `f1956b4e` moves the deadline check and sleep inside the loop. This
+removes the infinite loop; it does not prove why the replacement failed to
+complete cleanup and readiness. The available upstream artifact lacks the
+replacement's init/status/CRI history at the failure interval. Do not infer a
+specific init, datapath, or Nodelet status bug from the missing evidence, and
+do not increase the workflow timeout as a substitute for fixing the state
+machine.
+
+Before another migration run:
+
+- Track the replacement Pod UID and exclude deleting Pods. Reset cleanup
+  success, Ready timing, failure-attempt tracking, and one-time logging when
+  the UID changes. Cleanup success from one Pod must never satisfy another
+  Pod's readiness; require the current Pod's cleanup success and uninterrupted
+  Ready interval together.
+- Check the deadline before every iteration and early continuation, including
+  the Ready-but-less-than-ten-seconds path. Bound each API request by the
+  remaining operation budget, do not declare success after the deadline, and
+  reserve bounded time to restore the temporary ConfigMap flag.
+- Log bounded state changes while waiting: replacement UID and
+  resourceVersion, deletion state, Pod conditions, each init container's
+  current/last state and restart count, and agent readiness. On deadline,
+  capture events and local CRI init/agent state and bounded logs before
+  rollback removes evidence. Avoid credentials and unbounded log dumps.
+- Audit when the cluster-wide `clean-cilium-state` flag is consumed by the
+  deployed Pod spec, including failed init retries and unrelated Cilium Pod
+  restarts. The code currently restores it when the init is first observed
+  Running or Terminated; do not assume a later retry performed cleanup just
+  because it exited zero. Preserve restoration on every exit and protect
+  against concurrent ConfigMap changes.
+- Add deterministic tests with a controlled clock/API sequence for no
+  replacement, an init that never starts, failed-init recovery, Ready
+  flapping, UID replacement during the ten-second interval, deadline expiry
+  during stabilization, and flag restoration on failure.
+
+On the next authorized runtime run, compare API status with CRI state before
+choosing another fix: if CRI finished an init but API status is stale, trace
+Nodelet reconciliation; if CRI never started it, follow that init's actual
+predecessor or error. Capture this evidence before rollback.
+
+### CSI placement and Nodelet recovery
+
+The Docker artifact for run 36664092690 shows CSI registration PASS followed
+by a StatefulSet rollout timeout. `csi-hostpathplugin-0` ran on worker-2 while
+`migration-stateful-0` and both fixture PVs required worker-1. Worker-1
+repeatedly reported no `hostpath.csi.k8s.io` driver; at 03:51:00Z it reported
+waiting for CSI attachment after 24 retries. A Ready driver on another node
+does not satisfy the workload's topology requirement.
+
+The current five-node fixture calls
+`pin_hostpath_driver_to_fixture_volumes` at source, nodestore, and returned
+checkpoints. Validate that behavior while preserving PV affinity, volume
+handles, catalog, payload, and strict parity. The current calls happen after
+driver installation and rollout waits; source pinning also happens after
+fixture workloads provision volumes. Establish the intended placement,
+durable catalog mount, and staging mount before the replacement plugin
+launches and before source CSI volumes are provisioned. Preserve the resulting
+topology in exported state. A checkpoint pin must not be the first time the
+target learns where node-local CSI data lives.
+
+Strengthen verification along the full dependency chain: PVC -> PV -> required
+node -> current Node-owned CSINode/driver entry -> Ready CSI plugin on that
+node. Verify read/write access through existing volume handles and original
+payload markers. Do not move or recreate claims to match a misplaced driver,
+or insert a static endpoint to hide registration failure.
+
+The source-confirmed Nodelet recovery gaps are:
+
+- `PodController::schedule_retry` in `crates/nodelet/src/pods.rs` stops
+  external-resource retries after 24 attempts. `CsiDrivers::register` in
+  `crates/nodelet/src/runtime/csi.rs` only updates the endpoint map; plugin
+  registration does not directly enqueue Pods waiting for that driver. The
+  run proves retry exhaustion, but does not prove late registration on
+  worker-1 caused this specific failure.
+- Feed driver availability into keyed Pod reconciliation and index current-UID
+  Pods waiting on that driver. Reconcile them when the dependency arrives.
+  Apply the same reasoning to attachment completion, using bounded/backed-off
+  recovery when no event is guaranteed. Coalesce retries and cancel old-UID
+  work on deletion or replacement. Check detached retry tasks for duplicate
+  work and ensure a retry cannot act on a same-name replacement.
+- In `crates/nodelet/src/plugin_registry.rs::register_one`, CSINode or Node
+  topology write failures are logged as retrying on the next sync, but the
+  function returns success and the socket becomes known, so later scans skip
+  it. Keep failed metadata reconciliation pending with bounded keyed retries;
+  do not require unplugging or restarting the driver to repair it.
+
+Add a real-driver regression that delays registration beyond the old retry
+budget, then allows registration without changing/recreating the Pod or
+restarting Nodelet; the existing PVC must mount and retain its payload. Also
+force the first CSINode write to fail while the socket remains present and
+prove metadata converges. Preserve shared plugin ownership.
+
+### Evidence and next validation
+
+Full logs are saved at `/tmp/nodemigrate-36664092690-kubernetes.log` and
+`/tmp/nodemigrate-36664092690-docker.log`. Downloaded artifacts are under
+`/tmp/nodemigrate-36664092690-artifacts/kubernetes/` and
+`/tmp/nodemigrate-36664092690-artifacts/docker/`; the Docker artifact line
+references above are from `nodemigrate-docker-preflight.log`. Run/job metadata
+from the audit is `/tmp/nodemigrate-review-36664092690.json`.
+
+Use the repository Rust, stabilization, and CI skills while implementing.
+Run focused CI for changed crates and script validation, then the dedicated
+migration workflow with `runtime_source=branch`, Cilium KPR, and five-node
+migration enabled under the existing authorization. Preserve the remaining
+KPR modes and replacement scenarios; one successful lane is not completion.
+No local Cargo builds/tests or local e2e. Update the living status documents
+with each lane's first failed transition, tested SHA, run ID, observed state,
+proposed cause, fix, focused result, and runtime result. Keep validation skips
+distinct from migration passes, and do not treat a bounded timeout as proof of
+successful Cilium recovery.

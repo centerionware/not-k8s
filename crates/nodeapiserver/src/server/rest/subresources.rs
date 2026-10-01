@@ -3,8 +3,198 @@ pub enum BindOutcome {
     Bound,
     UnknownResource,
     ObjectNotFound,
-    Conflict,
+    Conflict(BindConflict),
     Invalid(Vec<String>),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum BindConflict {
+    UidMismatch,
+    ResourceVersionMismatch { requested: String, current: i64 },
+    Deleting,
+    AlreadyBound { node_name: String },
+    StorageRetriesExhausted,
+}
+
+impl BindConflict {
+    pub fn message(&self) -> String {
+        match self {
+            Self::UidMismatch => "the Pod UID no longer matches the binding request".to_string(),
+            Self::ResourceVersionMismatch { requested, current } => format!(
+                "the Pod resourceVersion changed before binding (requested {requested}, current {current})"
+            ),
+            Self::Deleting => "the Pod is being deleted".to_string(),
+            Self::AlreadyBound { node_name } => {
+                format!("the Pod is already assigned to node {node_name}")
+            }
+            Self::StorageRetriesExhausted => {
+                "the Pod kept changing while binding; storage retries were exhausted".to_string()
+            }
+        }
+    }
+}
+
+enum BindPodAttempt {
+    Complete(BindOutcome),
+    StorageConflict,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum EvictOutcome {
+    Evicted,
+    NotFound,
+    UnknownResource,
+    Invalid(String),
+    Protected { budget: String, allowed: i64 },
+    Conflict,
+}
+
+/// Applies the policy/v1 Pod eviction contract against the persisted PDB
+/// status before requesting the normal graceful Pod deletion. The PDB
+/// controller owns status calculation; eviction consumes that status just
+/// as the upstream apiserver does.
+pub async fn evict_pod(
+    storage: &mut StorageClient,
+    namespace: &str,
+    name: &str,
+    eviction: &Value,
+) -> Result<EvictOutcome, Error> {
+    if eviction.get("apiVersion").and_then(Value::as_str) != Some("policy/v1")
+        || eviction.get("kind").and_then(Value::as_str) != Some("Eviction")
+    {
+        return Ok(EvictOutcome::Invalid(
+            "request body must be a policy/v1 Eviction".to_string(),
+        ));
+    }
+    if eviction.pointer("/metadata/name").and_then(Value::as_str) != Some(name)
+        || eviction
+            .pointer("/metadata/namespace")
+            .and_then(Value::as_str)
+            .is_some_and(|body_namespace| body_namespace != namespace)
+    {
+        return Ok(EvictOutcome::Invalid(
+            "Eviction metadata must identify the Pod in the request URL".to_string(),
+        ));
+    }
+
+    let pod = match get(storage, None, "", "v1", "pods", Some(namespace), name).await? {
+        GetOutcome::Found(pod) => pod,
+        GetOutcome::ObjectNotFound => return Ok(EvictOutcome::NotFound),
+        GetOutcome::UnknownResource => return Ok(EvictOutcome::UnknownResource),
+    };
+    let labels = pod.pointer("/metadata/labels").and_then(Value::as_object);
+    let budgets = list(
+        storage,
+        None,
+        "policy",
+        "v1",
+        "poddisruptionbudgets",
+        Some(namespace),
+        "",
+        "",
+        0,
+        "",
+    )
+    .await?;
+    let ListOutcome::Found(budgets) = budgets else {
+        return Ok(EvictOutcome::UnknownResource);
+    };
+    let Some(budgets) = budgets.get("items").and_then(Value::as_array) else {
+        return Err(Error::InvalidProtobufRequest(
+            "PodDisruptionBudget list has no items array".to_string(),
+        ));
+    };
+    for budget in budgets {
+        if !pdb_selects_pod(budget, labels) {
+            continue;
+        }
+        let allowed = pdb_disruptions_allowed(budget);
+        if allowed <= 0 {
+            let budget_name = budget
+                .pointer("/metadata/name")
+                .and_then(Value::as_str)
+                .unwrap_or("<unnamed>")
+                .to_string();
+            return Ok(EvictOutcome::Protected {
+                budget: budget_name,
+                allowed,
+            });
+        }
+    }
+
+    let grace = eviction
+        .pointer("/deleteOptions/gracePeriodSeconds")
+        .and_then(Value::as_i64);
+    match delete_with_options(
+        storage,
+        "",
+        "v1",
+        "pods",
+        Some(namespace),
+        name,
+        None,
+        grace,
+        false,
+    )
+    .await?
+    {
+        DeleteOutcome::Deleted(_) => Ok(EvictOutcome::Evicted),
+        DeleteOutcome::ObjectNotFound => Ok(EvictOutcome::NotFound),
+        DeleteOutcome::UnknownResource => Ok(EvictOutcome::UnknownResource),
+        DeleteOutcome::PreconditionFailed => Ok(EvictOutcome::Conflict),
+    }
+}
+
+fn pdb_disruptions_allowed(budget: &Value) -> i64 {
+    budget
+        .pointer("/status/disruptionsAllowed")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+}
+
+fn pdb_selects_pod(budget: &Value, pod_labels: Option<&serde_json::Map<String, Value>>) -> bool {
+    let Some(selector) = budget.pointer("/spec/selector") else {
+        return false;
+    };
+    let labels_match = selector
+        .get("matchLabels")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .all(|(key, expected)| {
+            expected.as_str().is_some_and(|expected| {
+                pod_labels
+                    .and_then(|labels| labels.get(key))
+                    .and_then(Value::as_str)
+                    == Some(expected)
+            })
+        });
+    labels_match
+        && selector
+            .get("matchExpressions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .all(|requirement| {
+                let key = requirement.get("key").and_then(Value::as_str).unwrap_or("");
+                let value = pod_labels
+                    .and_then(|labels| labels.get(key))
+                    .and_then(Value::as_str);
+                let values = requirement
+                    .get("values")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>();
+                match requirement.get("operator").and_then(Value::as_str) {
+                    Some("In") => value.is_some_and(|value| values.contains(&value)),
+                    Some("NotIn") => value.is_none_or(|value| !values.contains(&value)),
+                    Some("Exists") => value.is_some(),
+                    Some("DoesNotExist") => value.is_none(),
+                    _ => false,
+                }
+            })
 }
 
 /// Implements the core Pod `binding` subresource used by the scheduler.
@@ -19,8 +209,39 @@ pub async fn bind_pod(
     name: &str,
     body: &Value,
 ) -> Result<BindOutcome, Error> {
+    // A conflict from the write is only the internal MVCC compare-and-swap:
+    // caller UID/resourceVersion, deletion, and existing nodeName preconditions
+    // are checked against a fresh read inside `bind_pod_once`. Re-read and
+    // recompute the whole binding so concurrent status/metadata updates are
+    // preserved instead of returning a scheduler-visible 409.
+    for attempt in 0..8 {
+        match bind_pod_once(storage, namespace, name, body).await? {
+            BindPodAttempt::Complete(outcome) => return Ok(outcome),
+            BindPodAttempt::StorageConflict if attempt == 7 => {
+                tracing::warn!(
+                    namespace,
+                    name,
+                    attempts = attempt + 1,
+                    "Pod binding storage retries exhausted"
+                );
+                return Ok(BindOutcome::Conflict(BindConflict::StorageRetriesExhausted));
+            }
+            BindPodAttempt::StorageConflict => {
+                tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+            }
+        }
+    }
+    unreachable!("bounded Pod binding retry loop returns its last outcome")
+}
+
+async fn bind_pod_once(
+    storage: &mut StorageClient,
+    namespace: &str,
+    name: &str,
+    body: &Value,
+) -> Result<BindPodAttempt, Error> {
     let Some(resolved) = resolve_resource(storage, "", "v1", "pods").await? else {
-        return Ok(BindOutcome::UnknownResource);
+        return Ok(BindPodAttempt::Complete(BindOutcome::UnknownResource));
     };
     let key = keys::object_key("", "pods", Some(namespace), name);
     let existing_resp = storage
@@ -30,7 +251,7 @@ pub async fn bind_pod(
         })
         .await?;
     let Some(existing_kv) = existing_resp.kvs.into_iter().next() else {
-        return Ok(BindOutcome::ObjectNotFound);
+        return Ok(BindPodAttempt::Complete(BindOutcome::ObjectNotFound));
     };
     let existing_object =
         decrypt_and_decode(storage, "", "pods", &existing_kv.key, &existing_kv.value)?;
@@ -52,7 +273,7 @@ pub async fn bind_pod(
         .filter(|name| !name.is_empty())
     else {
         violations.push("target.name: Required value".to_string());
-        return Ok(BindOutcome::Invalid(violations));
+        return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(violations)));
     };
     if let Some(uid) = body.pointer("/metadata/uid").and_then(Value::as_str) {
         if existing_object
@@ -60,29 +281,43 @@ pub async fn bind_pod(
             .and_then(Value::as_str)
             != Some(uid)
         {
-            return Ok(BindOutcome::Conflict);
+            return Ok(BindPodAttempt::Complete(BindOutcome::Conflict(
+                BindConflict::UidMismatch,
+            )));
         }
     }
-    if let Some(resource_version) = body
-        .pointer("/metadata/resourceVersion")
-        .and_then(Value::as_str)
-    {
+    if let Some(resource_version) = binding_resource_version(body) {
         if resource_version.parse::<i64>().ok() != Some(existing_kv.mod_revision) {
-            return Ok(BindOutcome::Conflict);
+            return Ok(BindPodAttempt::Complete(BindOutcome::Conflict(
+                BindConflict::ResourceVersionMismatch {
+                    requested: resource_version.to_string(),
+                    current: existing_kv.mod_revision,
+                },
+            )));
         }
     }
     if existing_object
         .pointer("/metadata/deletionTimestamp")
         .is_some_and(|timestamp| !timestamp.is_null())
     {
-        return Ok(BindOutcome::Conflict);
+        return Ok(BindPodAttempt::Complete(BindOutcome::Conflict(
+            BindConflict::Deleting,
+        )));
     }
     if existing_object
         .pointer("/spec/nodeName")
         .and_then(Value::as_str)
         .is_some_and(|node| !node.is_empty())
     {
-        return Ok(BindOutcome::Conflict);
+        return Ok(BindPodAttempt::Complete(BindOutcome::Conflict(
+            BindConflict::AlreadyBound {
+                node_name: existing_object
+                    .pointer("/spec/nodeName")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            },
+        )));
     }
     if existing_object
         .pointer("/spec/schedulingGates")
@@ -92,34 +327,34 @@ pub async fn bind_pod(
         violations.push("spec.schedulingGates: Pod has scheduling gates".to_string());
     }
     if !violations.is_empty() {
-        return Ok(BindOutcome::Invalid(violations));
+        return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(violations)));
     }
 
     let mut object = existing_object.clone();
     let Some(object_map) = object.as_object_mut() else {
-        return Ok(BindOutcome::Invalid(vec![
+        return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
             "Pod must be an object".to_string(),
-        ]));
+        ])));
     };
     {
         let metadata = object_map.entry("metadata").or_insert_with(|| json!({}));
         let Some(metadata) = metadata.as_object_mut() else {
-            return Ok(BindOutcome::Invalid(vec![
+            return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
                 "metadata must be an object".to_string(),
-            ]));
+            ])));
         };
         for field in ["annotations", "labels"] {
             if let Some(values) = body.pointer(&format!("/metadata/{field}")) {
                 let Some(values) = values.as_object() else {
-                    return Ok(BindOutcome::Invalid(vec![format!(
-                        "metadata.{field} must be an object"
-                    )]));
+                    return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
+                        format!("metadata.{field} must be an object"),
+                    ])));
                 };
                 let destination = metadata.entry(field).or_insert_with(|| json!({}));
                 let Some(destination) = destination.as_object_mut() else {
-                    return Ok(BindOutcome::Invalid(vec![format!(
-                        "metadata.{field} must be an object"
-                    )]));
+                    return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
+                        format!("metadata.{field} must be an object"),
+                    ])));
                 };
                 for (key, value) in values {
                     destination.insert(key.clone(), value.clone());
@@ -129,9 +364,9 @@ pub async fn bind_pod(
     }
     let spec = object_map.entry("spec").or_insert_with(|| json!({}));
     let Some(spec) = spec.as_object_mut() else {
-        return Ok(BindOutcome::Invalid(vec![
+        return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
             "spec must be an object".to_string(),
-        ]));
+        ])));
     };
     spec.insert(
         "nodeName".to_string(),
@@ -140,15 +375,15 @@ pub async fn bind_pod(
 
     let status = object_map.entry("status").or_insert_with(|| json!({}));
     let Some(status) = status.as_object_mut() else {
-        return Ok(BindOutcome::Invalid(vec![
+        return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
             "status must be an object".to_string(),
-        ]));
+        ])));
     };
     let conditions = status.entry("conditions").or_insert_with(|| json!([]));
     let Some(conditions) = conditions.as_array_mut() else {
-        return Ok(BindOutcome::Invalid(vec![
+        return Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
             "status.conditions must be an array".to_string(),
-        ]));
+        ])));
     };
     let message = format!("Successfully assigned {namespace}/{name} to {target_name}");
     if let Some(condition) = conditions
@@ -192,17 +427,53 @@ pub async fn bind_pod(
     )
     .await?
     {
-        UpdateOutcome::Updated(_) => Ok(BindOutcome::Bound),
-        UpdateOutcome::Conflict => Ok(BindOutcome::Conflict),
-        UpdateOutcome::Invalid(violations) => Ok(BindOutcome::Invalid(violations)),
+        UpdateOutcome::Updated(_) => Ok(BindPodAttempt::Complete(BindOutcome::Bound)),
+        UpdateOutcome::Conflict => Ok(BindPodAttempt::StorageConflict),
+        UpdateOutcome::Invalid(violations) => {
+            Ok(BindPodAttempt::Complete(BindOutcome::Invalid(violations)))
+        }
         UpdateOutcome::UnknownResource | UpdateOutcome::ObjectNotFound => {
-            Ok(BindOutcome::ObjectNotFound)
+            Ok(BindPodAttempt::Complete(BindOutcome::ObjectNotFound))
         }
         UpdateOutcome::MissingResourceVersion
         | UpdateOutcome::NamespaceMismatch
-        | UpdateOutcome::UnsupportedPatchType => Ok(BindOutcome::Invalid(vec![
-            "binding could not be persisted".to_string(),
-        ])),
+        | UpdateOutcome::UnsupportedPatchType => {
+            Ok(BindPodAttempt::Complete(BindOutcome::Invalid(vec![
+                "binding could not be persisted".to_string(),
+            ])))
+        }
+    }
+}
+
+/// An empty resourceVersion on a Binding carries no optimistic-concurrency
+/// precondition. Schedulers commonly omit it; accepting an explicitly empty
+/// value preserves the same meaning while still enforcing non-empty versions.
+fn binding_resource_version(body: &Value) -> Option<&str> {
+    body.pointer("/metadata/resourceVersion")
+        .and_then(Value::as_str)
+        .filter(|resource_version| !resource_version.is_empty())
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::binding_resource_version;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn empty_or_absent_binding_resource_version_is_not_a_precondition() {
+        for body in [
+            json!({"metadata": {}}),
+            json!({"metadata": {"resourceVersion": ""}}),
+            json!({"metadata": {"resourceVersion": null}}),
+        ] {
+            assert_eq!(binding_resource_version(&body), None);
+        }
+    }
+
+    #[test]
+    fn non_empty_binding_resource_version_remains_a_precondition() {
+        let body: Value = json!({"metadata": {"resourceVersion": "42"}});
+        assert_eq!(binding_resource_version(&body), Some("42"));
     }
 }
 

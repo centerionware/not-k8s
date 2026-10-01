@@ -4,12 +4,86 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn csidriver_schema_preserves_prevent_pod_scheduling_if_missing() {
+        let schema = crate::codegen::openapi_schema_for_gvk("storage.k8s.io", "v1", "CSIDriver")
+            .expect("built-in CSIDriver schema");
+        let input = json!({
+            "apiVersion": "storage.k8s.io/v1",
+            "kind": "CSIDriver",
+            "metadata": {"name": "example.csi.test"},
+            "spec": {"preventPodSchedulingIfMissing": true}
+        });
+        let pruned = crate::apiextensions::schema_pruning::prune(&schema, &input);
+        assert!(pruned["spec"]["preventPodSchedulingIfMissing"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn statefulset_schema_preserves_hostpath_device_volume() {
+        let schema = crate::codegen::openapi_schema_for_gvk("apps", "v1", "StatefulSet")
+            .expect("built-in StatefulSet schema");
+        let input = json!({
+            "apiVersion": "apps/v1",
+            "kind": "StatefulSet",
+            "metadata": {"name": "csi-hostpathplugin", "namespace": "default"},
+            "spec": {
+                "selector": {"matchLabels": {"app": "csi-hostpathplugin"}},
+                "serviceName": "csi-hostpathplugin",
+                "template": {
+                    "metadata": {"labels": {"app": "csi-hostpathplugin"}},
+                    "spec": {
+                        "containers": [{"name": "hostpath", "image": "hostpath:test"}],
+                        "volumes": [{
+                            "name": "dev-dir",
+                            "hostPath": {"path": "/dev", "type": "Directory"}
+                        }]
+                    }
+                }
+            }
+        });
+
+        let pruned = crate::apiextensions::schema_pruning::prune(&schema, &input);
+        assert_eq!(
+            pruned["spec"]["template"]["spec"]["volumes"],
+            input["spec"]["template"]["spec"]["volumes"]
+        );
+    }
+
+    #[test]
     fn paginated_list_does_not_advance_its_snapshot_when_the_store_changes() {
         let snapshot = list_snapshot_revision(0, Some(7));
         let token = encode_continue_token(b"/registry/configmaps/default/a\0", snapshot);
         let (_, pinned) = decode_continue_token(&token).unwrap();
         assert_eq!(list_snapshot_revision(pinned, Some(9)), snapshot);
         assert_eq!(list_snapshot_revision(7, Some(10)), 7);
+    }
+
+    #[test]
+    fn pod_disruption_budget_selector_matches_labels_and_expressions() {
+        let budget = json!({
+            "spec": {"selector": {
+                "matchLabels": {"app": "web"},
+                "matchExpressions": [
+                    {"key": "tier", "operator": "In", "values": ["frontend", "edge"]},
+                    {"key": "maintenance", "operator": "DoesNotExist"}
+                ]
+            }}
+        });
+        let labels = json!({"app":"web", "tier":"frontend"});
+        assert!(pdb_selects_pod(&budget, labels.as_object()));
+
+        let wrong_app = json!({"app":"worker", "tier":"frontend"});
+        assert!(!pdb_selects_pod(&budget, wrong_app.as_object()));
+        let excluded = json!({"app":"web", "tier":"frontend", "maintenance":"true"});
+        assert!(!pdb_selects_pod(&budget, excluded.as_object()));
+        assert!(!pdb_selects_pod(&budget, None));
+    }
+
+    #[test]
+    fn pod_disruption_budget_without_available_disruptions_is_blocking() {
+        assert_eq!(pdb_disruptions_allowed(&json!({"status":{"disruptionsAllowed":0}})), 0);
+        assert_eq!(pdb_disruptions_allowed(&json!({"status":{"disruptionsAllowed":-1}})), -1);
+        assert_eq!(pdb_disruptions_allowed(&json!({"status":{"disruptionsAllowed":2}})), 2);
+        assert_eq!(pdb_disruptions_allowed(&json!({"status":{}})), 0);
     }
 
     #[test]
@@ -525,6 +599,13 @@ mod tests {
         let mut obj = json!({});
         set_metadata_field(&mut obj, "uid", Value::String("abc".to_string()));
         assert_eq!(obj["metadata"]["uid"], "abc");
+    }
+
+    #[test]
+    fn create_on_apply_stamps_server_owned_generation_one() {
+        let mut obj = json!({"metadata": {"name": "migration-stateful", "generation": 42}});
+        set_initial_generation(&mut obj);
+        assert_eq!(obj["metadata"]["generation"], 1);
     }
 
     #[test]

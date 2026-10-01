@@ -12,8 +12,9 @@
 //! Real upstream's own `functionCost` dispatches by `overloadID` — a
 //! type-specialized string cel-go's own type-checker assigns
 //! (`add_string` vs. `add_int64` vs. `add_list`, distinct overloads of
-//! the same `+` operator). **This crate's parser has no type checker at
-//! all**, confirmed directly in the vendored source: `a + b` compiles to
+//! the same `+` operator). **This crate's parser has no overload resolver**
+//! (although CRD rules have a schema-aware type checker), confirmed
+//! directly in the vendored source: `a + b` compiles to
 //! the identical `Call{func_name: "_+_"}` node regardless of whether `a`
 //! and `b` are numbers, strings, or lists — real upstream's own
 //! `overloads.AddString`/`AddList` (O(n)) vs. plain numeric `+` (O(1))
@@ -28,8 +29,8 @@
 //! string/list-heavy use of these operators is under-counted the same
 //! way any other not-yet-specially-costed function already is.
 //!
-//! What *is* real and type-unambiguous regardless of the missing type
-//! checker: a **named method call** (`str.matches(...)`,
+//! What *is* real and type-unambiguous regardless of the missing overload
+//! resolution: a **named method call** (`str.matches(...)`,
 //! `str.contains(...)`, `str.startsWith(...)`, `str.endsWith(...)`) —
 //! these function *names* only ever apply to a string target in real
 //! CEL's own standard library, so there's no ambiguity to resolve.
@@ -176,7 +177,9 @@ impl<'a> Coster<'a> {
         // See this module's own top-level doc comment: only the
         // single-variable form gets a real path, so only it can benefit
         // from a schema-driven size lookup inside the loop body.
-        let iter_path = comprehension_iter_path(comp, &self.scope);
+        let iter_path = self
+            .root
+            .and_then(|root| comprehension_iter_path(comp, &self.scope, root));
         if let Some(path) = iter_path.clone() {
             self.scope.push(&comp.iter_var, path);
         }
@@ -264,6 +267,23 @@ impl<'a> Coster<'a> {
         if let Some(size) = compute_expr_size(&expr.expr) {
             self.computed_sizes.insert(expr.id, size);
             return Some(size);
+        }
+        if let Expr::Call(call) = &expr.expr {
+            if call.func_name == "substring" {
+                if let Some(target) = &call.target {
+                    if let Some(source_size) = self.compute_size(target) {
+                        // A substring cannot be longer than its source. The
+                        // lower bound is zero because the requested offsets
+                        // may select an empty range.
+                        let size = SizeEstimate {
+                            min: 0,
+                            max: source_size.max,
+                        };
+                        self.computed_sizes.insert(expr.id, size);
+                        return Some(size);
+                    }
+                }
+            }
         }
         let root = self.root?;
         let path = resolve_path(expr, &self.scope)?;

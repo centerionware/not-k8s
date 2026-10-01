@@ -852,6 +852,12 @@ impl pb::cluster_server::Cluster for EtcdApi {
             .node
             .read(|s| s.member(req.id))?
             .ok_or_else(|| Status::not_found("etcdserver: member not found"))?;
+        if !existing.is_learner {
+            return Err(Status::failed_precondition(format!(
+                "etcdserver: member {} is not a learner",
+                req.id
+            )));
+        }
 
         let mut change = raft::eraftpb::ConfChangeSingle::default();
         change.change_type = raft::eraftpb::ConfChangeType::AddNode;
@@ -859,12 +865,26 @@ impl pb::cluster_server::Cluster for EtcdApi {
         let mut cc = raft::eraftpb::ConfChangeV2::default();
         cc.mut_changes().push(change);
 
-        raft.propose_conf_change(
-            cc,
-            &Command::SetMember(crate::command::Member { is_learner: false, ..existing }),
-        )
-        .await
-        .map_err(Status::from)?;
+        let promoted = Command::SetMember(crate::command::Member { is_learner: false, ..existing });
+        // Learner catch-up is asynchronous. The first promotion request can
+        // arrive just after the leader appends its latest entry, so recheck
+        // Raft progress for a bounded interval instead of making callers
+        // restart the whole node replacement. Each retry is a fresh check in
+        // the Raft owner task; no membership change is proposed until the
+        // learner is active and has matched the log tail.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            match raft.promote_learner(req.id, cc.clone(), &promoted).await {
+                Ok(_) => break,
+                Err(crate::error::Error::Unavailable(message))
+                    if message.starts_with("cannot promote learner ")
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Err(error) => return Err(Status::from(error)),
+            }
+        }
 
         let revision = self.current_revision()?;
         let members = self.node.read(|s| s.members())?;

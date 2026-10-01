@@ -49,14 +49,31 @@ use v1::{InfoRequest, RegistrationStatus};
 const CSI_PLUGIN_TYPE: &str = "CSIPlugin";
 const DEVICE_PLUGIN_TYPE: &str = "DevicePlugin";
 const DRA_PLUGIN_TYPE: &str = "DRAPlugin";
+const DEFAULT_REGISTRY_DIR: &str = "/var/lib/nodelet/plugins_registry";
+const KUBELET_REGISTRY_DIR: &str = "/var/lib/kubelet/plugins_registry";
+const CSI_METADATA_RETRY_INITIAL: Duration = Duration::from_secs(1);
+const CSI_METADATA_RETRY_MAX: Duration = Duration::from_secs(300);
 
 /// Which backend a registered socket belongs to — tracked alongside its
 /// name so a socket's disappearance can be routed to the right
 /// `deregister()`.
+#[derive(Clone)]
 enum PluginKind {
     Csi,
     Device,
     Dra,
+}
+
+struct RegisteredPlugin {
+    kind: PluginKind,
+    name: String,
+    csi_metadata_pending: bool,
+    metadata_retry_at: Option<tokio::time::Instant>,
+    metadata_retry_delay: Duration,
+}
+
+fn next_metadata_retry_delay(current: Duration) -> Duration {
+    current.saturating_mul(2).min(CSI_METADATA_RETRY_MAX)
 }
 
 /// Dial a plugin's registration socket — same connector shape as
@@ -92,6 +109,30 @@ fn scan_registry_dir(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+fn registry_dirs(configured: &str) -> Vec<PathBuf> {
+    let configured = PathBuf::from(configured);
+    let mut dirs = vec![configured.clone()];
+    // CSI, device-plugin, and DRA registrars installed by the source kubelet may
+    // keep publishing into kubelet's standard directory after nodemigrate
+    // replaces kubelet with nodelet. Continue watching that directory when
+    // nodelet is using its default registry location; explicit overrides
+    // remain authoritative.
+    if configured == Path::new(DEFAULT_REGISTRY_DIR) {
+        let kubelet = PathBuf::from(KUBELET_REGISTRY_DIR);
+        if !dirs.contains(&kubelet) {
+            dirs.push(kubelet);
+        }
+    }
+    dirs
+}
+
+fn scan_registry_dirs(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut sockets: Vec<_> = dirs.iter().flat_map(|dir| scan_registry_dir(dir)).collect();
+    sockets.sort();
+    sockets.dedup();
+    sockets
+}
+
 /// Dial `socket_path`, exchange `GetInfo`/`NotifyRegistrationStatus`, and
 /// register the driver with `csi` if it's a CSI plugin with a usable name
 /// and endpoint. Returns the driver name on success (so the caller can
@@ -105,7 +146,7 @@ async fn register_one(
     socket_path: &Path,
     kube_client: &kube::Client,
     node_name: &str,
-) -> Result<Option<(PluginKind, String)>> {
+) -> Result<Option<(PluginKind, String, bool)>> {
     let channel = connect_uds(socket_path).await?;
     let mut client = RegistrationClient::new(channel);
     let info = client.get_info(InfoRequest {}).await.context("GetInfo")?.into_inner();
@@ -151,27 +192,47 @@ async fn register_one(
     // broken is a real problem, but it must never take down the
     // registration handshake itself. Logged loudly and retried on the
     // next sync tick rather than failing register_one().
-    if matches!(kind, PluginKind::Csi) {
-        match csi.node_info(&info.name).await {
-            Ok(node_info) => {
-                let segments = node_info.accessible_topology.map(|t| t.segments).unwrap_or_default();
-                let topology_keys = segments.keys().cloned().collect();
-                if let Err(e) = crate::csi_node::upsert(kube_client, node_name, &info.name, &node_info.node_id, topology_keys).await {
-                    warn!(name = %info.name, error = ?e, "plugin registry: failed to reconcile CSINode; topology-aware provisioning may not work for this driver until the next sync");
-                }
-                // The other half: csi-provisioner (Topology=true) reads
-                // topologyKeys off CSINode but the segment *values* off the
-                // Node's own labels — see apply_topology_labels()'s doc
-                // comment for the full story.
-                let segments: std::collections::BTreeMap<String, String> = segments.into_iter().collect();
-                if let Err(e) = crate::node::apply_topology_labels(kube_client, node_name, &segments).await {
-                    warn!(name = %info.name, error = ?e, "plugin registry: failed to apply topology labels to Node; topology-aware provisioning may not work for this driver until the next sync");
-                }
-            }
-            Err(e) => warn!(name = %info.name, error = ?e, "plugin registry: NodeGetInfo failed; CSINode not reconciled for this driver"),
+    let csi_metadata_pending = matches!(&kind, PluginKind::Csi)
+        && !reconcile_csi_metadata(csi, kube_client, node_name, &info.name).await;
+    Ok(Some((kind, info.name, csi_metadata_pending)))
+}
+
+async fn reconcile_csi_metadata(
+    csi: &Arc<CsiDrivers>,
+    kube_client: &kube::Client,
+    node_name: &str,
+    driver: &str,
+) -> bool {
+    let node_info = match csi.node_info(driver).await {
+        Ok(info) => info,
+        Err(error) => {
+            warn!(name = driver, error = ?error, "plugin registry: NodeGetInfo failed; CSINode reconciliation remains pending");
+            return false;
         }
+    };
+    let segments = node_info.accessible_topology.map(|topology| topology.segments).unwrap_or_default();
+    let topology_keys = segments.keys().cloned().collect();
+    let mut complete = true;
+    if let Err(error) = crate::csi_node::upsert(
+        kube_client,
+        node_name,
+        driver,
+        &node_info.node_id,
+        topology_keys,
+    )
+    .await
+    {
+        complete = false;
+        warn!(name = driver, error = ?error, "plugin registry: CSINode reconciliation failed; keeping it pending");
     }
-    Ok(Some((kind, info.name)))
+    // csi-provisioner (Topology=true) reads topologyKeys off CSINode but
+    // segment values off the Node itself.
+    let segments: std::collections::BTreeMap<String, String> = segments.into_iter().collect();
+    if let Err(error) = crate::node::apply_topology_labels(kube_client, node_name, &segments).await {
+        complete = false;
+        warn!(name = driver, error = ?error, "plugin registry: Node topology reconciliation failed; keeping it pending");
+    }
+    complete
 }
 
 /// Watch `registry_path` forever, registering/deregistering CSI drivers
@@ -191,45 +252,64 @@ pub async fn run(
     kube_client: kube::Client,
     node_name: String,
 ) {
-    let dir = PathBuf::from(&registry_path);
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        warn!(path = %dir.display(), error = ?e, "plugin registry: couldn't create the registry directory; dynamic plugin discovery disabled for this run");
+    let dirs = registry_dirs(&registry_path);
+    if let Err(e) = std::fs::create_dir_all(&dirs[0]) {
+        warn!(path = %dirs[0].display(), error = ?e, "plugin registry: couldn't create the registry directory; dynamic plugin discovery disabled for this run");
         return;
     }
-    info!(path = %dir.display(), "plugin registry: watching for CSI driver / device plugin registrations");
+    info!(paths = ?dirs, "plugin registry: watching for CSI driver / device plugin registrations");
 
     // socket path -> (which backend, plugin name), so a socket's
     // disappearance can be routed to the right deregister() without
     // re-dialing it.
-    let mut known: HashMap<PathBuf, (PluginKind, String)> = HashMap::new();
+    let mut known: HashMap<PathBuf, RegisteredPlugin> = HashMap::new();
 
     loop {
-        let present: HashSet<PathBuf> = scan_registry_dir(&dir).into_iter().collect();
+        let present: HashSet<PathBuf> = scan_registry_dirs(&dirs).into_iter().collect();
 
         let gone: Vec<PathBuf> = known.keys().filter(|p| !present.contains(*p)).cloned().collect();
         for path in gone {
-            if let Some((kind, name)) = known.remove(&path) {
-                info!(name, path = %path.display(), "plugin registry: socket disappeared; deregistering");
-                match kind {
+            if let Some(registered) = known.remove(&path) {
+                info!(name = %registered.name, path = %path.display(), "plugin registry: socket disappeared; deregistering");
+                match registered.kind {
                     PluginKind::Csi => {
-                        csi.deregister(&name);
-                        if let Err(e) = crate::csi_node::remove(&kube_client, &node_name, &name).await {
-                            warn!(name, error = ?e, "plugin registry: failed to remove CSINode entry for a deregistered driver");
+                        csi.deregister(&registered.name);
+                        if let Err(e) = crate::csi_node::remove(&kube_client, &node_name, &registered.name).await {
+                            warn!(name = %registered.name, error = ?e, "plugin registry: failed to remove CSINode entry for a deregistered driver");
                         }
                     }
-                    PluginKind::Device => devices.deregister(&name),
-                    PluginKind::Dra => dra.deregister(&name),
+                    PluginKind::Device => devices.deregister(&registered.name),
+                    PluginKind::Dra => dra.deregister(&registered.name),
                 }
             }
         }
 
         for path in &present {
-            if known.contains_key(path) {
+            if let Some(registered) = known.get_mut(path) {
+                if registered.csi_metadata_pending
+                    && registered.metadata_retry_at.is_some_and(|at| at <= tokio::time::Instant::now())
+                {
+                    registered.csi_metadata_pending = !reconcile_csi_metadata(&csi, &kube_client, &node_name, &registered.name).await;
+                    if registered.csi_metadata_pending {
+                        registered.metadata_retry_delay = next_metadata_retry_delay(registered.metadata_retry_delay);
+                        registered.metadata_retry_at = Some(tokio::time::Instant::now() + registered.metadata_retry_delay);
+                    } else {
+                        registered.metadata_retry_at = None;
+                    }
+                }
                 continue;
             }
             match register_one(&csi, &devices, &dra, path, &kube_client, &node_name).await {
-                Ok(Some(entry)) => {
-                    known.insert(path.clone(), entry);
+                Ok(Some((kind, name, csi_metadata_pending))) => {
+                    let metadata_retry_at = csi_metadata_pending
+                        .then(|| tokio::time::Instant::now() + CSI_METADATA_RETRY_INITIAL);
+                    known.insert(path.clone(), RegisteredPlugin {
+                        kind,
+                        name,
+                        csi_metadata_pending,
+                        metadata_retry_at,
+                        metadata_retry_delay: CSI_METADATA_RETRY_INITIAL,
+                    });
                 }
                 Ok(None) => {} // logged inside register_one — not a supported plugin type
                 Err(e) => warn!(path = %path.display(), error = ?e, "plugin registry: registration attempt failed"),

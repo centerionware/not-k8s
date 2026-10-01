@@ -51,7 +51,7 @@ jobs:
           COMPONENTS_INPUT: ${{ inputs.components }}
         run: |
           set -e
-          ALL="nodelet nodeproxy nodestore nodescheduler nodecontroller node-leaderelection nodeapiserver nodebootstrap notk8s"
+          ALL="nodelet nodeproxy nodestore nodescheduler nodecontroller node-leaderelection nodeapiserver nodebootstrap notk8s nodemigrate"
           if [[ -n "$COMPONENTS_INPUT" ]]; then
             SELECTED="$(echo "$COMPONENTS_INPUT" | tr ',' ' ')"
           else
@@ -68,7 +68,7 @@ jobs:
             sudo -E env "PATH=$PATH" cargo test -p nodelet
             sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
           fi
-          for crate in nodeproxy nodestore nodescheduler nodecontroller node-leaderelection nodeapiserver nodebootstrap notk8s; do
+          for crate in nodeproxy nodestore nodescheduler nodecontroller node-leaderelection nodeapiserver nodebootstrap notk8s nodemigrate; do
             want "$crate" || continue
             if [[ -d "crates/$crate" ]]; then
               sudo -E env "PATH=$PATH" cargo test -p "$crate"

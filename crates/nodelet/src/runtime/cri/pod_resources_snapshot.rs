@@ -14,7 +14,7 @@ impl CriRuntime {
             let Ok(containers) = self.list_pod_containers(&sandbox_id).await else { continue };
             let mut entries = Vec::with_capacity(containers.len());
             for c in containers {
-                let Some(container_name) = c.labels.get(CTR_NAME_LABEL) else { continue };
+                let Some(container_name) = container_name_from_labels(&c) else { continue };
                 let key = restart_count_key(&sandbox_id, container_name);
                 let cpu_ids = self
                     .cpu_manager
@@ -24,7 +24,7 @@ impl CriRuntime {
                     .unwrap_or_default();
                 let memory = self.memory_manager.as_ref().and_then(|m| m.assigned(&key)).map(|entry| vec![entry]).unwrap_or_default();
                 let devices = self.device_allocations.lock().unwrap().get(&key).cloned().unwrap_or_default();
-                entries.push(crate::runtime::ContainerResourcesEntry { name: container_name.clone(), cpu_ids, devices, memory });
+                entries.push(crate::runtime::ContainerResourcesEntry { name: container_name.to_string(), cpu_ids, devices, memory });
             }
             out.push(crate::runtime::PodResourcesEntry { namespace, name, containers: entries });
         }

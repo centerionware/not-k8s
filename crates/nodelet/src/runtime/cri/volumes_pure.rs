@@ -385,13 +385,17 @@ pub(crate) fn build_mounts(
     envs: &[KeyValue],
     handler_supports_recursive_ro: bool,
 ) -> Vec<Mount> {
-    volume_mounts
+    let mut mounts = volume_mounts
         .iter()
         .filter_map(|vm| {
+            // Kubernetes treats an empty subPath/subPathExpr as mounting
+            // the volume root. Joining it to a file HostPath would instead
+            // produce a trailing slash and make CRI treat the file as a dir.
             let sub_path = match &vm.sub_path_expr {
                 Some(expr) => Some(expand_sub_path_expr(expr, envs)?),
                 None => vm.sub_path.clone(),
-            };
+            }
+            .filter(|sub_path| !sub_path.is_empty());
             let propagation = mount_propagation_cri(vm.mount_propagation.as_deref());
             match volumes.get(&vm.name)? {
                 ResolvedVolume::HostPath(host_dir) => {
@@ -436,7 +440,74 @@ pub(crate) fn build_mounts(
                 ResolvedVolume::Invalid(_) => None,
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    // Kubernetes does not assign meaning to volumeMount list order. Keep
+    // ancestors before descendants for deterministic CRI requests; nested
+    // targets beneath read-only managed volumes are prepared separately.
+    mounts.sort_by_key(|mount| std::path::Path::new(&mount.container_path).components().count());
+    mounts
+}
+
+/// Prepare nested bind-mount targets inside read-only volumes materialized
+/// under this Pod's private volume directory. OCI runtimes apply mounts in
+/// order; when a read-only parent volume is mounted first, a child target
+/// missing from that parent source cannot be created inside the container.
+/// Only mutate nodelet-owned volume sources, never arbitrary hostPath or CSI
+/// storage contents.
+pub(crate) fn prepare_managed_nested_mountpoints(mounts: &[Mount], managed_volume_root: &std::path::Path) -> anyhow::Result<()> {
+    use std::path::Component;
+
+    let has_nested_readonly_parent = mounts.iter().any(|parent| {
+        parent.readonly
+            && mounts.iter().any(|child| {
+                let parent_path = std::path::Path::new(&parent.container_path);
+                let child_path = std::path::Path::new(&child.container_path);
+                child_path.strip_prefix(parent_path).is_ok_and(|relative| !relative.as_os_str().is_empty())
+            })
+    });
+    if !has_nested_readonly_parent {
+        return Ok(());
+    }
+
+    let managed_root = std::fs::canonicalize(managed_volume_root).context("resolving nodelet-managed Pod volume root")?;
+    for parent in mounts.iter().filter(|mount| mount.readonly) {
+        let parent_container_path = std::path::Path::new(&parent.container_path);
+        let parent_source_path = std::path::Path::new(&parent.host_path);
+        if !parent_source_path.starts_with(managed_volume_root) {
+            continue;
+        }
+        let parent_source = std::fs::canonicalize(parent_source_path).context("resolving read-only parent volume source")?;
+        if !parent_source.starts_with(&managed_root) || !parent_source.is_dir() { continue; }
+
+        for child in mounts {
+            let child_container_path = std::path::Path::new(&child.container_path);
+            let Ok(relative) = child_container_path.strip_prefix(parent_container_path) else { continue };
+            if relative.as_os_str().is_empty() || !relative.components().all(|component| matches!(component, Component::Normal(_))) {
+                continue;
+            }
+            if !std::fs::metadata(&child.host_path).is_ok_and(|metadata| metadata.is_dir()) {
+                continue;
+            }
+
+            let mut target = parent_source.clone();
+            for component in relative.components() {
+                let Component::Normal(name) = component else { continue };
+                target.push(name);
+                match std::fs::symlink_metadata(&target) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        anyhow::bail!("nested volume mount target {} crosses a symlink in managed parent volume {}", relative.display(), parent_source.display());
+                    }
+                    Ok(metadata) if metadata.is_dir() => {}
+                    Ok(_) => anyhow::bail!("nested volume mount target {} conflicts with a file in managed parent volume {}", relative.display(), parent_source.display()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        std::fs::create_dir(&target).with_context(|| format!("creating nested mountpoint {} in nodelet-managed volume", target.display()))?;
+                    }
+                    Err(error) => return Err(error).with_context(|| format!("checking nested mountpoint {}", target.display())),
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Build CRI `Device` entries for a container's `volumeDevices` (round
@@ -562,6 +633,16 @@ pub(crate) fn is_memory_medium_empty_dir(source: &k8s_openapi::api::core::v1::Em
     source.medium.as_deref() == Some("Memory")
 }
 
+/// Prepare the host-backed directory for an `emptyDir` mount. Kubelet gives
+/// emptyDir roots mode 0777 so containers running as a non-root image user
+/// can write to them (for example, metrics-server's `/tmp` volume).
+pub(crate) fn prepare_empty_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::create_dir_all(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o777))
+}
+
 
 /// Build `mount -t tmpfs [-o size=<bytes>] tmpfs <path>`'s arguments —
 /// pure so the command construction is unit-testable without actually
@@ -601,6 +682,34 @@ pub(crate) fn mount_tmpfs_empty_dir(dir: &std::path::Path, size_limit_bytes: Opt
         anyhow::bail!("mount -t tmpfs exited with {status}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod empty_dir_tests {
+    use super::prepare_empty_dir;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn empty_dir_root_is_world_writable_like_kubelet() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("nodelet-emptydir-mode-{unique}"));
+        std::fs::create_dir(&path).expect("create test directory");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .expect("make the existing test directory restrictive");
+
+        prepare_empty_dir(&path).expect("prepare the emptyDir root");
+
+        let mode = std::fs::metadata(&path)
+            .expect("read the emptyDir root metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        std::fs::remove_dir(&path).expect("remove test directory");
+        assert_eq!(mode, 0o777);
+    }
 }
 
 

@@ -211,6 +211,102 @@ async fn listener_serves_a_real_discovery_and_crud_round_trip() {
             })
         }));
 
+    // CRDs carry JSONSchemaProps.maximum as a protobuf double. Exercise the
+    // complete HTTP create/storage/read path with a bound near i64::MAX: the
+    // adjacent f64 values differ, so comparing only rounded decimal output
+    // could miss a precision change in the live API path used by nodemigrate.
+    let crd_group = format!("listener-precision-{}.example.com", std::process::id());
+    let crd_name = format!("precisionobjects.{crd_group}");
+    let crd_path = format!("{endpoint}/apis/apiextensions.k8s.io/v1/customresourcedefinitions");
+    let expected_maximum = 9_223_372_036_854_775_000_i64 as f64;
+    let crd = client
+        .post(&crd_path)
+        .header("content-type", "application/json")
+        .json(&json!({
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": {"name": crd_name},
+            "spec": {
+                "group": crd_group,
+                "scope": "Namespaced",
+                "names": {
+                    "plural": "precisionobjects",
+                    "singular": "precisionobject",
+                    "kind": "PrecisionObject",
+                    "listKind": "PrecisionObjectList"
+                },
+                "versions": [{
+                    "name": "v1",
+                    "served": true,
+                    "storage": true,
+                    "schema": {"openAPIV3Schema": {
+                        "type": "object",
+                        "properties": {"spec": {"type": "object", "properties": {
+                            "priority": {
+                                "type": "integer",
+                                "maximum": 9_223_372_036_854_775_000_i64
+                            }
+                        }}}
+                    }}
+                }]
+            }
+        }))
+        .send()
+        .await
+        .expect("creating a precision-bound CRD through the listener")
+        .error_for_status()
+        .expect("precision-bound CRD create should succeed");
+    let created_crd: serde_json::Value = crd
+        .json()
+        .await
+        .expect("decoding the created precision-bound CRD");
+    let returned_crd: serde_json::Value = client
+        .get(format!("{crd_path}/{crd_name}"))
+        .send()
+        .await
+        .expect("getting the precision-bound CRD through the listener")
+        .error_for_status()
+        .expect("precision-bound CRD GET should succeed")
+        .json()
+        .await
+        .expect("decoding precision-bound CRD GET");
+    let create_revision = created_crd
+        .pointer("/metadata/resourceVersion")
+        .and_then(serde_json::Value::as_str)
+        .expect("created CRD should have a resourceVersion");
+    // Supplying a resourceVersion bypasses the watch cache and reads the
+    // same persisted snapshot directly. Comparing both paths distinguishes
+    // a storage/protobuf precision issue from a cache decode issue.
+    let persisted_crd: serde_json::Value = client
+        .get(format!(
+            "{crd_path}/{crd_name}?resourceVersion={create_revision}"
+        ))
+        .send()
+        .await
+        .expect("getting the precision-bound CRD at its create revision")
+        .error_for_status()
+        .expect("precision-bound CRD consistent GET should succeed")
+        .json()
+        .await
+        .expect("decoding precision-bound CRD consistent GET");
+    let maximum_pointer =
+        "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/priority/maximum";
+    for (stage, object) in [
+        ("create", &created_crd),
+        ("persisted read", &persisted_crd),
+        ("cached read", &returned_crd),
+    ] {
+        let maximum = object
+            .pointer(maximum_pointer)
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or_else(|| panic!("{stage} response lost CRD maximum: {object}"));
+        assert_eq!(
+            maximum.to_bits(),
+            expected_maximum.to_bits(),
+            "{stage} response changed CRD maximum to an adjacent f64 value"
+        );
+    }
+
     let name = format!("listener-rig-{}", std::process::id());
     let created = client
         .post(format!("{endpoint}/api/v1/namespaces"))

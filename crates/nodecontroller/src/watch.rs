@@ -22,7 +22,7 @@ use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet}
 use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::certificates::v1::CertificateSigningRequest;
 use k8s_openapi::api::coordination::v1::Lease;
-use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, ResourceQuota, Service, ServiceAccount};
+use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Node, PersistentVolume, PersistentVolumeClaim, Pod, ReplicationController, ResourceQuota, Service, ServiceAccount};
 use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use k8s_openapi::api::storage::v1::{StorageClass, VolumeAttachment};
 use kube::runtime::utils::{Backoff, WatchStreamExt};
@@ -447,6 +447,8 @@ shared_watch!(watch_resource_quotas, SHARED_RESOURCE_QUOTAS, ResourceQuota);
 
 shared_watch!(watch_replica_sets, SHARED_REPLICA_SETS, ReplicaSet);
 
+shared_watch!(watch_replication_controllers, SHARED_REPLICATION_CONTROLLERS, ReplicationController);
+
 shared_watch!(watch_deployments, SHARED_DEPLOYMENTS, Deployment);
 
 shared_watch!(watch_daemon_sets, SHARED_DAEMON_SETS, DaemonSet);
@@ -687,6 +689,7 @@ pub fn watch_dynamic_resource(
         ("v1", "Pod") => dynamic_shared!(watch_pods),
         ("v1", "PersistentVolumeClaim") => dynamic_shared!(watch_persistent_volume_claims),
         ("v1", "ResourceQuota") => dynamic_shared!(watch_resource_quotas),
+        ("v1", "ReplicationController") => dynamic_shared!(watch_replication_controllers),
         ("v1", "Service") => dynamic_shared!(watch_services),
         ("apps/v1", "DaemonSet") => dynamic_shared!(watch_daemon_sets),
         ("apps/v1", "Deployment") => dynamic_shared!(watch_deployments),
