@@ -215,6 +215,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_nodeapiserver_hpa_scale_to_zero_validation",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_nodeapiserver_rejects_invalid_metadata_keys",
         group: TestGroup::General,
     },
@@ -1874,6 +1878,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_nodeapiserver_applies_core_defaults" => bootstrap::nodeapiserver_applies_core_defaults(context).await,
         "test_nodeapiserver_rejects_invalid_builtin_schema_constraints" => {
             bootstrap::nodeapiserver_rejects_invalid_builtin_schema_constraints(context).await
+        },
+        "test_nodeapiserver_hpa_scale_to_zero_validation" => {
+            bootstrap::nodeapiserver_hpa_scale_to_zero_validation(context).await
         },
         "test_nodeapiserver_rejects_invalid_metadata_keys" => {
             bootstrap::nodeapiserver_rejects_invalid_metadata_keys(context).await

@@ -143,15 +143,40 @@ fn validate_builtin_semantics(group: &str, _version: &str, kind: &str, value: &V
         let Some(spec) = value.get("spec").and_then(Value::as_object) else {
             return Vec::new();
         };
-        let Some(max_replicas) = spec.get("maxReplicas").and_then(Value::as_i64) else {
-            return Vec::new();
-        };
-        let Some(min_replicas) = spec.get("minReplicas").and_then(Value::as_i64) else {
-            return Vec::new();
-        };
-        if max_replicas < min_replicas {
-            return vec!["spec.maxReplicas: must be greater than or equal to `minReplicas`".to_string()];
+        let mut violations = Vec::new();
+        let min_replicas = spec.get("minReplicas").and_then(Value::as_i64).unwrap_or(1);
+        let max_replicas = spec.get("maxReplicas").and_then(Value::as_i64);
+        if min_replicas < 0 {
+            violations.push("spec.minReplicas: must be greater than or equal to 0".to_string());
         }
+        if max_replicas.is_some_and(|max| max < 1) {
+            violations.push("spec.maxReplicas: must be greater than 0".to_string());
+        }
+        if max_replicas.is_some_and(|max| max < min_replicas) {
+            violations.push(
+                "spec.maxReplicas: must be greater than or equal to `minReplicas`".to_string(),
+            );
+        }
+        if min_replicas == 0 {
+            let has_scale_to_zero_metric = spec
+                .get("metrics")
+                .and_then(Value::as_array)
+                .is_some_and(|metrics| {
+                    metrics.iter().any(|metric| {
+                        matches!(
+                            metric.get("type").and_then(Value::as_str),
+                            Some("Object" | "External")
+                        )
+                    })
+                });
+            if !has_scale_to_zero_metric {
+                violations.push(
+                    "spec.minReplicas: 0 requires at least one Object or External metric"
+                        .to_string(),
+                );
+            }
+        }
+        return violations;
     }
 
     if group == "apps"
@@ -479,6 +504,65 @@ mod tests {
             &json!({"spec": {"minReplicas": 1, "maxReplicas": 2}}),
         )
         .is_empty());
+    }
+
+    #[test]
+    fn hpa_scale_to_zero_requires_object_or_external_metric() {
+        let hpa = |metrics| {
+            json!({"spec": {"minReplicas": 0, "maxReplicas": 5, "metrics": metrics}})
+        };
+        let external = hpa(json!([{"type": "External", "external": {}}]));
+        assert!(validate_builtin_semantics(
+            "autoscaling",
+            "v2",
+            "HorizontalPodAutoscaler",
+            &external
+        )
+        .is_empty());
+
+        let object = hpa(json!([{"type": "Object", "object": {}}]));
+        assert!(validate_builtin_semantics(
+            "autoscaling",
+            "v2",
+            "HorizontalPodAutoscaler",
+            &object
+        )
+        .is_empty());
+
+        for invalid_metrics in [
+            json!([{"type": "Resource", "resource": {}}]),
+            json!([{"type": "Pods", "pods": {}}]),
+            json!([{"type": "ContainerResource", "containerResource": {}}]),
+            json!([]),
+            Value::Null,
+        ] {
+            let violations = validate_builtin_semantics(
+                "autoscaling",
+                "v2",
+                "HorizontalPodAutoscaler",
+                &hpa(invalid_metrics),
+            );
+            assert!(violations.iter().any(|violation| violation.contains("Object or External")));
+        }
+    }
+
+    #[test]
+    fn hpa_rejects_negative_minimum_and_zero_maximum() {
+        let negative_min = validate_builtin_semantics(
+            "autoscaling",
+            "v2",
+            "HorizontalPodAutoscaler",
+            &json!({"spec": {"minReplicas": -1, "maxReplicas": 1}}),
+        );
+        assert!(negative_min.iter().any(|violation| violation.contains("minReplicas")));
+
+        let zero_max = validate_builtin_semantics(
+            "autoscaling",
+            "v2",
+            "HorizontalPodAutoscaler",
+            &json!({"spec": {"minReplicas": 0, "maxReplicas": 0, "metrics": [{"type": "External"}]}}),
+        );
+        assert!(zero_max.iter().any(|violation| violation.contains("maxReplicas")));
     }
 
     #[test]

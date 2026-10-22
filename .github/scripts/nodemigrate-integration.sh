@@ -2532,6 +2532,56 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  name: migration-hpa-target
+  namespace: migration-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: migration-hpa-target
+  template:
+    metadata:
+      labels:
+        app: migration-hpa-target
+    spec:
+      containers:
+      - name: cpu-load
+        image: busybox:1.36.1
+        command: ["sh", "-c", "exec yes >/dev/null"]
+        resources:
+          requests:
+            cpu: 100m
+            memory: 1Mi
+          limits:
+            cpu: 100m
+            memory: 32Mi
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: migration-cpu
+  namespace: migration-apps
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: migration-hpa-target
+  minReplicas: 1
+  maxReplicas: 3
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 0
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
   name: migration-nginx
   namespace: migration-apps
 spec:
@@ -3491,6 +3541,48 @@ verify_api_ca_continuity() {
     echo "PASS source API CA continuity at stage=$stage"
 }
 
+wait_for_hpa_replicas() {
+    local desired="$1"
+    local stage="$2"
+    local hpa_json
+    for _ in $(seq 1 120); do
+        if hpa_json="$(kubectl get hpa migration-cpu -n migration-apps -o json 2>/dev/null)" \
+            && jq -e --argjson desired "$desired" '
+              .status.desiredReplicas == $desired and
+              any(.status.conditions[]?; .type == "ScalingActive" and .status == "True") and
+              .spec.metrics[0].resource.target.averageUtilization == (if $desired == 3 then 50 else 1000 end)
+            ' >/dev/null <<<"$hpa_json" \
+            && kubectl get deployment migration-hpa-target -n migration-apps -o json | jq -e \
+              --argjson desired "$desired" \
+              '.spec.replicas == $desired and (.status.readyReplicas // 0) == $desired' >/dev/null; then
+            echo "PASS HPA target has $desired Ready replicas at stage=$stage"
+            return 0
+        fi
+        sleep 2
+    done
+    echo "HPA did not converge to $desired replicas at stage=$stage" >&2
+    kubectl get hpa migration-cpu -n migration-apps -o yaml >&2 || true
+    kubectl get deployment migration-hpa-target -n migration-apps -o yaml >&2 || true
+    kubectl get pods -n migration-apps -l app=migration-hpa-target -o wide >&2 || true
+    kubectl get --raw /apis/metrics.k8s.io/v1beta1/namespaces/migration-apps/pods >&2 || true
+    return 1
+}
+
+verify_hpa_scaling() {
+    local stage="$1"
+    kubectl wait --for=condition=Available deployment/metrics-server -n kube-system --timeout=5m
+    kubectl get --raw /apis/metrics.k8s.io/v1beta1/namespaces/migration-apps/pods >/dev/null
+    kubectl patch hpa migration-cpu -n migration-apps --type=merge \
+        -p '{"spec":{"metrics":[{"type":"Resource","resource":{"name":"cpu","target":{"type":"Utilization","averageUtilization":50}}}]}}'
+    wait_for_hpa_replicas 3 "$stage scale-up"
+    kubectl patch hpa migration-cpu -n migration-apps --type=merge \
+        -p '{"spec":{"metrics":[{"type":"Resource","resource":{"name":"cpu","target":{"type":"Utilization","averageUtilization":1000}}}]}}'
+    wait_for_hpa_replicas 1 "$stage scale-down"
+    kubectl patch hpa migration-cpu -n migration-apps --type=merge \
+        -p '{"spec":{"metrics":[{"type":"Resource","resource":{"name":"cpu","target":{"type":"Utilization","averageUtilization":50}}}]}}'
+    wait_for_hpa_replicas 3 "$stage scale-up restore"
+}
+
 verify_stage() {
     local stage="$1"
     local stage_dir="$CHECKPOINT_DIR/$stage"
@@ -3804,6 +3896,7 @@ verify_stage() {
     }
     kubectl get customresourcedefinitions.apiextensions.k8s.io ciliumendpoints.cilium.io
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
+    verify_hpa_scaling "$stage"
     kubectl scale -n migration-apps deployment/migration-nginx --replicas=2
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
     kubectl get deployment migration-nginx -n migration-apps -o json | jq -e '

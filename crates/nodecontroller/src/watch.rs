@@ -532,6 +532,11 @@ shared_watch!(watch_volume_attachments, SHARED_VOLUME_ATTACHMENTS, VolumeAttachm
 shared_watch!(watch_certificate_signing_requests, SHARED_CSRS, CertificateSigningRequest);
 
 shared_watch!(watch_pod_disruption_budgets, SHARED_PDBS, PodDisruptionBudget);
+shared_watch!(
+    watch_horizontal_pod_autoscalers,
+    SHARED_HORIZONTAL_POD_AUTOSCALERS,
+    k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler
+);
 
 /// Run API discovery, retrying when the apiserver is temporarily unavailable
 /// or is still publishing a newly-created CRD. Kubernetes updates a CRD and
@@ -698,6 +703,7 @@ pub fn watch_dynamic_resource(
         ("batch/v1", "CronJob") => dynamic_shared!(watch_cron_jobs),
         ("batch/v1", "Job") => dynamic_shared!(watch_jobs),
         ("policy/v1", "PodDisruptionBudget") => dynamic_shared!(watch_pod_disruption_budgets),
+        ("autoscaling/v2", "HorizontalPodAutoscaler") => dynamic_shared!(watch_horizontal_pod_autoscalers),
         ("storage.k8s.io/v1", "StorageClass") => dynamic_shared!(watch_storage_classes),
         _ => None,
     }

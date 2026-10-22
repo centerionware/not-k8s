@@ -10,6 +10,7 @@ pub mod disruption;
 pub mod ephemeral_volume;
 pub mod endpoint_slice;
 pub mod garbage_collector;
+pub mod horizontal_pod_autoscaler;
 pub mod job;
 pub mod node_ipam;
 pub mod node_lifecycle;

@@ -13,6 +13,7 @@ members = [
     "crates/nodebootstrap",
     "crates/notk8s",
     "crates/nodemigrate",
+    "addons/nodeactivator",
 ]
 
 [workspace.package]
