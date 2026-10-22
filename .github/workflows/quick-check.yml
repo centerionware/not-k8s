@@ -45,8 +45,8 @@ jobs:
         # Under sudo for the same reason build.yml's test job is:
         # nodeproxy's svc.rs nft_check() tests open real netlink/nftables
         # sockets to validate generated ruleset syntax, which needs
-        # CAP_NET_ADMIN. sudo -E preserves PATH/CARGO_HOME/RUSTUP_HOME that
-        # setup-toolchain put in $GITHUB_ENV/$GITHUB_PATH.
+        # CAP_NET_ADMIN. Pass the installed toolchain paths explicitly because
+        # the hosted runner's sudoers policy drops inherited environment values.
         env:
           COMPONENTS_INPUT: ${{ inputs.components }}
         run: |
@@ -64,16 +64,22 @@ jobs:
             return 1
           }
 
+          as_runner_rust() {
+            sudo env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" \
+              "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
+              "RUSTUP_TOOLCHAIN=stable" "$@"
+          }
+
           if want nodelet; then
-            sudo -E env "PATH=$PATH" cargo test -p nodelet
-            sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
+            as_runner_rust cargo test -p nodelet
+            as_runner_rust cargo test -p nodelet --features cri
           fi
           for crate in nodeproxy nodestore nodescheduler nodecontroller node-leaderelection nodeapiserver nodebootstrap notk8s nodemigrate nodeactivator; do
             want "$crate" || continue
             if [[ "$crate" == nodeactivator ]]; then
-              sudo -E env "PATH=$PATH" cargo test -p "$crate"
+              as_runner_rust cargo test -p "$crate"
             elif [[ -d "crates/$crate" ]]; then
-              sudo -E env "PATH=$PATH" cargo test -p "$crate"
+              as_runner_rust cargo test -p "$crate"
             else
               echo "crates/$crate not present on this ref — skipping its tests."
             fi
