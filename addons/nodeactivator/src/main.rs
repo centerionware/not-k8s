@@ -23,7 +23,7 @@ use std::env;
 use std::fs::File;
 use std::io::BufReader;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
@@ -133,7 +133,7 @@ impl Drop for ActiveRequest {
 async fn watch_front_services(client: Client, state: Arc<State>) -> Result<()> {
     let services: Api<Service> = Api::all(client);
     let config = watcher::Config::default().labels(&format!("{MANAGED_LABEL}=true"));
-    let mut stream = watcher::watcher(services, config);
+    let mut stream = Box::pin(watcher::watcher(services, config));
     loop {
         match stream.next().await {
             Some(Ok(Event::Apply(service))) | Some(Ok(Event::InitApply(service))) => {
@@ -471,17 +471,28 @@ async fn serve_connection(
     metrics: bool,
     _slot: tokio::sync::OwnedSemaphorePermit,
 ) {
-    let io = if let Some(acceptor) = tls {
+    if let Some(acceptor) = tls {
         match acceptor.accept(stream).await {
-            Ok(stream) => TokioIo::new(stream),
+            Ok(stream) => serve_http_connection(stream, peer, state, metrics, _slot).await,
             Err(error) => {
                 warn!(peer = %peer, error = ?error, "external metrics mTLS handshake failed");
-                return;
             }
         }
     } else {
-        TokioIo::new(stream)
-    };
+        serve_http_connection(stream, peer, state, metrics, _slot).await;
+    }
+}
+
+async fn serve_http_connection<I>(
+    stream: I,
+    peer: SocketAddr,
+    state: Arc<State>,
+    metrics: bool,
+    _slot: tokio::sync::OwnedSemaphorePermit,
+) where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let io = TokioIo::new(stream);
     let service = service_fn(move |request| {
         let state = state.clone();
         async move {
