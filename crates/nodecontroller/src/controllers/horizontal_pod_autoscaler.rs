@@ -223,7 +223,12 @@ async fn object_metric_plural(client: &Client, api_version: &str, kind: &str) ->
         .context("discovering object resource for custom metric")?;
     discovery
         .groups()
-        .flat_map(|group| group.recommended_resources().map(|(resource, _)| resource))
+        .flat_map(|group| {
+            group
+                .recommended_resources()
+                .into_iter()
+                .map(|(resource, _)| resource)
+        })
         .find(|resource| resource.api_version == api_version && resource.kind == kind)
         .map(|resource| resource.plural.clone())
         .ok_or_else(|| anyhow!("custom metric object {api_version}/{kind} is not discoverable"))
@@ -984,9 +989,13 @@ async fn reconcile_hpa(
             .get_scale(&spec.scale_target_ref.name)
             .await
             .context("getting HPA target Scale")?;
-        let selector = scale.status.selector.as_deref().unwrap_or("");
+        let scale_status = scale
+            .status
+            .as_ref()
+            .ok_or_else(|| anyhow!("HPA target Scale has no status"))?;
+        let selector = scale_status.selector.as_deref().unwrap_or("");
         let current_desired = scale.spec.and_then(|spec| spec.replicas).unwrap_or(0);
-        let current_actual = scale.status.replicas;
+        let current_actual = scale_status.replicas;
         let minimum = spec.min_replicas.unwrap_or(1);
         let metrics = spec.metrics.clone().unwrap_or_else(|| {
             vec![k8s_openapi::api::autoscaling::v2::MetricSpec {
@@ -1395,7 +1404,6 @@ mod tests {
     use std::time::Duration;
     use tokio::time::Instant;
 
-    #[test]
     #[test]
     fn recommendation_scales_up_down_and_respects_default_tolerance() {
         assert_eq!(desired_replicas(2, 100, 50, 1, 10, 0.1, 0.1), (4, false));
