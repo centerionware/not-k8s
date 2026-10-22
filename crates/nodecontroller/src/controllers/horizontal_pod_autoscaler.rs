@@ -221,7 +221,7 @@ async fn object_metric_plural(client: &Client, api_version: &str, kind: &str) ->
         .run_aggregated()
         .await
         .context("discovering object resource for custom metric")?;
-    discovery
+    let plural = discovery
         .groups()
         .flat_map(|group| {
             group
@@ -230,8 +230,8 @@ async fn object_metric_plural(client: &Client, api_version: &str, kind: &str) ->
                 .map(|(resource, _)| resource)
         })
         .find(|resource| resource.api_version == api_version && resource.kind == kind)
-        .map(|resource| resource.plural.clone())
-        .ok_or_else(|| anyhow!("custom metric object {api_version}/{kind} is not discoverable"))
+        .map(|resource| resource.plural.clone());
+    plural.ok_or_else(|| anyhow!("custom metric object {api_version}/{kind} is not discoverable"))
 }
 
 async fn external_metric_value(
