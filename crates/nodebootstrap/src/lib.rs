@@ -678,7 +678,21 @@ fn apply_root_reexec(args: &[String], embedded: bool) -> Result<()> {
 }
 
 fn reexec_env_key(key: &str) -> bool {
-    matches!(key, "HOME" | "PATH" | "PROTOC" | "RUSTFLAGS" | "RUSTUP_HOME" | "RUSTUP_TOOLCHAIN")
+    matches!(
+        key,
+        "HOME"
+            | "PATH"
+            | "PROTOC"
+            | "RUSTFLAGS"
+            | "RUSTUP_HOME"
+            | "RUSTUP_TOOLCHAIN"
+            | "NODEBOOTSTRAP_ARCH"
+            | "NODEBOOTSTRAP_REPO_ROOT"
+            | "NODEBOOTSTRAP_SOURCE"
+            | "NODEBOOTSTRAP_TOOLCHAIN_DIR"
+            | "NOTK8S_BUILD_LAYOUT"
+            | "NOTK8S_BUILD_PROFILE"
+    )
         || key == "CARGO_HOME"
         || key.starts_with("CARGO_")
         || key.starts_with("CC_")
@@ -861,6 +875,10 @@ mod tests {
         assert!(reexec_env_key("CC_aarch64_unknown_linux_musl"));
         assert!(reexec_env_key("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"));
         assert!(reexec_env_key("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS"));
+        assert!(reexec_env_key("NODEBOOTSTRAP_TOOLCHAIN_DIR"));
+        assert!(reexec_env_key("NODEBOOTSTRAP_REPO_ROOT"));
+        assert!(reexec_env_key("NOTK8S_BUILD_LAYOUT"));
+        assert!(reexec_env_key("NOTK8S_BUILD_PROFILE"));
         assert!(!reexec_env_key("GITHUB_TOKEN"));
     }
 }
