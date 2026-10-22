@@ -127,7 +127,8 @@ runs:
         git fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
         git show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > /tmp/nodebootstrap-e2e-full-setup.sh
         chmod +x /tmp/nodebootstrap-e2e-full-setup.sh
-        sudo -E timeout 600 bash /tmp/nodebootstrap-e2e-full-setup.sh
+        sudo env KUBECONFIG="$KUBECONFIG" \
+          timeout 600 bash /tmp/nodebootstrap-e2e-full-setup.sh
 
     - name: Run e2e tests
       id: e2e
