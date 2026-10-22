@@ -79,7 +79,8 @@ runs:
         chmod +x "$no_kubectl/kubectl"
         chmod +x dist-bin/notk8s
         ln -sfn notk8s dist-bin/nodebootstrap
-        PATH="$no_kubectl:$PATH" sudo -E env PATH="$no_kubectl:$PATH" \
+        PATH="$no_kubectl:$PATH" sudo env PATH="$no_kubectl:$PATH" \
+          RUST_LOG="$RUST_LOG" \
           NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/dist-bin/notk8s" \
           NOTK8S_BUILD_LAYOUT=combined \
           ./dist-bin/nodebootstrap "${args[@]:1}"
