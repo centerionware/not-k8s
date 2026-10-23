@@ -1,0 +1,14 @@
+commit: 6f586fce61afbf091c5e84985b4872d12e15f851
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/40022515062
+timestamp (UTC): 2026-10-23T21:09:06Z
+shard: 2/5
+exit code: 1
+----------------------------------------
+bootstrap e2e: 1 test(s), shard 2/5
+▶ 2026-10-23T21:08:09.041Z test_hpa_scale_to_zero_activator_full_flow ... FAIL (36613ms)
+    installing the bootstrap addon: installing nodeactivator: parsing Kubernetes manifest document 0: duplicate entry with key "apiVersion" at line 2 column 1
+failure snapshot /api/v1/namespaces/nk-e2e-5218-3c47a4c6/pods: {"apiVersion":"v1","items":[],"kind":"PodList","metadata":{"resourceVersion":"340"}}
+failure snapshot /api/v1/namespaces/nk-e2e-5218-3c47a4c6/services: {"apiVersion":"v1","items":[],"kind":"ServiceList","metadata":{"resourceVersion":"324"}}
+failure snapshot /api/v1/namespaces/nk-e2e-5218-3c47a4c6/events: {"apiVersion":"v1","items":[],"kind":"EventList","metadata":{"resourceVersion":"314"}}
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-5218-3c47a4c6/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[],"kind":"EndpointSliceList","metadata":{"resourceVersion":"341"}}
+Error: bootstrap e2e failed: 1 test(s): test_hpa_scale_to_zero_activator_full_flow
