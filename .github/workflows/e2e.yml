@@ -119,10 +119,12 @@ jobs:
           e2e-bin/notk8s components | grep -Fx nodebootstrap
 
       - name: Build activator
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/nodeactivator-target
         run: |
           set -euo pipefail
           cargo build --release --locked -p nodeactivator --target x86_64-unknown-linux-musl
-          install -m0755 target/x86_64-unknown-linux-musl/release/nodeactivator e2e-bin/nodeactivator
+          install -m0755 "$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/release/nodeactivator" e2e-bin/nodeactivator
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
