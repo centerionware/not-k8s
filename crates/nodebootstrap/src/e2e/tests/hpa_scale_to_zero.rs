@@ -122,7 +122,7 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
 }
 
 async fn wait_for_apiservice(context: &E2eContext, timeout: Duration) -> Result<()> {
-    context
+    let result = context
         .wait_until(
             "the external metrics APIService to become available",
             timeout,
@@ -142,7 +142,40 @@ async fn wait_for_apiservice(context: &E2eContext, timeout: Duration) -> Result<
                     && String::from_utf8_lossy(&output.stdout).trim() == "True")
             },
         )
-        .await
+        .await;
+    if let Err(error) = result {
+        let apiservice = Command::new("kubectl")
+            .args([
+                "--request-timeout=10s",
+                "get",
+                "apiservice",
+                "v1beta1.external.metrics.k8s.io",
+                "-o",
+                "yaml",
+            ])
+            .output()
+            .context("getting external metrics APIService diagnostics")?;
+        let addon_logs = Command::new("kubectl")
+            .args([
+                "--request-timeout=10s",
+                "logs",
+                "deployment/nodeactivator",
+                "--namespace",
+                &context.namespace,
+                "--tail=100",
+                "--timestamps",
+            ])
+            .output()
+            .context("getting nodeactivator logs")?;
+        anyhow::bail!(
+            "{error:#}; APIService state:\n{}{}\nnodeactivator logs:\n{}{}",
+            String::from_utf8_lossy(&apiservice.stdout),
+            String::from_utf8_lossy(&apiservice.stderr),
+            String::from_utf8_lossy(&addon_logs.stdout),
+            String::from_utf8_lossy(&addon_logs.stderr),
+        );
+    }
+    Ok(())
 }
 
 struct TestWork {
