@@ -49,9 +49,12 @@ impl CriRuntime {
                 let optional = cm.optional.unwrap_or(false);
                 match Api::<ConfigMap>::namespaced(self.client.clone(), &id.namespace).get(name).await {
                     Ok(obj) => {
-                        if let Err(e) = write_volume_dir(&vol_dir, obj.data, obj.binary_data.map(|m| {
-                            m.into_iter().map(|(k, v)| (k, v.0)).collect()
-                        })) {
+                        if let Err(e) = write_projected_keys(
+                            &vol_dir,
+                            obj.data,
+                            obj.binary_data.map(|m| m.into_iter().map(|(k, v)| (k, v.0)).collect()),
+                            cm.items.as_deref(),
+                        ) {
                             warn!(volume = %v.name, configmap = %name, error = ?e, "failed to materialize ConfigMap volume");
                             continue;
                         }
@@ -71,7 +74,7 @@ impl CriRuntime {
                 match Api::<Secret>::namespaced(self.client.clone(), &id.namespace).get(name).await {
                     Ok(obj) => {
                         let bin = obj.data.map(|m| m.into_iter().map(|(k, v)| (k, v.0)).collect());
-                        if let Err(e) = write_volume_dir(&vol_dir, obj.string_data, bin) {
+                        if let Err(e) = write_projected_keys(&vol_dir, obj.string_data, bin, sec.items.as_deref()) {
                             warn!(volume = %v.name, secret = %name, error = ?e, "failed to materialize Secret volume");
                             continue;
                         }
