@@ -1,0 +1,190 @@
+commit: c81cd8fbbcf7fdb308e3386251f1905af3077f7a
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/40027616185
+timestamp (UTC): 2026-10-23T21:54:24Z
+shard: 2/5
+exit code: 1
+----------------------------------------
+bootstrap e2e: 1 test(s), shard 2/5
+▶ 2026-10-23T21:48:38.008Z test_hpa_scale_to_zero_activator_full_flow ... FAIL (320308ms)
+    installing the bootstrap addon: Deployment/kube-system/nodeactivator did not become Available within 5 minutes; certificate signer logs:
+2026-10-23T21:53:56.644425647Z     1: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound
+2026-10-23T21:53:56.657150971Z 2026-10-23T21:53:56.657022Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-f8ce7b4756b6-0-809d8f3ff8e8 error=running openssl
+2026-10-23T21:53:56.657163608Z 
+2026-10-23T21:53:56.657165681Z Caused by:
+2026-10-23T21:53:56.657168155Z     No such file or directory (os error 2)
+2026-10-23T21:53:56.667385652Z 2026-10-23T21:53:56.667247Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-7d88d3eb7b89-0-40c591727e7c error=reading requesting Pod
+2026-10-23T21:53:56.66739823Z 
+2026-10-23T21:53:56.667400339Z Caused by:
+2026-10-23T21:53:56.667407341Z     0: ApiError: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound (Status { status: Some(Failure), code: 404, message: "the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "", group: "", kind: "", uid: "", causes: [], retry_after_seconds: 0 }) })
+2026-10-23T21:53:56.667409715Z     1: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound
+2026-10-23T21:53:56.681633302Z 2026-10-23T21:53:56.681522Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-f8ce7b4756b6-0-809d8f3ff8e8 error=running openssl
+2026-10-23T21:53:56.681647715Z 
+2026-10-23T21:53:56.681649429Z Caused by:
+2026-10-23T21:53:56.681651952Z     No such file or directory (os error 2)
+2026-10-23T21:53:56.692641303Z 2026-10-23T21:53:56.692413Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-7d88d3eb7b89-0-40c591727e7c error=reading requesting Pod
+2026-10-23T21:53:56.692657899Z 
+2026-10-23T21:53:56.692659874Z Caused by:
+2026-10-23T21:53:56.692662162Z     0: ApiError: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound (Status { status: Some(Failure), code: 404, message: "the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "", group: "", kind: "", uid: "", causes: [], retry_after_seconds: 0 }) })
+2026-10-23T21:53:56.692673529Z     1: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound
+2026-10-23T21:53:56.704891921Z 2026-10-23T21:53:56.704748Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-f8ce7b4756b6-0-809d8f3ff8e8 error=running openssl
+2026-10-23T21:53:56.704902794Z 
+2026-10-23T21:53:56.704904117Z Caused by:
+2026-10-23T21:53:56.704906104Z     No such file or directory (os error 2)
+2026-10-23T21:53:56.713988527Z 2026-10-23T21:53:56.713864Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-7d88d3eb7b89-0-40c591727e7c error=reading requesting Pod
+2026-10-23T21:53:56.713999407Z 
+2026-10-23T21:53:56.714000992Z Caused by:
+2026-10-23T21:53:56.714002988Z     0: ApiError: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound (Status { status: Some(Failure), code: 404, message: "the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "", group: "", kind: "", uid: "", causes: [], retry_after_seconds: 0 }) })
+2026-10-23T21:53:56.714004794Z     1: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound
+2026-10-23T21:53:56.724546577Z 2026-10-23T21:53:56.724410Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-f8ce7b4756b6-0-809d8f3ff8e8 error=running openssl
+2026-10-23T21:53:56.724559198Z 
+2026-10-23T21:53:56.72456061Z Caused by:
+2026-10-23T21:53:56.724562809Z     No such file or directory (os error 2)
+2026-10-23T21:53:56.732570726Z 2026-10-23T21:53:56.732427Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-7d88d3eb7b89-0-40c591727e7c error=reading requesting Pod
+2026-10-23T21:53:56.732585357Z 
+2026-10-23T21:53:56.732586639Z Caused by:
+2026-10-23T21:53:56.732588582Z     0: ApiError: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound (Status { status: Some(Failure), code: 404, message: "the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "", group: "", kind: "", uid: "", causes: [], retry_after_seconds: 0 }) })
+2026-10-23T21:53:56.732590394Z     1: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound
+2026-10-23T21:53:56.74326896Z 2026-10-23T21:53:56.743144Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-f8ce7b4756b6-0-809d8f3ff8e8 error=running openssl
+2026-10-23T21:53:56.743281635Z 
+2026-10-23T21:53:56.743283083Z Caused by:
+2026-10-23T21:53:56.743284879Z     No such file or directory (os error 2)
+2026-10-23T21:53:56.751225167Z 2026-10-23T21:53:56.751110Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-7d88d3eb7b89-0-40c591727e7c error=reading requesting Pod
+2026-10-23T21:53:56.751240723Z 
+2026-10-23T21:53:56.751244077Z Caused by:
+2026-10-23T21:53:56.751246293Z     0: ApiError: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound (Status { status: Some(Failure), code: 404, message: "the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "", group: "", kind: "", uid: "", causes: [], retry_after_seconds: 0 }) })
+2026-10-23T21:53:56.751248777Z     1: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound
+2026-10-23T21:53:56.761885333Z 2026-10-23T21:53:56.761761Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-f8ce7b4756b6-0-809d8f3ff8e8 error=running openssl
+2026-10-23T21:53:56.761897393Z 
+2026-10-23T21:53:56.761898737Z Caused by:
+2026-10-23T21:53:56.761900582Z     No such file or directory (os error 2)
+2026-10-23T21:53:56.770201731Z 2026-10-23T21:53:56.770080Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-7d88d3eb7b89-0-40c591727e7c error=reading requesting Pod
+2026-10-23T21:53:56.770224197Z 
+2026-10-23T21:53:56.770225944Z Caused by:
+2026-10-23T21:53:56.770228185Z     0: ApiError: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound (Status { status: Some(Failure), code: 404, message: "the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "", group: "", kind: "", uid: "", causes: [], retry_after_seconds: 0 }) })
+2026-10-23T21:53:56.770229941Z     1: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound
+2026-10-23T21:53:56.783026788Z 2026-10-23T21:53:56.782894Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-f8ce7b4756b6-0-809d8f3ff8e8 error=running openssl
+2026-10-23T21:53:56.783041659Z 
+2026-10-23T21:53:56.78304402Z Caused by:
+2026-10-23T21:53:56.783046171Z     No such file or directory (os error 2)
+2026-10-23T21:53:56.796272057Z 2026-10-23T21:53:56.796150Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-7d88d3eb7b89-0-40c591727e7c error=reading requesting Pod
+2026-10-23T21:53:56.79628697Z 
+2026-10-23T21:53:56.796289763Z Caused by:
+2026-10-23T21:53:56.796291477Z     0: ApiError: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound (Status { status: Some(Failure), code: 404, message: "the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "", group: "", kind: "", uid: "", causes: [], retry_after_seconds: 0 }) })
+2026-10-23T21:53:56.796293308Z     1: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound
+2026-10-23T21:53:56.813616229Z 2026-10-23T21:53:56.813497Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-f8ce7b4756b6-0-809d8f3ff8e8 error=running openssl
+2026-10-23T21:53:56.813628894Z 
+2026-10-23T21:53:56.813631046Z Caused by:
+2026-10-23T21:53:56.813633499Z     No such file or directory (os error 2)
+2026-10-23T21:53:56.824123192Z 2026-10-23T21:53:56.824007Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-7d88d3eb7b89-0-40c591727e7c error=reading requesting Pod
+2026-10-23T21:53:56.824133577Z 
+2026-10-23T21:53:56.824135077Z Caused by:
+2026-10-23T21:53:56.824139835Z     0: ApiError: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound (Status { status: Some(Failure), code: 404, message: "the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "", group: "", kind: "", uid: "", causes: [], retry_after_seconds: 0 }) })
+2026-10-23T21:53:56.824141628Z     1: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound
+2026-10-23T21:53:56.834928814Z 2026-10-23T21:53:56.834800Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-f8ce7b4756b6-0-809d8f3ff8e8 error=running openssl
+2026-10-23T21:53:56.834941067Z 
+2026-10-23T21:53:56.834942487Z Caused by:
+2026-10-23T21:53:56.834944528Z     No such file or directory (os error 2)
+2026-10-23T21:53:56.842526285Z 2026-10-23T21:53:56.842404Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-7d88d3eb7b89-0-40c591727e7c error=reading requesting Pod
+2026-10-23T21:53:56.84254556Z 
+2026-10-23T21:53:56.842547024Z Caused by:
+2026-10-23T21:53:56.842549046Z     0: ApiError: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound (Status { status: Some(Failure), code: 404, message: "the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "", group: "", kind: "", uid: "", causes: [], retry_after_seconds: 0 }) })
+2026-10-23T21:53:56.842550787Z     1: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound
+2026-10-23T21:53:56.852683437Z 2026-10-23T21:53:56.852575Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-f8ce7b4756b6-0-809d8f3ff8e8 error=running openssl
+2026-10-23T21:53:56.852696107Z 
+2026-10-23T21:53:56.85269773Z Caused by:
+2026-10-23T21:53:56.852699436Z     No such file or directory (os error 2)
+2026-10-23T21:53:56.860739539Z 2026-10-23T21:53:56.860629Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-7d88d3eb7b89-0-40c591727e7c error=reading requesting Pod
+2026-10-23T21:53:56.860752184Z 
+2026-10-23T21:53:56.860754145Z Caused by:
+2026-10-23T21:53:56.860756269Z     0: ApiError: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound (Status { status: Some(Failure), code: 404, message: "the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "", group: "", kind: "", uid: "", causes: [], retry_after_seconds: 0 }) })
+2026-10-23T21:53:56.860766448Z     1: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound
+2026-10-23T21:53:56.87095814Z 2026-10-23T21:53:56.870841Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-f8ce7b4756b6-0-809d8f3ff8e8 error=running openssl
+2026-10-23T21:53:56.870970289Z 
+2026-10-23T21:53:56.870971752Z Caused by:
+2026-10-23T21:53:56.870973405Z     No such file or directory (os error 2)
+2026-10-23T21:53:56.878807595Z 2026-10-23T21:53:56.878697Z  WARN nodeactivator_cert_signer: failed to issue PodCertificateRequest request=pc-7d88d3eb7b89-0-40c591727e7c error=reading requesting Pod
+2026-10-23T21:53:56.878817898Z 
+2026-10-23T21:53:56.878820444Z Caused by:
+2026-10-23T21:53:56.878823127Z     0: ApiError: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound (Status { status: Some(Failure), code: 404, message: "the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8)", metadata: Some(ListMeta { continue_: None, remaining_item_count: None, resource_version: None, self_link: None }), reason: "NotFound", details: Some(StatusDetails { name: "", group: "", kind: "", uid: "", causes: [], retry_after_seconds: 0 }) })
+2026-10-23T21:53:56.878825765Z     1: the server could not find the requested resource (/api/v1/namespaces/kube-system/pods/nodeactivator-17308a2832481582-ktmt8): NotFound
+
+PodCertificateRequests:
+apiVersion: v1
+items:
+- apiVersion: certificates.k8s.io/v1alpha1
+  kind: PodCertificateRequest
+  metadata:
+    creationTimestamp: "2026-10-23T21:48:51Z"
+    generation: 1
+    name: pc-7d88d3eb7b89-0-40c591727e7c
+    namespace: kube-system
+    ownerReferences:
+    - apiVersion: v1
+      blockOwnerDeletion: false
+      controller: false
+      kind: Pod
+      name: nodeactivator-17308a2832481582-ktmt8
+      uid: 7d88d3eb-7b89-4a3e-b1c1-5984cd8ee3d4
+    resourceVersion: "29878"
+    uid: 48d11879-abe9-41ff-baea-9c4792cbf1d1
+  spec:
+    maxExpirationSeconds: 86400
+    nodeName: runnervmdkmh8
+    nodeUID: 7e966168-cdaa-4d6e-b786-0e0363331a13
+    pkixPublicKey: MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEAuJXxxWDvlqXU/itIq3hWFwxUI5u7GqhaVqaWgvSrQEJDHBfxQ/7S0I2+L1YF8QNt5iIkmM9FFM7ZNTp562iZA==
+    podName: nodeactivator-17308a2832481582-ktmt8
+    podUID: 7d88d3eb-7b89-4a3e-b1c1-5984cd8ee3d4
+    proofOfPossession: MEYCIQDAAk/6OifCLjMKVcNhiOzKvO+lC3MGyFrpcgN5lGkRfgIhALl0ZsG+RAR6sTU7NbjVDKxDpc0O464zFN9BK6Bt2POQ
+    serviceAccountName: nodeactivator
+    serviceAccountUID: d32749c1-7983-4bc9-9802-77cdb328bcff
+    signerName: nodeactivator.notk8s.io/serving
+  status:
+    conditions:
+    - lastTransitionTime: "2026-10-23T21:53:57.071373957Z"
+      message: reading requesting Pod
+      reason: SignerError
+      status: "True"
+      type: Failed
+- apiVersion: certificates.k8s.io/v1alpha1
+  kind: PodCertificateRequest
+  metadata:
+    creationTimestamp: "2026-10-23T21:52:30Z"
+    generation: 1
+    name: pc-f8ce7b4756b6-0-809d8f3ff8e8
+    namespace: kube-system
+    ownerReferences:
+    - apiVersion: v1
+      blockOwnerDeletion: false
+      controller: false
+      kind: Pod
+      name: nodeactivator-17308a2832481582-lpbsl
+      uid: f8ce7b47-56b6-41db-a7e6-afe7da8f990e
+    resourceVersion: "29877"
+    uid: fbf9f958-3c9d-4473-a361-bc8f57bd65ae
+  spec:
+    maxExpirationSeconds: 86400
+    nodeName: runnervmdkmh8
+    nodeUID: 7e966168-cdaa-4d6e-b786-0e0363331a13
+    pkixPublicKey: MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEyNWlRSkqqk0G36zHOLy3sIJkPqX23uua3yOATF6wRYxt/yScX4gQlpmik+k4N0FTD97v/vJTH+uQwwBvum/y8g==
+    podName: nodeactivator-17308a2832481582-lpbsl
+    podUID: f8ce7b47-56b6-41db-a7e6-afe7da8f990e
+    proofOfPossession: MEUCIEmCCnBABM1ZEQTYjEiRaenQ9Q9pk0I91NoNsjypmBtqAiEAjx0a7OjzoBjZ+go29j7QPXWLEUBcypTKo0UXSFNOmUU=
+    serviceAccountName: nodeactivator
+    serviceAccountUID: d32749c1-7983-4bc9-9802-77cdb328bcff
+    signerName: nodeactivator.notk8s.io/serving
+  status:
+    conditions:
+    - lastTransitionTime: "2026-10-23T21:53:57.061125651Z"
+      message: running openssl
+      reason: SignerError
+      status: "True"
+      type: Failed
+kind: List
+metadata:
+  resourceVersion: ""
+
+failure snapshot /api/v1/namespaces/nk-e2e-5241-c60b0938/pods: {"apiVersion":"v1","items":[],"kind":"PodList","metadata":{"resourceVersion":"24283"}}
+failure snapshot /api/v1/namespaces/nk-e2e-5241-c60b0938/events: {"apiVersion":"v1","items":[],"kind":"EventList","metadata":{"resourceVersion":"24283"}}
+failure snapshot /api/v1/namespaces/nk-e2e-5241-c60b0938/services: {"apiVersion":"v1","items":[],"kind":"ServiceList","metadata":{"resourceVersion":"24284"}}
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-5241-c60b0938/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[],"kind":"EndpointSliceList","metadata":{"resourceVersion":"28000"}}
+Error: bootstrap e2e failed: 1 test(s): test_hpa_scale_to_zero_activator_full_flow
