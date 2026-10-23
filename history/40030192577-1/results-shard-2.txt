@@ -1,0 +1,134 @@
+commit: 1ead21cf5c5034de729245c328b34b0d6c6df0e4
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/40030192577
+timestamp (UTC): 2026-10-23T22:16:10Z
+shard: 2/5
+exit code: 1
+----------------------------------------
+bootstrap e2e: 1 test(s), shard 2/5
+▶ 2026-10-23T22:10:30.247Z test_hpa_scale_to_zero_activator_full_flow ... FAIL (324426ms)
+    installing the bootstrap addon: Deployment/kube-system/nodeactivator did not become Available within 5 minutes; certificate signer logs:
+2026-10-23T22:10:48.241601293Z 2026-10-23T22:10:48.241513Z  INFO nodeactivator_cert_signer: starting nodeactivator PodCertificate signer
+2026-10-23T22:10:48.241863473Z 2026-10-23T22:10:48.241673Z  INFO nodeactivator_cert_signer: loading in-cluster Kubernetes client
+2026-10-23T22:10:48.243394749Z 2026-10-23T22:10:48.242205Z  INFO nodeactivator_cert_signer: loaded in-cluster Kubernetes client
+2026-10-23T22:10:48.243403846Z 2026-10-23T22:10:48.242216Z  INFO nodeactivator_cert_signer: discovering PodCertificateRequest API namespace="kube-system"
+2026-10-23T22:10:48.260953825Z 2026-10-23T22:10:48.260641Z  INFO nodeactivator_cert_signer: watching PodCertificateRequests api_version=certificates.k8s.io/v1alpha1
+2026-10-23T22:10:48.369577969Z 2026-10-23T22:10:48.369467Z  INFO nodeactivator_cert_signer: issued unique nodeactivator serving certificate namespace="kube-system" pod="nodeactivator-3ef53f62b54976a1-8mh84" pod_uid="b14218ba-1c83-44d5-9ace-90843667e085" request="pc-b14218ba1c83-0-11e599095b4b"
+2026-10-23T22:14:27.91558704Z 2026-10-23T22:14:27.915436Z  INFO nodeactivator_cert_signer: issued unique nodeactivator serving certificate namespace="kube-system" pod="nodeactivator-3ef53f62b54976a1-wswpj" pod_uid="b12cea5a-165b-439e-a6e9-78534829d225" request="pc-b12cea5a165b-0-7cf72eb9b95a"
+2026-10-23T22:15:38.275998534Z 2026-10-23T22:15:38.275792Z  WARN nodeactivator_cert_signer: PodCertificateRequest watch failed error=WatchFailed(ReadEvents(Custom { kind: Other, error: Service(hyper::Error(Body, Custom { kind: UnexpectedEof, error: "peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof" })) }))
+
+PodCertificateRequests:
+apiVersion: v1
+items:
+- apiVersion: certificates.k8s.io/v1alpha1
+  kind: PodCertificateRequest
+  metadata:
+    creationTimestamp: "2026-10-23T22:14:27Z"
+    generation: 1
+    name: pc-b12cea5a165b-0-7cf72eb9b95a
+    namespace: kube-system
+    ownerReferences:
+    - apiVersion: v1
+      blockOwnerDeletion: false
+      controller: false
+      kind: Pod
+      name: nodeactivator-3ef53f62b54976a1-wswpj
+      uid: b12cea5a-165b-439e-a6e9-78534829d225
+    resourceVersion: "703"
+    uid: fcc36aab-777e-4fe6-8628-71466a72ed46
+  spec:
+    maxExpirationSeconds: 86400
+    nodeName: runnervmdkmh8
+    nodeUID: c71a646f-5bdc-4ab7-a0ab-0c756172a0b6
+    pkixPublicKey: MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6ONsiL2zdd1SCFW9W7vNlJzvESWtmuxlhdJdd6GSQZrqbjUFAgE5MaqCmlUdVa4FltOv5rbflxpDd39SgdNpsQ==
+    podName: nodeactivator-3ef53f62b54976a1-wswpj
+    podUID: b12cea5a-165b-439e-a6e9-78534829d225
+    proofOfPossession: MEUCIE9RobKKiiGtC4/6CZ9J4muXXkIWb6YNQCGea4DSklfjAiEA2aWXzsRMhQeSUwEkcsAE0LDemgFD4qz5SX+3DnRP7nQ=
+    serviceAccountName: nodeactivator
+    serviceAccountUID: 4f4e19d1-08f0-4f57-8776-8822602e007c
+    signerName: nodeactivator.notk8s.io/serving
+  status:
+    beginRefreshAt: "2026-10-24T14:14:27Z"
+    certificateChain: |
+      -----BEGIN CERTIFICATE-----
+      MIICHzCCAcWgAwIBAgIUYbBDaB21nPkOkPzk2mQTiRpKOwwwCgYIKoZIzj0EAwIw
+      ITEfMB0GA1UEAwwWcmNnZW4gc2VsZiBzaWduZWQgY2VydDAeFw0yNjEwMjMyMjE0
+      MjdaFw0yNjEwMjQyMjE0MjdaMBgxFjAUBgNVBAMMDW5vZGVhY3RpdmF0b3IwWTAT
+      BgcqhkjOPQIBBggqhkjOPQMBBwNCAATo42yIvbN13VIIVb1bu82UnO8RJa2a7GWF
+      0l13oZJBmupuNQUCATkxqoKaVR1VrgWW06/mtt+XGkN3f1KB02mxo4HjMIHgMAwG
+      A1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgWgMBMGA1UdJQQMMAoGCCsGAQUFBwMB
+      MGsGA1UdEQRkMGKCJW5vZGVhY3RpdmF0b3ItbWV0cmljcy5rdWJlLXN5c3RlbS5z
+      dmOCM25vZGVhY3RpdmF0b3ItbWV0cmljcy5rdWJlLXN5c3RlbS5zdmMuY2x1c3Rl
+      ci5sb2NhbIcECisAAzAdBgNVHQ4EFgQUhQmixUCitYVzjaJkvU/bWQyorXQwHwYD
+      VR0jBBgwFoAUy4FCo8JjehFx0H39wf2QJStPpAQwCgYIKoZIzj0EAwIDSAAwRQIh
+      AP6QPjsRUlmZE8nfNzkH3Hk/nt4S4jPvZnTCokxVa8pHAiBzoXmK6gvYeyhH62gu
+      hFgFXg9Vb+2SS8VSl6OmQeSN8w==
+      -----END CERTIFICATE-----
+    conditions:
+    - lastTransitionTime: "2026-10-23T22:14:27Z"
+      message: nodeactivator serving certificate issued
+      reason: Issued
+      status: "True"
+      type: Issued
+    notAfter: "2026-10-24T22:14:27Z"
+    notBefore: "2026-10-23T22:14:27Z"
+- apiVersion: certificates.k8s.io/v1alpha1
+  kind: PodCertificateRequest
+  metadata:
+    creationTimestamp: "2026-10-23T22:10:48Z"
+    generation: 1
+    name: pc-b14218ba1c83-0-11e599095b4b
+    namespace: kube-system
+    ownerReferences:
+    - apiVersion: v1
+      blockOwnerDeletion: false
+      controller: false
+      kind: Pod
+      name: nodeactivator-3ef53f62b54976a1-8mh84
+      uid: b14218ba-1c83-44d5-9ace-90843667e085
+    resourceVersion: "375"
+    uid: f2aaf43a-a6a6-4fdb-8b56-639a5fd56b25
+  spec:
+    maxExpirationSeconds: 86400
+    nodeName: runnervmdkmh8
+    nodeUID: c71a646f-5bdc-4ab7-a0ab-0c756172a0b6
+    pkixPublicKey: MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE3kHs/3yNAu9q2KgoR9fhSqLU8uGmyGstNXhH0Yz381pBzV53NWp42c0CKWObKD5hY8zRHQgsuGJaRcMnH2I6Jw==
+    podName: nodeactivator-3ef53f62b54976a1-8mh84
+    podUID: b14218ba-1c83-44d5-9ace-90843667e085
+    proofOfPossession: MEUCIQDJ3Rzyv/EJDhwVf7IMjDR80S4dj7zT7QHKjdba+zcT3gIgNKH9FwZZTjFtDUsLH/wn6rvL4lu22+kUDVXrAjPhDmU=
+    serviceAccountName: nodeactivator
+    serviceAccountUID: 4f4e19d1-08f0-4f57-8776-8822602e007c
+    signerName: nodeactivator.notk8s.io/serving
+  status:
+    beginRefreshAt: "2026-10-24T14:10:48Z"
+    certificateChain: |
+      -----BEGIN CERTIFICATE-----
+      MIICHzCCAcWgAwIBAgIUWkOfU0GTopBpzZ98EgOEVnmbmKcwCgYIKoZIzj0EAwIw
+      ITEfMB0GA1UEAwwWcmNnZW4gc2VsZiBzaWduZWQgY2VydDAeFw0yNjEwMjMyMjEw
+      NDhaFw0yNjEwMjQyMjEwNDhaMBgxFjAUBgNVBAMMDW5vZGVhY3RpdmF0b3IwWTAT
+      BgcqhkjOPQIBBggqhkjOPQMBBwNCAATeQez/fI0C72rYqChH1+FKotTy4abIay01
+      eEfRjPfzWkHNXnc1anjZzQIpY5soPmFjzNEdCCy4YlpFwycfYjono4HjMIHgMAwG
+      A1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgWgMBMGA1UdJQQMMAoGCCsGAQUFBwMB
+      MGsGA1UdEQRkMGKCJW5vZGVhY3RpdmF0b3ItbWV0cmljcy5rdWJlLXN5c3RlbS5z
+      dmOCM25vZGVhY3RpdmF0b3ItbWV0cmljcy5rdWJlLXN5c3RlbS5zdmMuY2x1c3Rl
+      ci5sb2NhbIcECisAAzAdBgNVHQ4EFgQUIw3//mf7conVcNuZxi24RBUUmgYwHwYD
+      VR0jBBgwFoAUy4FCo8JjehFx0H39wf2QJStPpAQwCgYIKoZIzj0EAwIDSAAwRQIh
+      ALGayACagBEiYH1nRn53n36B6c2iquOJoYdRnreEmovEAiApC1aVkbIQoYh9HwYn
+      jASizEj4IZ0hY6ZhMkjzotFP7w==
+      -----END CERTIFICATE-----
+    conditions:
+    - lastTransitionTime: "2026-10-23T22:10:48Z"
+      message: nodeactivator serving certificate issued
+      reason: Issued
+      status: "True"
+      type: Issued
+    notAfter: "2026-10-24T22:10:48Z"
+    notBefore: "2026-10-23T22:10:48Z"
+kind: List
+metadata:
+  resourceVersion: ""
+
+failure snapshot /api/v1/namespaces/nk-e2e-6017-4d8d6c1d/pods: {"apiVersion":"v1","items":[],"kind":"PodList","metadata":{"resourceVersion":"827"}}
+failure snapshot /api/v1/namespaces/nk-e2e-6017-4d8d6c1d/events: {"apiVersion":"v1","items":[],"kind":"EventList","metadata":{"resourceVersion":"753"}}
+failure snapshot /api/v1/namespaces/nk-e2e-6017-4d8d6c1d/services: {"apiVersion":"v1","items":[],"kind":"ServiceList","metadata":{"resourceVersion":"753"}}
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-6017-4d8d6c1d/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[],"kind":"EndpointSliceList","metadata":{"resourceVersion":"753"}}
+Error: bootstrap e2e failed: 1 test(s): test_hpa_scale_to_zero_activator_full_flow
