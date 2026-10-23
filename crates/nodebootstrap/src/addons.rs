@@ -286,7 +286,7 @@ mod tests {
         .expect("render addon manifest");
         let encoded_ca = base64::engine::general_purpose::STANDARD.encode("dedicated-ca");
         assert!(manifest.contains("image: registry.example/activator:v1"));
-        assert!(manifest.contains(&format!("caBundle: {encoded_ca}")));
+        assert!(manifest.contains(format!("caBundle: {encoded_ca}").as_str()));
         assert!(manifest.contains("name: extension-apiserver-authentication"));
         assert!(!manifest.contains("nodeapiserver-proxy-client-ca"));
         assert!(!manifest.contains("REPLACE_WITH_BASE64_SERVING_CA"));
