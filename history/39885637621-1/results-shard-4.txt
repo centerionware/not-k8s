@@ -1,0 +1,95 @@
+commit: fb620b4384672af5383e1df7528cfe5ebd400280
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/39885637621
+timestamp (UTC): 2026-10-23T02:18:23Z
+shard: 4/5
+exit code: 0
+----------------------------------------
+bootstrap e2e: 62 test(s), shard 4/5
+▶ 2026-10-23T01:58:35.610Z test_configured_service_cidrs_are_used ... PASS (3010ms)
+▶ 2026-10-23T01:58:38.621Z test_nodeapiserver_applies_core_defaults ... PASS (5018ms)
+▶ 2026-10-23T01:58:43.639Z test_nodeapiserver_rejects_invalid_batch_names ... PASS (5015ms)
+▶ 2026-10-23T01:58:48.654Z test_nodeapiserver_applies_storage_admission_to_apply ... PASS (4064ms)
+▶ 2026-10-23T01:58:52.718Z test_nodeapiserver_applies_runtime_class_admission ... PASS (5032ms)
+▶ 2026-10-23T01:58:57.750Z test_nodeapiserver_serializes_resource_quota_creates ... PASS (5039ms)
+▶ 2026-10-23T01:59:02.790Z test_nodeapiserver_reconciles_managed_fields_across_versions ... PASS (5019ms)
+▶ 2026-10-23T01:59:07.810Z test_nodeapiserver_exposes_full_request_metrics ... PASS (5017ms)
+▶ 2026-10-23T01:59:12.828Z test_nodeapiserver_excludes_status_from_main_managed_fields ... PASS (5016ms)
+▶ 2026-10-23T01:59:17.844Z test_nodeapiserver_honors_watch_options ... PASS (5010ms)
+▶ 2026-10-23T01:59:22.854Z test_nodeapiserver_validating_admission_policy_denies_create ... PASS (5026ms)
+▶ 2026-10-23T01:59:27.880Z test_nodeapiserver_honors_webhook_match_conditions ... PASS (5021ms)
+▶ 2026-10-23T01:59:32.902Z test_nodeapiserver_honors_resource_version_snapshot ... PASS (5015ms)
+▶ 2026-10-23T01:59:37.917Z test_tls_bootstrap_issues_a_real_client_certificate ... PASS (5068ms)
+▶ 2026-10-23T01:59:42.985Z apiserver_serves_resources ... PASS (5012ms)
+▶ 2026-10-23T01:59:47.998Z test_native_sidecar_container_starts_before_app_container_and_keeps_running ... PASS (33069ms)
+▶ 2026-10-23T02:00:21.067Z test_pod_with_a_finalizer_tears_down_but_stays_until_the_finalizer_is_removed ... PASS (7035ms)
+▶ 2026-10-23T02:00:28.103Z test_pod_exceeding_its_own_ephemeral_storage_limit_is_evicted ... PASS (42089ms)
+▶ 2026-10-23T02:01:10.192Z test_eviction_soft_grace_period_manual_procedure ... SKIP (soft-threshold grace-period eviction requires sustained deliberately induced pressure and remains a manual live-cluster procedure; 3009ms)
+▶ 2026-10-23T02:01:13.202Z test_node_status_reports_runtime_handlers ... PASS (5012ms)
+▶ 2026-10-23T02:01:18.215Z test_cronjob_controller_creates_a_job_on_schedule ... PASS (50114ms)
+▶ 2026-10-23T02:02:08.329Z test_statefulset_creates_ordinal_pods_and_scales_down_highest_first ... PASS (94201ms)
+▶ 2026-10-23T02:03:42.531Z test_memory_limit_is_enforced_via_cgroup ... PASS (6022ms)
+▶ 2026-10-23T02:03:48.554Z test_besteffort_pod_gets_no_cgroup_limit ... PASS (5018ms)
+▶ 2026-10-23T02:03:53.572Z test_datastore_serves_the_etcd_status_rpc ... PASS (4264ms)
+▶ 2026-10-23T02:03:57.836Z test_datastore_streams_watch_events_as_they_happen ... PASS (5269ms)
+▶ 2026-10-23T02:04:03.106Z test_upgrade_a_populated_single_member_into_a_one_member_cluster ... PASS (5528ms)
+▶ 2026-10-23T02:04:08.634Z test_cluster_elects_a_single_leader ... PASS (9482ms)
+▶ 2026-10-23T02:04:18.117Z test_a_minority_refuses_writes_rather_than_inventing_them ... PASS (20443ms)
+▶ 2026-10-23T02:04:38.560Z test_apiserver_crud_round_trips_through_nodestore ... PASS (4955ms)
+▶ 2026-10-23T02:04:43.516Z test_endpointslice_is_produced_for_a_selected_pod ... PASS (35089ms)
+▶ 2026-10-23T02:05:18.605Z test_scheduler_holds_the_leader_lease ... PASS (5015ms)
+▶ 2026-10-23T02:05:23.621Z test_pod_teardown_actually_removes_the_sandbox ... PASS (39621ms)
+▶ 2026-10-23T02:06:03.242Z test_device_plugin_advertises_capacity_and_allocates_into_a_container ... PASS (96249ms)
+▶ 2026-10-23T02:07:39.491Z test_host_network_pod_needs_no_explicit_port_mapping ... PASS (32074ms)
+▶ 2026-10-23T02:08:11.566Z test_set_hostname_as_fqdn_reports_the_full_fqdn ... PASS (4020ms)
+▶ 2026-10-23T02:08:15.587Z test_scheduler_rejects_a_pod_that_does_not_fit ... PASS (3019ms)
+▶ 2026-10-23T02:08:18.607Z test_scheduler_ignores_pods_for_another_scheduler ... PASS (10020ms)
+▶ 2026-10-23T02:08:28.628Z test_scheduler_resolves_a_namespace_selector_against_real_labels ... PASS (39102ms)
+▶ 2026-10-23T02:09:07.730Z test_guaranteed_pod_reports_guaranteed_qos ... PASS (32068ms)
+▶ 2026-10-23T02:09:39.799Z test_crash_loop_backoff_reports_waiting_reason_and_last_state ... PASS (8025ms)
+▶ 2026-10-23T02:09:47.825Z test_container_status_reports_a_real_image_id ... PASS (32066ms)
+▶ 2026-10-23T02:10:19.891Z test_startup_probe_gates_readiness_until_server_starts ... PASS (37078ms)
+▶ 2026-10-23T02:10:56.970Z test_grpc_probe_gates_readiness_against_a_real_grpc_server ... PASS (11025ms)
+▶ 2026-10-23T02:11:07.996Z test_service_account_token_projected_volume_mints_a_real_token ... PASS (5016ms)
+▶ 2026-10-23T02:11:13.013Z test_empty_dir_medium_hugepages_is_backed_by_hugetlbfs ... PASS (32072ms)
+▶ 2026-10-23T02:11:45.085Z test_mount_propagation_host_to_container_still_mounts_normally ... PASS (32072ms)
+▶ 2026-10-23T02:12:17.158Z test_recursive_read_only_if_possible_falls_back_without_erroring ... PASS (32069ms)
+▶ 2026-10-23T02:12:49.228Z test_fsgroup_chowns_materialized_volumes ... PASS (4018ms)
+▶ 2026-10-23T02:12:53.246Z test_container_status_reports_recursive_read_only ... PASS (32073ms)
+▶ 2026-10-23T02:13:25.319Z test_sysctls_are_applied_to_the_sandbox ... PASS (3021ms)
+▶ 2026-10-23T02:13:28.341Z test_host_pid_sees_host_processes ... PASS (5017ms)
+▶ 2026-10-23T02:13:33.359Z test_termination_grace_period_clean_exit_is_not_instant ... PASS (10031ms)
+▶ 2026-10-23T02:13:43.390Z test_service_with_no_endpoints_does_not_wedge_the_ruleset ... PASS (5014ms)
+▶ 2026-10-23T02:13:48.405Z test_multiple_backends_actually_share_traffic ... PASS (34086ms)
+▶ 2026-10-23T02:14:22.491Z test_a_long_lived_watch_survives_a_service_churn_burst ... PASS (53248ms)
+▶ 2026-10-23T02:15:15.740Z test_kubectl_attach_streams_the_containers_stdout ... PASS (42662ms)
+▶ 2026-10-23T02:15:58.403Z test_a_slow_terminating_pod_does_not_stall_another_pods_creation ... PASS (38082ms)
+▶ 2026-10-23T02:16:36.486Z test_nodeapiserver_rotates_audit_log ... PASS (6609ms)
+▶ 2026-10-23T02:16:48.111Z test_cpu_manager_pins_guaranteed_containers_to_disjoint_exclusive_cores ... SKIP (could not find container A's cgroup directory; 34220ms)
+▶ 2026-10-23T02:17:28.353Z test_credential_provider_supplies_auth_for_an_otherwise_rejected_pull ... Client:
+  Version:  v2.4.1
+  Revision: f2551031d7276a770f65f98c9b52e57e7dad07e8
+  Go version: go1.27.2
+
+Server:
+  Version:  v2.4.1
+  Revision: f2551031d7276a770f65f98c9b52e57e7dad07e8
+  UUID: 8bf7efb1-048e-40cb-ba24-146562c9455f
+latest: Pulling from library/busybox
+37bb94b0940b: Pulling fs layer
+37bb94b0940b: Download complete
+37bb94b0940b: Pull complete
+46500c34ad0c: Download complete
+Digest: sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+Status: Downloaded newer image for busybox:latest
+docker.io/library/busybox:latest
+The push refers to repository [127.0.0.1:5001/credential-provider-check]
+37bb94b0940b: Pushed
+1: digest: sha256:f97baa533a26513c453a362be331a43eb60214302f449c16571b23cea141dce4 size: 610
+
+ Info -> Not all multiplatform-content is present and only the available single-platform image was pushed
+         sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e -> sha256:f97baa533a26513c453a362be331a43eb60214302f449c16571b23cea141dce4
+nodebootstrap-e2e-registry
+PASS (40783ms)
+▶ 2026-10-23T02:18:13.150Z test_client_certificate_authentication_works ... OpenSSL 3.5.5 27 Jan 2026 (Library: OpenSSL 3.5.5 27 Jan 2026)
+PASS (5290ms)
+Results: 60 passed, 2 skipped, 0 failed
