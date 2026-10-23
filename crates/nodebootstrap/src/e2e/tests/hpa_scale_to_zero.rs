@@ -207,12 +207,10 @@ impl TestWork {
     fn create_tls_material(&self, context: &E2eContext) -> Result<()> {
         let cert = self.dir.join("tls.crt");
         let key = self.dir.join("tls.key");
-        let ca = kube_pki_dir().join("front-proxy-ca.crt");
-        anyhow::ensure!(
-            ca.is_file(),
-            "front proxy CA is missing at {}",
-            ca.display()
-        );
+        let serving_ca_cert = self.dir.join("tls-ca.crt");
+        let serving_ca_key = self.dir.join("tls-ca.key");
+        let csr = self.dir.join("tls.csr");
+        let extensions = self.dir.join("server-ext.cnf");
         run_command(
             "openssl",
             &[
@@ -224,16 +222,69 @@ impl TestWork {
                 "-days",
                 "1",
                 "-keyout",
+                serving_ca_key
+                    .to_str()
+                    .context("serving CA key path is not UTF-8")?,
+                "-out",
+                serving_ca_cert
+                    .to_str()
+                    .context("serving CA cert path is not UTF-8")?,
+                "-subj",
+                "/CN=nodeactivator-e2e-ca",
+                "-addext",
+                "basicConstraints=critical,CA:TRUE",
+                "-addext",
+                "keyUsage=critical,keyCertSign,cRLSign",
+            ],
+        )?;
+        run_command(
+            "openssl",
+            &[
+                "req",
+                "-new",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
                 key.to_str().context("TLS key path is not UTF-8")?,
                 "-out",
-                cert.to_str().context("TLS cert path is not UTF-8")?,
+                csr.to_str().context("TLS CSR path is not UTF-8")?,
                 "-subj",
                 "/CN=nodeactivator-metrics",
-                "-addext",
-                &format!(
-                    "subjectAltName=DNS:nodeactivator-metrics.{0}.svc,DNS:nodeactivator-metrics.{0}.svc.cluster.local",
-                    context.namespace
-                ),
+            ],
+        )?;
+        fs::write(
+            &extensions,
+            format!(
+                "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:nodeactivator-metrics.{0}.svc,DNS:nodeactivator-metrics.{0}.svc.cluster.local\n",
+                context.namespace
+            ),
+        )?;
+        run_command(
+            "openssl",
+            &[
+                "x509",
+                "-req",
+                "-in",
+                csr.to_str().context("TLS CSR path is not UTF-8")?,
+                "-CA",
+                serving_ca_cert
+                    .to_str()
+                    .context("serving CA cert path is not UTF-8")?,
+                "-CAkey",
+                serving_ca_key
+                    .to_str()
+                    .context("serving CA key path is not UTF-8")?,
+                "-CAcreateserial",
+                "-out",
+                cert.to_str().context("TLS cert path is not UTF-8")?,
+                "-days",
+                "1",
+                "-sha256",
+                "-extfile",
+                extensions
+                    .to_str()
+                    .context("TLS extensions path is not UTF-8")?,
             ],
         )?;
         Ok(())
@@ -242,6 +293,7 @@ impl TestWork {
     fn apply_fixture(&self, context: &E2eContext) -> Result<()> {
         let cert = fs::read(self.dir.join("tls.crt"))?;
         let key = fs::read(self.dir.join("tls.key"))?;
+        let serving_ca = fs::read(self.dir.join("tls-ca.crt"))?;
         let proxy_ca = fs::read(kube_pki_dir().join("front-proxy-ca.crt"))?;
         let yaml = fixture_yaml(
             &context.namespace,
@@ -249,6 +301,7 @@ impl TestWork {
             &base64::engine::general_purpose::STANDARD.encode(cert),
             &base64::engine::general_purpose::STANDARD.encode(key),
             &base64::engine::general_purpose::STANDARD.encode(proxy_ca),
+            &base64::engine::general_purpose::STANDARD.encode(serving_ca),
         );
         let mut command = Command::new("kubectl");
         command.args(["apply", "-f", "-"]).stdin(Stdio::piped());
@@ -310,7 +363,14 @@ impl Drop for TestWork {
     }
 }
 
-fn fixture_yaml(namespace: &str, image: &str, cert: &str, key: &str, proxy_ca: &str) -> String {
+fn fixture_yaml(
+    namespace: &str,
+    image: &str,
+    cert: &str,
+    key: &str,
+    proxy_ca: &str,
+    serving_ca: &str,
+) -> String {
     format!(
         r#"
 apiVersion: v1
@@ -397,7 +457,7 @@ spec:
   groupPriorityMinimum: 100
   versionPriority: 100
   service: {{namespace: {namespace}, name: nodeactivator-metrics, port: 443}}
-  caBundle: {cert}
+  caBundle: {serving_ca}
 ---
 apiVersion: v1
 kind: ConfigMap
