@@ -1,0 +1,144 @@
+commit: 0b917ff0a1bae1feceaa8b6c3545a640a61b0274
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/39889868176
+timestamp (UTC): 2026-10-23T03:11:17Z
+shard: 2/5
+exit code: 1
+----------------------------------------
+bootstrap e2e: 72 test(s), shard 2/5
+▶ 2026-10-23T02:43:25.026Z test_bootstrap_persists_installation_flags ... PASS (4027ms)
+▶ 2026-10-23T02:43:29.054Z test_kubectl_apply_uses_openapi_schema ... PASS (4964ms)
+▶ 2026-10-23T02:43:34.019Z test_hpa_scale_to_zero_activator_full_flow ... secret/nodeactivator-serving created
+secret/nodeapiserver-proxy-client-ca created
+serviceaccount/nodeactivator created
+clusterrole.rbac.authorization.k8s.io/nodeactivator-e2e-services created
+clusterrolebinding.rbac.authorization.k8s.io/nodeactivator-e2e-services created
+clusterrolebinding.rbac.authorization.k8s.io/nodeactivator-e2e-auth-delegator created
+deployment.apps/nodeactivator created
+service/nodeactivator-metrics created
+apiservice.apiregistration.k8s.io/v1beta1.external.metrics.k8s.io created
+configmap/backend-content created
+deployment.apps/backend created
+service/backend created
+service/front created
+horizontalpodautoscaler.autoscaling/backend created
+FAIL (135779ms)
+    timed out waiting for the external metrics APIService to become available
+failure snapshot /api/v1/namespaces/nk-e2e-9187-61263079/pods: {"apiVersion":"v1","items":[{"metadata":{"name":"nodeactivator-81e881939b916d6e-x7vrs","namespace":"nk-e2e-9187-61263079","resourceVersion":"470","uid":"a63a575f-7c6c-4e17-a54b-8b0810cb6fbc"},"nodeName":"runnervmdkmh8","status":{"conditions":[{"lastTransitionTime":"2026-10-23T02:43:44Z","message":"Successfully assigned nk-e2e-9187-61263079/nodeactivator-81e881939b916d6e-x7vrs to runnervmdkmh8","reason":"Scheduled","status":"True","type":"PodScheduled"},{"lastTransitionTime":"2026-10-23T02:43:44Z","observedGeneration":1,"status":"True","type":"Initialized"},{"lastTransitionTime":"2026-10-23T02:43:47Z","observedGeneration":1,"status":"True","type":"ContainersReady"},{"lastTransitionTime":"2026-10-23T02:43:47Z","observedGeneration":1,"status":"True","type":"Ready"},{"lastTransitionTime":"2026-10-23T02:43:44Z","observedGeneration":1,"status":"False","type":"PodResizeInProgress"}],"containerStatuses":[{"containerID":"containerd://014bf0c7c3c285ebd8e98b36ac1349df6aa6bae595ab895f9a149d0d12922bf4","image":"nodeactivator-e2e:nk-e2e-9187-61263079","imageID":"sha256:a869c79ad70fb82b46fe247a0a48c2fe1b1c1fe6122f9f5515511b994cf3dc70","name":"nodeactivator","ready":true,"resources":{},"restartCount":0,"started":true,"state":{"running":{"startedAt":"2026-10-23T02:43:44Z"}},"user":{"linux":{"gid":0,"supplementalGroups":[0],"uid":0}},"volumeMounts":[{"mountPath":"/tls","name":"tls","readOnly":true,"recursiveReadOnly":"Disabled"},{"mountPath":"/proxy-ca","name":"proxy-ca","readOnly":true,"recursiveReadOnly":"Disabled"},{"mountPath":"/var/run/secrets/kubernetes.io/serviceaccount","name":"kube-api-access-80fe3","readOnly":true,"recursiveReadOnly":"Disabled"}]}],"hostIP":"10.1.0.161","hostIPs":[{"ip":"10.1.0.161"}],"phase":"Running","podIP":"10.42.0.8","podIPs":[{"ip":"10.42.0.8"}],"qosClass":"BestEffort","startTime":"2026-10-23T02:43:44Z"}}],"kind":"PodList","metadata":{"resourceVersion":"617"}}
+failure snapshot /api/v1/namespaces/nk-e2e-9187-61263079/events: {"apiVersion":"v1","items":[],"kind":"EventList","metadata":{"resourceVersion":"617"}}
+failure snapshot /api/v1/namespaces/nk-e2e-9187-61263079/services: {"apiVersion":"v1","items":[{"apiVersion":"v1","kind":"Service","metadata":{"annotations":{"kubectl.kubernetes.io/last-applied-configuration":"{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"annotations\":{},\"name\":\"backend\",\"namespace\":\"nk-e2e-9187-61263079\"},\"spec\":{\"ports\":[{\"port\":80,\"targetPort\":8080}],\"selector\":{\"app\":\"backend\"}}}\n"},"creationTimestamp":"2026-10-23T02:43:44Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:kind":{},"f:metadata":{".":{},"f:annotations":{".":{},"f:kubectl.kubernetes.io/last-applied-configuration":{}},"f:generation":{},"f:name":{},"f:namespace":{}},"f:spec":{".":{},"f:clusterIP":{},"f:clusterIPs":{},"f:internalTrafficPolicy":{},"f:ports":{".":{},"k:{\"port\":80,\"protocol\":\"TCP\"}":{".":{},"f:port":{},"f:protocol":{},"f:targetPort":{}}},"f:selector":{},"f:sessionAffinity":{},"f:type":{}}},"manager":"kubectl-client-side-apply","operation":"Update","subresource":"","time":"2026-10-23T02:43:44Z"}],"name":"backend","namespace":"nk-e2e-9187-61263079","resourceVersion":"441","uid":"6f60c021-99e8-4b6a-a2b6-e1d0eeb00e38"},"spec":{"clusterIP":"10.43.0.4","clusterIPs":["10.43.0.4"],"internalTrafficPolicy":"Cluster","ports":[{"port":80,"protocol":"TCP","targetPort":8080}],"selector":{"app":"backend"},"sessionAffinity":"None","type":"ClusterIP"},"status":{"loadBalancer":{}}},{"apiVersion":"v1","kind":"Service","metadata":{"annotations":{"activator.notk8s.io/backend-url":"http://backend.nk-e2e-9187-61263079.svc.cluster.local:80","kubectl.kubernetes.io/last-applied-configuration":"{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"annotations\":{\"activator.notk8s.io/backend-url\":\"http://backend.nk-e2e-9187-61263079.svc.cluster.local:80\"},\"labels\":{\"activator.notk8s.io/enabled\":\"true\"},\"name\":\"front\",\"namespace\":\"nk-e2e-9187-61263079\"},\"spec\":{\"ports\":[{\"port\":80,\"targetPort\":\"http\"}],\"selector\":{\"app\":\"nodeactivator-e2e\"}}}\n"},"creationTimestamp":"2026-10-23T02:43:44Z","generation":1,"labels":{"activator.notk8s.io/enabled":"true"},"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:kind":{},"f:metadata":{".":{},"f:annotations":{".":{},"f:activator.notk8s.io/backend-url":{},"f:kubectl.kubernetes.io/last-applied-configuration":{}},"f:generation":{},"f:labels":{".":{},"f:activator.notk8s.io/enabled":{}},"f:name":{},"f:namespace":{}},"f:spec":{".":{},"f:clusterIP":{},"f:clusterIPs":{},"f:internalTrafficPolicy":{},"f:ports":{".":{},"k:{\"port\":80,\"protocol\":\"TCP\"}":{".":{},"f:port":{},"f:protocol":{},"f:targetPort":{}}},"f:selector":{},"f:sessionAffinity":{},"f:type":{}}},"manager":"kubectl-client-side-apply","operation":"Update","subresource":"","time":"2026-10-23T02:43:44Z"}],"name":"front","namespace":"nk-e2e-9187-61263079","resourceVersion":"450","uid":"0a37e5e5-7b32-4e8c-bdb6-8929b3fc8086"},"spec":{"clusterIP":"10.43.0.5","clusterIPs":["10.43.0.5"],"internalTrafficPolicy":"Cluster","ports":[{"port":80,"protocol":"TCP","targetPort":"http"}],"selector":{"app":"nodeactivator-e2e"},"sessionAffinity":"None","type":"ClusterIP"},"status":{"loadBalancer":{}}},{"apiVersion":"v1","kind":"Service","metadata":{"annotations":{"kubectl.kubernetes.io/last-applied-configuration":"{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"annotations\":{},\"name\":\"nodeactivator-metrics\",\"namespace\":\"nk-e2e-9187-61263079\"},\"spec\":{\"ports\":[{\"name\":\"https\",\"port\":443,\"targetPort\":\"https\"}],\"selector\":{\"app\":\"nodeactivator-e2e\"}}}\n"},"creationTimestamp":"2026-10-23T02:43:44Z","generation":1,"managedFields":[{"apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:apiVersion":{},"f:kind":{},"f:metadata":{".":{},"f:annotations":{".":{},"f:kubectl.kubernetes.io/last-applied-configuration":{}},"f:generation":{},"f:name":{},"f:namespace":{}},"f:spec":{".":{},"f:clusterIP":{},"f:clusterIPs":{},"f:internalTrafficPolicy":{},"f:ports":{".":{},"k:{\"port\":443,\"protocol\":\"TCP\"}":{".":{},"f:name":{},"f:port":{},"f:protocol":{},"f:targetPort":{}}},"f:selector":{},"f:sessionAffinity":{},"f:type":{}}},"manager":"kubectl-client-side-apply","operation":"Update","subresource":"","time":"2026-10-23T02:43:44Z"}],"name":"nodeactivator-metrics","namespace":"nk-e2e-9187-61263079","resourceVersion":"434","uid":"d3e29cc2-ba20-4c6f-8aec-8e22c2f57d8f"},"spec":{"clusterIP":"10.43.0.3","clusterIPs":["10.43.0.3"],"internalTrafficPolicy":"Cluster","ports":[{"name":"https","port":443,"protocol":"TCP","targetPort":"https"}],"selector":{"app":"nodeactivator-e2e"},"sessionAffinity":"None","type":"ClusterIP"},"status":{"loadBalancer":{}}}],"kind":"ServiceList","metadata":{"resourceVersion":"617"}}
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-9187-61263079/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[{"addressType":"IPv4","apiVersion":"discovery.k8s.io/v1","kind":"EndpointSlice","metadata":{"creationTimestamp":"2026-10-23T02:43:44Z","generation":1,"labels":{"endpointslice.kubernetes.io/managed-by":"nodecontroller","kubernetes.io/service-name":"backend"},"managedFields":[{"apiVersion":"discovery.k8s.io/v1","fieldsType":"FieldsV1","fieldsV1":{"f:addressType":{},"f:apiVersion":{},"f:endpoints":{},"f:kind":{},"f:metadata":{"f:labels":{"f:endpointslice.kubernetes.io/managed-by":{},"f:kubernetes.io/service-name":{}},"f:name":{},"f:namespace":{},"f:ownerReferences":{"k:{\"uid\":\"6f60c021-99e8-4b6a-a2b6-e1d0eeb00e38\"}":{"f:apiVersion":{},"f:blockOwnerDeletion":{},"f:controller":{},"f:kind":{},"f:name":{},"f:uid":{}}}},"f:ports":{}},"manager":"nodecontroller","operation":"Apply","subresource":"","time":"2026-10-23T02:45:28Z"}],"name":"backend-nc","namespace":"nk-e2e-9187-61263079","ownerReferences":[{"apiVersion":"v1","blockOwnerDeletion":true,"controller":true,"kind":"Service","name":"backend","uid":"6f60c021-99e8-4b6a-a2b6-e1d0eeb00e38"}],"resourceVersion":"595","uid":"bb8a5e77-db52-42b3-8abc-a76e0909abfa"},"ports":[{"name":"","port":8080,"protocol":"TCP"}]},{"addressType":"IPv4","apiVersion":"discovery.k8s.io/v1","endpoints":[{"addresses":["10.42.0.8"],"conditions":{"ready":true,"serving":true,"terminating":false},"nodeName":"runnervmdkmh8","targetRef":{"kind":"Pod","name":"nodeactivator-81e881939b916d6e-x7vrs","namespace":"nk-e2e-9187-61263079","uid":"a63a575f-7c6c-4e17-a54b-8b0810cb6fbc"}}],"kind":"EndpointSlice","metadata":{"creationTimestamp":"2026-10-23T02:43:44Z","generation":1,"labels":{"endpointslice.kubernetes.io/managed-by":"nodecontroller","kubernetes.io/service-name":"front"},"managedFields":[{"apiVersion":"discovery.k8s.io/v1","fieldsType":"FieldsV1","fieldsV1":{"f:addressType":{},"f:apiVersion":{},"f:endpoints":{},"f:kind":{},"f:metadata":{"f:labels":{"f:endpointslice.kubernetes.io/managed-by":{},"f:kubernetes.io/service-name":{}},"f:name":{},"f:namespace":{},"f:ownerReferences":{"k:{\"uid\":\"0a37e5e5-7b32-4e8c-bdb6-8929b3fc8086\"}":{"f:apiVersion":{},"f:blockOwnerDeletion":{},"f:controller":{},"f:kind":{},"f:name":{},"f:uid":{}}}},"f:ports":{}},"manager":"nodecontroller","operation":"Apply","subresource":"","time":"2026-10-23T02:43:47Z"}],"name":"front-nc","namespace":"nk-e2e-9187-61263079","ownerReferences":[{"apiVersion":"v1","blockOwnerDeletion":true,"controller":true,"kind":"Service","name":"front","uid":"0a37e5e5-7b32-4e8c-bdb6-8929b3fc8086"}],"resourceVersion":"475","uid":"3a4e6eec-86af-46ad-939f-1ee964172b8f"},"ports":[{"name":"","port":8080,"protocol":"TCP"}]},{"addressType":"IPv4","apiVersion":"discovery.k8s.io/v1","endpoints":[{"addresses":["10.42.0.8"],"conditions":{"ready":true,"serving":true,"terminating":false},"nodeName":"runnervmdkmh8","targetRef":{"kind":"Pod","name":"nodeactivator-81e881939b916d6e-x7vrs","namespace":"nk-e2e-9187-61263079","uid":"a63a575f-7c6c-4e17-a54b-8b0810cb6fbc"}}],"kind":"EndpointSlice","metadata":{"creationTimestamp":"2026-10-23T02:43:44Z","generation":1,"labels":{"endpointslice.kubernetes.io/managed-by":"nodecontroller","kubernetes.io/service-name":"nodeactivator-metrics"},"managedFields":[{"apiVersion":"discovery.k8s.io/v1","fieldsType":"FieldsV1","fieldsV1":{"f:addressType":{},"f:apiVersion":{},"f:endpoints":{},"f:kind":{},"f:metadata":{"f:labels":{"f:endpointslice.kubernetes.io/managed-by":{},"f:kubernetes.io/service-name":{}},"f:name":{},"f:namespace":{},"f:ownerReferences":{"k:{\"uid\":\"d3e29cc2-ba20-4c6f-8aec-8e22c2f57d8f\"}":{"f:apiVersion":{},"f:blockOwnerDeletion":{},"f:controller":{},"f:kind":{},"f:name":{},"f:uid":{}}}},"f:ports":{}},"manager":"nodecontroller","operation":"Apply","subresource":"","time":"2026-10-23T02:43:47Z"}],"name":"nodeactivator-metrics-nc","namespace":"nk-e2e-9187-61263079","ownerReferences":[{"apiVersion":"v1","blockOwnerDeletion":true,"controller":true,"kind":"Service","name":"nodeactivator-metrics","uid":"d3e29cc2-ba20-4c6f-8aec-8e22c2f57d8f"}],"resourceVersion":"472","uid":"dc9b10aa-b38b-402a-8289-92994d50a61d"},"ports":[{"name":"https","port":8443,"protocol":"TCP"}]}],"kind":"EndpointSliceList","metadata":{"resourceVersion":"617"}}
+▶ 2026-10-23T02:46:19.862Z test_nodeapiserver_applies_pure_admission_to_apply ... PASS (4034ms)
+▶ 2026-10-23T02:46:23.897Z test_nodeapiserver_defaults_storage_class_on_apply ... PASS (5029ms)
+▶ 2026-10-23T02:46:28.926Z test_nodeapiserver_applies_namespace_node_selector ... PASS (5050ms)
+▶ 2026-10-23T02:46:33.976Z test_nodeapiserver_advertises_subresources ... PASS (5018ms)
+▶ 2026-10-23T02:46:38.995Z test_nodeapiserver_apf_labels_requests ... PASS (5071ms)
+▶ 2026-10-23T02:46:44.066Z test_nodeapiserver_rejects_unsupported_field_selector ... PASS (5014ms)
+▶ 2026-10-23T02:46:49.080Z test_nodeapiserver_enforces_mountable_secrets_for_ephemeral_containers ... PASS (32091ms)
+▶ 2026-10-23T02:47:21.171Z test_nodeapiserver_rejects_unsupported_resource_route ... PASS (3010ms)
+▶ 2026-10-23T02:47:24.182Z test_nodeapiserver_mutating_admission_policy_mutates_create ... PASS (31071ms)
+▶ 2026-10-23T02:47:55.253Z test_nodeapiserver_honors_finalizers ... PASS (4019ms)
+▶ 2026-10-23T02:47:59.273Z test_nodeapiserver_honors_dry_run_and_delete_preconditions ... PASS (5029ms)
+▶ 2026-10-23T02:48:04.302Z test_installed_component_binaries_are_runnable_whatever_the_layout ... PASS (5026ms)
+▶ 2026-10-23T02:48:09.329Z test_basic_pod_runs ... PASS (32067ms)
+▶ 2026-10-23T02:48:41.397Z test_crashing_container_restarts_and_increments_restart_count ... PASS (13039ms)
+▶ 2026-10-23T02:48:54.436Z test_disruption_controller_computes_pdb_status ... PASS (32080ms)
+▶ 2026-10-23T02:49:26.517Z test_eviction_priority_tiebreak_manual_procedure ... SKIP (priority-based eviction ordering requires deliberately induced node pressure and remains a manual live-cluster procedure; 3014ms)
+▶ 2026-10-23T02:49:29.531Z test_pressure_conditions_are_present_and_normally_false ... PASS (5012ms)
+▶ 2026-10-23T02:49:34.543Z test_job_controller_runs_pods_to_completion ... PASS (5023ms)
+▶ 2026-10-23T02:49:39.566Z test_deployment_creates_replicaset_and_rolls_update ... PASS (63165ms)
+▶ 2026-10-23T02:50:42.731Z test_hugepages_limit_is_enforced_via_cgroup ... PASS (7037ms)
+▶ 2026-10-23T02:50:49.769Z test_env_resource_field_ref_reports_the_containers_own_limits ... PASS (4020ms)
+▶ 2026-10-23T02:50:53.790Z test_datastore_enforces_compare_and_swap ... PASS (5279ms)
+▶ 2026-10-23T02:50:59.069Z test_datastore_expires_a_lease_and_its_keys ... PASS (5280ms)
+▶ 2026-10-23T02:51:04.350Z test_datastore_refuses_a_cluster_it_cannot_be_part_of ... PASS (5015ms)
+▶ 2026-10-23T02:51:09.366Z test_the_cluster_keeps_serving_when_a_follower_dies ... PASS (4830ms)
+▶ 2026-10-23T02:51:14.197Z test_a_partitioned_leader_steps_down_and_the_majority_elects_another ... SKIP (partition tests require the isolated network-namespace harness; set NOTK8S_E2E_ENABLE_PACKET_SHAPING=1 on a disposable root test host; 5014ms)
+▶ 2026-10-23T02:51:19.211Z test_pod_cgroup_reflects_its_qos_class ... SKIP (no cgroup directory under /sys/fs/cgroup/kubepods contains Pod UID bd226e0d-1e12-46b2-b1c6-868a530c43eb; this runtime's cgroup layout is not inspectable by this test; 32073ms)
+▶ 2026-10-23T02:51:51.285Z test_host_network_pod_uses_the_node_network_namespace ... PASS (32071ms)
+▶ 2026-10-23T02:52:23.356Z test_cluster_dns_resolves_service_names ... PASS (36084ms)
+▶ 2026-10-23T02:52:59.440Z test_plugin_registry_directory_exists ... PASS (5013ms)
+▶ 2026-10-23T02:53:04.453Z test_plugin_registry_watches_for_device_plugins_too ... PASS (5014ms)
+▶ 2026-10-23T02:53:09.468Z test_dra_resource_slices_are_published ... PASS (5014ms)
+▶ 2026-10-23T02:53:14.482Z test_resource_api_group_is_enabled ... PASS (5030ms)
+▶ 2026-10-23T02:53:19.513Z test_csi_ephemeral_inline_volume_is_mounted ... PASS (32071ms)
+▶ 2026-10-23T02:53:51.585Z test_node_reports_volumes_in_use_for_a_csi_volume ... PASS (77198ms)
+▶ 2026-10-23T02:55:08.783Z test_pod_with_an_attach_required_pvc_waits_for_volumeattachment ... PASS (33076ms)
+▶ 2026-10-23T02:55:41.860Z test_scheduler_honours_a_node_selector_that_matches_nothing ... PASS (2018ms)
+▶ 2026-10-23T02:55:43.878Z test_scheduler_honours_topology_spread ... PASS (35076ms)
+▶ 2026-10-23T02:56:18.954Z test_scheduler_claims_a_static_wait_for_first_consumer_volume ... PASS (37098ms)
+▶ 2026-10-23T02:56:56.053Z test_scheduler_enforces_read_write_once_pod_exclusivity ... PASS (75158ms)
+▶ 2026-10-23T02:58:11.211Z test_restart_policy_never_exit_nonzero_is_failed ... PASS (3020ms)
+▶ 2026-10-23T02:58:14.232Z test_container_status_container_id_has_a_runtime_scheme_prefix ... PASS (32075ms)
+▶ 2026-10-23T02:58:46.308Z test_pod_status_reports_host_ips_plural ... PASS (32068ms)
+▶ 2026-10-23T02:59:18.376Z test_liveness_probe_failure_restarts_the_container ... PASS (63131ms)
+▶ 2026-10-23T03:00:21.507Z test_http_get_readiness_probe_against_a_real_server ... PASS (32070ms)
+▶ 2026-10-23T03:00:53.578Z test_downward_api_volume_writes_pod_metadata ... PASS (6026ms)
+▶ 2026-10-23T03:00:59.604Z test_host_aliases_still_work_under_host_users_false ... PASS (5024ms)
+▶ 2026-10-23T03:01:04.628Z test_host_path_directory_mounts_the_real_host_directory ... PASS (5024ms)
+▶ 2026-10-23T03:01:09.653Z test_mount_propagation_private_default_does_not_see_a_new_host_mount ... PASS (35140ms)
+▶ 2026-10-23T03:01:44.793Z test_host_path_directory_type_rejects_a_nonexistent_path ... PASS (4022ms)
+▶ 2026-10-23T03:01:48.816Z test_run_as_user_is_applied ... PASS (4021ms)
+▶ 2026-10-23T03:01:52.838Z test_host_users_volume_ownership_translation_is_correct ... PASS (6026ms)
+▶ 2026-10-23T03:01:58.865Z test_topology_manager_cross_provider_alignment_manual_note ... SKIP (cross-provider CPU/device NUMA alignment needs real multi-NUMA hardware and a device plugin advertising NUMA affinity; 5012ms)
+▶ 2026-10-23T03:02:03.878Z test_containers_get_isolated_pid_namespaces_by_default ... PASS (33070ms)
+▶ 2026-10-23T03:02:36.949Z test_lifecycle_stop_signal_is_honored_by_the_runtime ... PASS (7030ms)
+▶ 2026-10-23T03:02:43.979Z test_nodeapiserver_proxy_subresources_relay_requests ... PASS (63082ms)
+▶ 2026-10-23T03:03:47.061Z test_nodeproxy_runs_as_its_own_service_separate_from_nodelet ... PASS (2031ms)
+▶ 2026-10-23T03:03:49.093Z test_session_affinity_pins_a_client_to_one_backend ... PASS (34109ms)
+▶ 2026-10-23T03:04:23.202Z test_pv_binder_requests_dynamic_provisioning_from_the_storage_class ... PASS (6027ms)
+▶ 2026-10-23T03:04:29.230Z test_kubectl_logs_follow_streams_new_output ... PASS (32572ms)
+▶ 2026-10-23T03:05:01.802Z test_metrics_resource_returns_real_pod_usage ... PASS (32113ms)
+▶ 2026-10-23T03:05:33.916Z test_nodeapiserver_writes_audit_log ... PASS (5589ms)
+▶ 2026-10-23T03:05:44.523Z test_cert_manager_crds_are_usable_without_nodecontroller_restart ... Client Version: v1.37.1
+Kustomize Version: v5.8.1
+PASS (89283ms)
+▶ 2026-10-23T03:07:18.823Z test_log_rotation_creates_a_rotated_file ... PASS (42538ms)
+▶ 2026-10-23T03:08:04.375Z test_a_pending_pod_recovers_after_the_node_failure_is_fixed ... PASS (37369ms)
+▶ 2026-10-23T03:08:44.761Z test_config_file_precedence_a_real_env_var_still_wins ... PASS (4789ms)
+▶ 2026-10-23T03:08:54.569Z test_image_gc_removes_unreferenced_images_above_the_watermark ... # /etc/systemd/system/nodelet.service
+[Unit]
+Description=nodelet -- not-k8s node agent (kubelet replacement)
+After=network-online.target nodeapiserver.service
+Wants=network-online.target nodeapiserver.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c '/var/lib/nodebootstrap/toolchain/bin/nodelet'
+Restart=always
+RestartSec=5s
+Environment=KUBECONFIG=/etc/nodebootstrap/admin.kubeconfig
+Environment=NODELET_RUNTIME=cri
+Environment=NODELET_SERVER_CERT_DIR=/var/lib/nodelet/pki
+Environment=NODELET_NODE_NAME=runnervmdkmh8
+Environment=NOTK8S_COMPONENT=nodelet
+Environment=NOTK8S_COMPONENT_BINARY=/var/lib/nodebootstrap/toolchain/bin/nodelet
+Environment=NODELET_CLUSTER_DNS=10.43.0.10
+Environment=NODELET_CLUSTER_DOMAIN=cluster.local
+Environment=NODELET_CLIENT_CA_FILE=/var/lib/nodebootstrap/pki/ca.crt
+[Install]
+WantedBy=multi-user.target
+PASS (34927ms)
+▶ 2026-10-23T03:09:34.514Z test_scheduler_schedules_a_pod_an_http_extender_approves ... # /etc/systemd/system/nodescheduler.service
+[Unit]
+Description=nodescheduler -- not-k8s scheduler (kube-scheduler replacement)
+After=network-online.target nodeapiserver.service
+Wants=network-online.target nodeapiserver.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c '/var/lib/nodebootstrap/toolchain/bin/nodescheduler'
+Restart=always
+RestartSec=5s
+Environment=KUBECONFIG=/etc/nodebootstrap/kube-scheduler.kubeconfig
+Environment=NOTK8S_COMPONENT=nodescheduler
+Environment=NOTK8S_COMPONENT_BINARY=/var/lib/nodebootstrap/toolchain/bin/nodescheduler
+Environment=RUST_LOG=info,nk_watch_trace=debug,nk_controller_trace=debug,kube_runtime::watcher=debug
+[Install]
+WantedBy=multi-user.target
+PASS (34905ms)
+▶ 2026-10-23T03:10:14.439Z test_node_is_tainted_unreachable_after_heartbeat_loss_and_recovers ... UNIT FILE       STATE   PRESET
+nodelet.service enabled enabled
+
+1 unit files listed.
+PASS (40136ms)
+Error: bootstrap e2e failed: 1 test(s): test_hpa_scale_to_zero_activator_full_flow
