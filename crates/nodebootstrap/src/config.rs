@@ -5,6 +5,9 @@
 
 use anyhow::{Context, Result};
 
+pub const DEFAULT_NODEACTIVATOR_IMAGE: &str =
+    "ghcr.io/centerionware/not-k8s/nodeactivator:latest";
+
 const WITHOUT_FLANNEL_MARKER: &str = "without-flannel";
 const ADVERTISE_ADDRESS_MARKER: &str = "advertise-address";
 pub(crate) const DEFAULT_SERVICE_CIDR: &str = "10.43.0.0/16";

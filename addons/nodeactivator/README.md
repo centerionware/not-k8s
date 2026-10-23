@@ -16,27 +16,32 @@ returns to zero.
 ## Build and install
 
 The bootstrapper can install both optional addons after the control plane is
-ready. Build or publish the activator image first so every node can pull it:
+ready. The activator and its certificate signer are in one published image.
+Enable it without building source on the cluster:
 
 ```sh
-./target/debug/nodebootstrap --metrics-server \
-  --nodeactivator-image=registry.example/nodeactivator:v1
+./target/release/nodebootstrap --metrics-server --enable-activator
 ```
 
 For migration to nodestore, use the corresponding migration options:
 
 ```sh
-notk8s migrate from=k3s to=nodestore metrics-server=true \
-  nodeactivator-image=registry.example/nodeactivator:v1
+notk8s migrate from=k3s to=nodestore metrics-server=true nodeactivator=true
 ```
+
+The default activator image is
+`ghcr.io/centerionware/not-k8s/nodeactivator:latest`. Override it with
+`--nodeactivator-image=IMAGE` in nodebootstrap or
+`nodeactivator-image=IMAGE` in nodemigrate. Metrics Server uses its published
+upstream image from `registry.k8s.io`; neither Pod requires building source on
+the deployment host.
 
 Metrics Server supplies resource metrics such as CPU and memory. Kubernetes
 1.37 HPA scale-to-zero uses object or external metrics; the Node Activator
 exposes its request count through the standard External Metrics API. Either
 addon can be enabled independently.
 
-Build from the repository root and make the image available to the cluster's
-nodes. The image contains both the activator and its PodCertificate signer:
+For development, build the combined image from the repository root:
 
 ```sh
 docker build -f addons/nodeactivator/Dockerfile -t nodeactivator:latest .

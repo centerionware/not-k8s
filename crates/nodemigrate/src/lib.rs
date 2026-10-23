@@ -107,8 +107,10 @@ fn migrate_to_nodestore(
     validate_skip_api_import(request, source, joins_existing)?;
     if source.role == detect::NodeRole::Worker {
         ensure!(
-            !request.metrics_server && request.nodeactivator_image.is_none(),
-            "metrics-server and nodeactivator-image must be enabled on a control-plane migration"
+            !request.metrics_server
+                && !request.nodeactivator
+                && request.nodeactivator_image.is_none(),
+            "metrics-server and nodeactivator options require a control-plane migration"
         );
         return migrate_worker_to_nodestore(request, source);
     }
@@ -220,12 +222,19 @@ fn migrate_to_nodestore(
         } else {
             "nodeproxy enabled"
         };
-        let addons = match (request.metrics_server, request.nodeactivator_image.as_deref()) {
-            (true, Some(image)) => format!("metrics-server; nodeactivator image={image}"),
-            (true, None) => "metrics-server".to_string(),
-            (false, Some(image)) => format!("nodeactivator image={image}"),
-            (false, None) => "none".to_string(),
+        let metrics_addon = if request.metrics_server {
+            "metrics-server"
+        } else {
+            "no metrics-server"
         };
+        let activator_addon = if let Some(image) = request.nodeactivator_image.as_deref() {
+            format!("nodeactivator image={image}")
+        } else if request.nodeactivator {
+            "nodeactivator default image".to_string()
+        } else {
+            "no nodeactivator".to_string()
+        };
+        let addons = format!("{metrics_addon}; {activator_addon}");
         println!(
             "Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}; proxy={proxy}{replacement}; addons={addons}; replace-existing-node={replace_existing_node}; cluster-api-import={}; {}source service will be disabled; uninstall-after-migrate={}",
             request.from,
@@ -330,7 +339,9 @@ fn migrate_to_nodestore(
     // Source API import can replace addon objects installed by the initial
     // bootstrap. Reconcile explicitly selected destination addons afterward
     // so the requested bootstrap configuration is the final cluster state.
-    if !joins_existing && (request.metrics_server || request.nodeactivator_image.is_some()) {
+    if !joins_existing
+        && (request.metrics_server || request.nodeactivator || request.nodeactivator_image.is_some())
+    {
         let mut reconcile = bootstrap_command(source, disable_nodeproxy)?;
         append_optional_addon_flags(&mut reconcile, request);
         prepare_migration_pki(&mut reconcile, source, &export)?;
@@ -1903,6 +1914,8 @@ fn append_optional_addon_flags(command: &mut Command, request: &request::Migrati
     }
     if let Some(image) = &request.nodeactivator_image {
         command.arg(format!("--nodeactivator-image={image}"));
+    } else if request.nodeactivator {
+        command.arg("--enable-activator");
     }
 }
 
@@ -2332,7 +2345,7 @@ fn print_help() {
          Usage:\n\
          \x20 nodemigrate inspect\n\
          \x20 nodemigrate to=nodestore from=k3s [uninstall-after-migrate=true]\n\
-         \x20 nodemigrate to=nodestore from=k3s metrics-server=true nodeactivator-image=IMAGE\n\
+         \x20 nodemigrate to=nodestore from=k3s metrics-server=true nodeactivator=true\n\
          \x20 nodemigrate to=nodestore from=kubernetes\n\
          \x20 nodemigrate to=k3s from=nodestore\n\
          \x20 nodemigrate to=kubernetes from=nodestore\n\
@@ -2348,8 +2361,8 @@ fn print_help() {
          state. Use skip-api-export=true for later nodes after target API\n\
          readiness.\n\
          Optional destination addons are metrics-server=true and\n\
-         nodeactivator-image=IMAGE (the activator image must be available to\n\
-         the destination nodes).\n\
+         nodeactivator=true. Use nodeactivator-image=IMAGE to override the\n\
+         published activator image.\n\
          \n\
          `inspect` reports detected local Kubernetes installations. Migration\n\
          exports Kubernetes API objects into a protected recovery directory,\n\
@@ -2378,14 +2391,14 @@ mod tests {
         let request = MigrationRequest::parse(&[
             "to=nodestore".to_string(), "from=k3s".to_string(),
             "metrics-server=true".to_string(),
-            "nodeactivator-image=registry.example/activator:v1".to_string(),
+            "nodeactivator=true".to_string(),
         ]).unwrap();
         let mut command = Command::new("bootstrap");
         append_optional_addon_flags(&mut command, &request);
         let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
         assert_eq!(args, vec![
             "--metrics-server".to_string(),
-            "--nodeactivator-image=registry.example/activator:v1".to_string(),
+            "--enable-activator".to_string(),
         ]);
     }
     use crate::transfer::NodeSchedulingState;

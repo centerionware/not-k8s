@@ -476,6 +476,15 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
             std::env::set_var("NODEBOOTSTRAP_METRICS_SERVER", "1");
             continue;
         }
+        if arg == "--enable-activator" {
+            if std::env::var_os("NODEBOOTSTRAP_NODEACTIVATOR_IMAGE").is_none() {
+                std::env::set_var(
+                    "NODEBOOTSTRAP_NODEACTIVATOR_IMAGE",
+                    crate::config::DEFAULT_NODEACTIVATOR_IMAGE,
+                );
+            }
+            continue;
+        }
         if let Some(value) = arg.strip_prefix("--nodeactivator-image=") {
             anyhow::ensure!(!value.trim().is_empty(), "--nodeactivator-image requires an image reference");
             std::env::set_var("NODEBOOTSTRAP_NODEACTIVATOR_IMAGE", value);
@@ -775,7 +784,8 @@ fn print_help() {
     println!("  --cni=none             use an externally-managed CNI for this run");
     println!("  --disable-dns          do not install or configure CoreDNS");
     println!("  --metrics-server       install Kubernetes resource metrics server");
-    println!("  --nodeactivator-image=REF install the HTTP activator and PodCertificate signer");
+    println!("  --enable-activator     install the HTTP activator from its published image");
+    println!("  --nodeactivator-image=REF override the activator and signer image");
     println!("  --cluster-domain=NAME  use NAME instead of cluster.local");
     println!("  --cidr=IP/PREFIX       service network (default 10.43.0.0/16)");
     println!("  --cidr6=IP/PREFIX      optional IPv6 service network");

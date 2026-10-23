@@ -450,6 +450,7 @@ jobs:
             gh release create "$tag" --verify-tag --title "$tag" --notes-file release-notes.md "${assets[@]}"
           fi
           echo "published=true" >> "$GITHUB_OUTPUT"
+
       - name: Advance VERSION
         if: inputs.reuse_release_tag == ''
         env:
@@ -545,6 +546,45 @@ jobs:
             sleep $((attempt * 5))
           done
           [[ "$pushed" == true ]]
+
+  publish-activator:
+    needs: [publish-release, release-identity]
+    if: ${{ inputs.reuse_release_tag == '' && needs.publish-release.outputs.published == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      RELEASE_VERSION: ${{ needs.release-identity.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Login to GHCR
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/nodeactivator"
+          docker buildx create --use
+          docker buildx build --push \
+            --file addons/nodeactivator/Dockerfile \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --tag "$image:$RELEASE_VERSION" \
+            --tag "$image:latest" .
+      - name: Set package public
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY%%/*}"
+          package="${GITHUB_REPOSITORY#*/}%2Fnodeactivator"
+          gh api --method PATCH "/orgs/$owner/packages/container/$package/visibility" \
+            -f visibility=public
 
   cleanup-release-artifacts:
     needs: [build-release, publish-release]

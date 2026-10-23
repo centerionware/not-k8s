@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use base64::Engine as _;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
 
-use crate::config::Config;
+use crate::config::{Config, DEFAULT_NODEACTIVATOR_IMAGE};
 
 const METRICS_SERVER_VERSION: &str = "v0.9.0";
 const NODEACTIVATOR_MANIFEST: &str =
@@ -202,7 +202,16 @@ fn render_nodeactivator(image: &str, ca: &str, key: &str) -> Result<String> {
     );
     let encoded_ca = base64::engine::general_purpose::STANDARD.encode(ca);
     let encoded_key = base64::engine::general_purpose::STANDARD.encode(key);
+    let pull_policy = if image == DEFAULT_NODEACTIVATOR_IMAGE {
+        "Always"
+    } else {
+        "IfNotPresent"
+    };
     let mut manifest = NODEACTIVATOR_MANIFEST.replace("nodeactivator:latest", image);
+    manifest = manifest.replace(
+        "imagePullPolicy: IfNotPresent",
+        &format!("imagePullPolicy: {pull_policy}"),
+    );
     manifest = manifest.replace("REPLACE_WITH_BASE64_SERVING_CA", &encoded_ca);
     let secret = format!(
         "---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: nodeactivator-signer-ca\n  namespace: kube-system\ntype: Opaque\ndata:\n  ca.crt: {encoded_ca}\n  ca.key: {encoded_key}\n"
@@ -328,5 +337,25 @@ mod tests {
         assert!(manifest.contains("verbs: [\"sign\"]"));
         assert!(!manifest.contains("nodeapiserver-proxy-client-ca"));
         assert!(!manifest.contains("REPLACE_WITH_BASE64_SERVING_CA"));
+    }
+
+    #[test]
+    fn default_activator_image_is_pulled_from_ghcr_and_custom_images_are_local_first() {
+        let default_manifest = render_nodeactivator(
+            DEFAULT_NODEACTIVATOR_IMAGE,
+            "dedicated-ca",
+            "dedicated-key",
+        )
+        .expect("render default addon manifest");
+        assert!(default_manifest.contains(DEFAULT_NODEACTIVATOR_IMAGE));
+        assert!(default_manifest.contains("imagePullPolicy: Always"));
+
+        let custom_manifest = render_nodeactivator(
+            "registry.example/activator:test",
+            "dedicated-ca",
+            "dedicated-key",
+        )
+        .expect("render custom addon manifest");
+        assert!(custom_manifest.contains("imagePullPolicy: IfNotPresent"));
     }
 }
