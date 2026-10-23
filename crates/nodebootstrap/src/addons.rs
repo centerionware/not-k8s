@@ -301,7 +301,9 @@ spec:
 
 #[cfg(test)]
 mod tests {
-    use super::{render_metrics_server, render_nodeactivator};
+    use super::{
+        render_metrics_server, render_nodeactivator, DEFAULT_NODEACTIVATOR_IMAGE,
+    };
     use base64::Engine as _;
 
     #[test]

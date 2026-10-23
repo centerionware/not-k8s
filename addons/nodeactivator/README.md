@@ -34,7 +34,9 @@ The default activator image is
 `--nodeactivator-image=IMAGE` in nodebootstrap or
 `nodeactivator-image=IMAGE` in nodemigrate. Metrics Server uses its published
 upstream image from `registry.k8s.io`; neither Pod requires building source on
-the deployment host.
+the deployment host. The release workflow publishes the activator image for
+`linux/amd64` and `linux/arm64`. Set the GHCR package visibility to public once
+in the package settings so clusters can pull it without registry credentials.
 
 Metrics Server supplies resource metrics such as CPU and memory. Kubernetes
 1.37 HPA scale-to-zero uses object or external metrics; the Node Activator
