@@ -3,7 +3,9 @@ use super::skip_test;
 use anyhow::{Context, Result};
 use base64::Engine;
 use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
 use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::discovery::v1::EndpointSlice;
 use kube::api::{Api, ListParams, LogParams};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,6 +13,27 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 const BUSYBOX_IMAGE: &str = "busybox:1.36.1";
+
+fn endpoint_slices_have_ready_endpoint(slices: &[EndpointSlice]) -> bool {
+    slices.iter().any(|slice| {
+        slice.endpoints.iter().any(|endpoint| {
+            endpoint
+                .conditions
+                .as_ref()
+                .is_none_or(|conditions| conditions.ready != Some(false))
+        })
+    })
+}
+
+fn hpa_is_scaled_to_zero(hpa: &HorizontalPodAutoscaler) -> bool {
+    hpa.status.as_ref().is_some_and(|status| {
+        status.conditions.as_ref().is_some_and(|conditions| {
+            conditions
+                .iter()
+                .any(|condition| condition.type_ == "ScaledToZero" && condition.status == "True")
+        })
+    })
+}
 
 pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) -> Result<()> {
     if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
@@ -29,6 +52,8 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
     work.apply_fixture(context)?;
 
     let deployments: Api<Deployment> = Api::namespaced(context.client.clone(), &context.namespace);
+    let hpas: Api<HorizontalPodAutoscaler> =
+        Api::namespaced(context.client.clone(), &context.namespace);
     let ready = context
         .wait_until(
             "nodeactivator to become ready",
@@ -91,6 +116,30 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
             == 0,
         "backend must start at zero replicas"
     );
+    let hpa = hpas.get("backend").await?;
+    anyhow::ensure!(
+        hpa.spec.as_ref().and_then(|spec| spec.min_replicas) == Some(0),
+        "backend HPA must allow zero replicas"
+    );
+
+    let backend_slices: Api<EndpointSlice> =
+        Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until(
+            "the backend Service to have no ready endpoints at zero replicas",
+            Duration::from_secs(90),
+            || {
+                let backend_slices = backend_slices.clone();
+                async move {
+                    let items = backend_slices
+                        .list(&ListParams::default().labels("kubernetes.io/service-name=backend"))
+                        .await?
+                        .items;
+                    Ok(!items.is_empty() && !endpoint_slices_have_ready_endpoint(&items))
+                }
+            },
+        )
+        .await?;
 
     work.apply_caller(context)?;
     let pods: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
@@ -108,6 +157,23 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
                         .and_then(|spec| spec.replicas)
                         .unwrap_or_default()
                         > 0)
+                }
+            },
+        )
+        .await?;
+
+    context
+        .wait_until(
+            "the backend Service to have a ready endpoint after HPA scale-up",
+            Duration::from_secs(180),
+            || {
+                let backend_slices = backend_slices.clone();
+                async move {
+                    let items = backend_slices
+                        .list(&ListParams::default().labels("kubernetes.io/service-name=backend"))
+                        .await?
+                        .items;
+                    Ok(endpoint_slices_have_ready_endpoint(&items))
                 }
             },
         )
@@ -140,14 +206,34 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
             Duration::from_secs(240),
             || {
                 let deployments = deployments.clone();
+                let backend_slices = backend_slices.clone();
+                let hpas = hpas.clone();
                 async move {
-                    Ok(deployments
-                        .get("backend")
-                        .await?
+                    let backend = deployments.get("backend").await?;
+                    let backend_at_zero = backend
                         .spec
+                        .as_ref()
                         .and_then(|spec| spec.replicas)
                         .unwrap_or_default()
-                        == 0)
+                        == 0
+                        && backend.status.as_ref().is_some_and(|status| {
+                            status.replicas == 0
+                                && status.ready_replicas.unwrap_or_default() == 0
+                                && status.available_replicas.unwrap_or_default() == 0
+                        });
+                    let slices = backend_slices
+                        .list(&ListParams::default().labels("kubernetes.io/service-name=backend"))
+                        .await?
+                        .items;
+                    let hpa = hpas.get("backend").await?;
+                    Ok(backend_at_zero
+                        && !slices.is_empty()
+                        && !endpoint_slices_have_ready_endpoint(&slices)
+                        && hpa
+                            .status
+                            .as_ref()
+                            .is_some_and(|status| status.desired_replicas == 0)
+                        && hpa_is_scaled_to_zero(&hpa))
                 }
             },
         )
