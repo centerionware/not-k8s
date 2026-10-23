@@ -323,6 +323,9 @@ mod tests {
         assert!(manifest.contains(format!("ca.key: {encoded_key}\n---\napiVersion: v1").as_str()));
         assert!(manifest.contains(format!("caBundle: {encoded_ca}").as_str()));
         assert!(manifest.contains("name: extension-apiserver-authentication"));
+        assert!(manifest.contains("resources: [\"signers\"]"));
+        assert!(manifest.contains("resourceNames: [\"nodeactivator.notk8s.io/serving\"]"));
+        assert!(manifest.contains("verbs: [\"sign\"]"));
         assert!(!manifest.contains("nodeapiserver-proxy-client-ca"));
         assert!(!manifest.contains("REPLACE_WITH_BASE64_SERVING_CA"));
     }

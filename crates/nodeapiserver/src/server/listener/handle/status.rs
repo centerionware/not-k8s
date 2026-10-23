@@ -98,7 +98,7 @@ macro_rules! handle_status {
                 Ok(rest::GetOutcome::Found(object)) => Some(object),
                 Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
                 Err(error) => {
-                    warn!(path = %$path_str, error = ?error, "admission: reading the CSR for certificate signer authorization failed");
+                    warn!(path = %$path_str, error = ?error, "admission: reading the certificate request for signer authorization failed");
                     return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
                 }
             };
@@ -108,6 +108,7 @@ macro_rules! handle_status {
                 $enforce_rbac,
                 $identity.as_ref(),
                 action,
+                &$info.resource,
                 old_object.as_ref(),
                 Some(&body_value),
                 &$info.subresource,
@@ -309,7 +310,7 @@ macro_rules! handle_status {
                     return Ok(json_response(StatusCode::UNPROCESSABLE_ENTITY, &invalid_status(&$path_str, &violations)));
                 }
                 Err(e) => {
-                    warn!(path = %$path_str, error = ?e, "admission: preparing the CSR status patch for certificate signer authorization failed");
+                    warn!(path = %$path_str, error = ?e, "admission: preparing the certificate request status patch for signer authorization failed");
                     return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
                 }
             };
@@ -317,7 +318,7 @@ macro_rules! handle_status {
                 Ok(rest::GetOutcome::Found(object)) => Some(object),
                 Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => None,
                 Err(error) => {
-                    warn!(path = %$path_str, error = ?error, "admission: reading the CSR for certificate signer authorization failed");
+                    warn!(path = %$path_str, error = ?error, "admission: reading the certificate request for signer authorization failed");
                     return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
                 }
             };
@@ -327,6 +328,7 @@ macro_rules! handle_status {
                 $enforce_rbac,
                 $identity.as_ref(),
                 action,
+                &$info.resource,
                 old_object.as_ref(),
                 candidate.as_ref(),
                 &$info.subresource,

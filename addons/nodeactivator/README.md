@@ -63,7 +63,8 @@ The metrics server validates the APIService aggregator's mTLS client
 certificate and uses a `SubjectAccessReview` for every metric request. Its
 ServiceAccount is bound to `system:auth-delegator` for that check. The signer
 has a namespace Role that can read Pods and Services and update only
-PodCertificateRequest status in `kube-system`.
+PodCertificateRequest status in `kube-system`, plus a ClusterRole granting
+`sign` only for `nodeactivator.notk8s.io/serving`.
 
 ## Connect an application
 

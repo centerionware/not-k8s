@@ -2,8 +2,8 @@
 //!
 //! These checks mirror the three small certificate admission plugins enabled
 //! by the upstream kube-apiserver default chain.  The signer checks authorize
-//! against the synthetic `signers` resource, not the CSR object itself; the
-//! subject restriction parses the CSR request that the caller supplied.
+//! against the synthetic `signers` resource, not the request object itself;
+//! the subject restriction parses the CSR request that the caller supplied.
 
 use crate::admission::attributes::Operation;
 use crate::authn::x509::Identity;
@@ -16,6 +16,7 @@ use x509_parser::prelude::FromDer;
 
 const GROUP: &str = "certificates.k8s.io";
 const RESOURCE: &str = "certificatesigningrequests";
+const POD_CERTIFICATE_RESOURCE: &str = "podcertificaterequests";
 const SIGNERS_RESOURCE: &str = "signers";
 const KUBE_APISERVER_CLIENT_SIGNER: &str = "kubernetes.io/kube-apiserver-client";
 
@@ -98,8 +99,8 @@ fn parse_csr_organizations(object: &Value) -> Result<Vec<String>, Error> {
         .collect())
 }
 
-/// Validates the authorization performed by `CertificateApproval` or
-/// `CertificateSigning` for a CSR status subresource update.
+/// Validates the authorization performed by `CertificateApproval` or a
+/// certificate signer for status subresource updates.
 ///
 /// Upstream checks `verb=approve|sign` on the synthetic `signers` resource,
 /// first for the exact signer name and then for its `{domain}/*` wildcard.
@@ -110,14 +111,18 @@ pub async fn validate_signer_update(
     enforce_rbac: bool,
     identity: Option<&Identity>,
     action: &str,
+    resource: &str,
     old_object: Option<&Value>,
     candidate: Option<&Value>,
     subresource: &str,
 ) -> Result<(), Error> {
-    if !is_csr(GROUP, RESOURCE) || !matches!(subresource, "approval" | "status") {
+    let is_csr_request = resource == RESOURCE && matches!(subresource, "approval" | "status");
+    let is_pod_certificate_request =
+        resource == POD_CERTIFICATE_RESOURCE && subresource == "status";
+    if !is_csr_request && !is_pod_certificate_request {
         return Ok(());
     }
-    if subresource == "approval" && action != "approve" {
+    if is_csr_request && subresource == "approval" && action != "approve" {
         return Ok(());
     }
     if subresource == "status" && action != "sign" {
@@ -125,7 +130,7 @@ pub async fn validate_signer_update(
     }
 
     let old_object = old_object.ok_or_else(|| {
-        Error::Forbidden("CertificateSigningRequest does not exist".to_string())
+        Error::Forbidden("certificate request does not exist".to_string())
     })?;
     let signer_name = old_object
         .pointer("/spec/signerName")
@@ -134,13 +139,9 @@ pub async fn validate_signer_update(
 
     if subresource == "status" {
         let candidate = candidate.ok_or_else(|| {
-            Error::Forbidden("CertificateSigningRequest status has no object".to_string())
+            Error::Forbidden("certificate request status has no object".to_string())
         })?;
-        let certificate_changed = old_object.pointer("/status/certificate")
-            != candidate.pointer("/status/certificate");
-        let conditions_changed = old_object.pointer("/status/conditions")
-            != candidate.pointer("/status/conditions");
-        if !certificate_changed && !conditions_changed {
+        if !signing_status_changed(resource, old_object, candidate) {
             return Ok(());
         }
     }
@@ -155,6 +156,16 @@ pub async fn validate_signer_update(
             "user is not permitted to {action} requests with signerName {signer_name:?}"
         )))
     }
+}
+
+fn signing_status_changed(resource: &str, old_object: &Value, candidate: &Value) -> bool {
+    let certificate_field = if resource == POD_CERTIFICATE_RESOURCE {
+        "/status/certificateChain"
+    } else {
+        "/status/certificate"
+    };
+    old_object.pointer(certificate_field) != candidate.pointer(certificate_field)
+        || old_object.pointer("/status/conditions") != candidate.pointer("/status/conditions")
 }
 
 async fn signer_name_is_authorized(
@@ -255,5 +266,18 @@ mod tests {
         };
         assert_eq!(info.resource, SIGNERS_RESOURCE);
         assert_eq!(info.name, "kubernetes.io/kube-apiserver-client-kubelet");
+    }
+
+    #[test]
+    fn pod_certificate_issuance_is_a_signer_status_change() {
+        let old = json!({"status": {"conditions": []}});
+        let issued = json!({
+            "status": {
+                "certificateChain": "leaf-and-chain",
+                "conditions": [{"type": "Issued", "status": "True"}]
+            }
+        });
+        assert!(signing_status_changed(POD_CERTIFICATE_RESOURCE, &old, &issued));
+        assert!(!signing_status_changed(POD_CERTIFICATE_RESOURCE, &issued, &issued));
     }
 }

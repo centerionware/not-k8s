@@ -390,7 +390,38 @@ impl TestWork {
         let install = std::thread::spawn(move || crate::addons::install(&config))
             .join()
             .map_err(|_| anyhow::anyhow!("bootstrap addon installation thread panicked"))?;
-        install.context("installing the bootstrap addon")?;
+        if let Err(error) = install {
+            let signer_logs = Command::new("kubectl")
+                .args([
+                    "--request-timeout=10s",
+                    "logs",
+                    "deployment/nodeactivator-cert-signer",
+                    "--namespace",
+                    "kube-system",
+                    "--tail=100",
+                    "--timestamps",
+                ])
+                .output()
+                .context("getting bootstrap signer logs after addon installation failed")?;
+            let requests = Command::new("kubectl")
+                .args([
+                    "--request-timeout=10s",
+                    "get",
+                    "podcertificaterequests.certificates.k8s.io",
+                    "--all-namespaces",
+                    "-o",
+                    "yaml",
+                ])
+                .output()
+                .context("getting PodCertificateRequest state after addon installation failed")?;
+            anyhow::bail!(
+                "installing the bootstrap addon: {error:#}; certificate signer logs:\n{}{}\nPodCertificateRequests:\n{}{}",
+                String::from_utf8_lossy(&signer_logs.stdout),
+                String::from_utf8_lossy(&signer_logs.stderr),
+                String::from_utf8_lossy(&requests.stdout),
+                String::from_utf8_lossy(&requests.stderr),
+            );
+        }
         Ok(())
     }
 
@@ -575,6 +606,8 @@ impl Drop for TestWork {
         for resource in [
             ["rolebinding", "nodeactivator-e2e-signer"],
             ["role", "nodeactivator-e2e-signer"],
+            ["clusterrolebinding", "nodeactivator-e2e-signer-sign"],
+            ["clusterrole", "nodeactivator-e2e-signer-sign"],
             ["clusterrolebinding", "nodeactivator-e2e-signer-nodes"],
             ["clusterrole", "nodeactivator-e2e-signer-nodes"],
         ] {
@@ -634,9 +667,25 @@ rules:
   verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {{name: nodeactivator-e2e-signer-sign}}
+rules:
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["signers"]
+  resourceNames: ["nodeactivator.notk8s.io/serving"]
+  verbs: ["sign"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata: {{name: nodeactivator-e2e-signer-nodes}}
 roleRef: {{apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: nodeactivator-e2e-signer-nodes}}
+subjects:
+- {{kind: ServiceAccount, name: nodeactivator-cert-signer, namespace: {namespace}}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {{name: nodeactivator-e2e-signer-sign}}
+roleRef: {{apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: nodeactivator-e2e-signer-sign}}
 subjects:
 - {{kind: ServiceAccount, name: nodeactivator-cert-signer, namespace: {namespace}}}
 ---
