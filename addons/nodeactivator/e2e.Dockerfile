@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM scratch
-COPY dist-bin/nodeactivator /nodeactivator
+COPY --chmod=0755 dist-bin/nodeactivator /nodeactivator
 ENTRYPOINT ["/nodeactivator"]
