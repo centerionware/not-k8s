@@ -3,7 +3,7 @@ use super::skip_test;
 use anyhow::{Context, Result};
 use base64::Engine;
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::core::v1::{Pod, Service};
 use kube::api::Api;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,7 +24,15 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
 
     let work = TestWork::create(context)?;
     work.load_test_images()?;
-    work.create_tls_material(context)?;
+    work.apply_metrics_service(context)?;
+    let services: Api<Service> = Api::namespaced(context.client.clone(), &context.namespace);
+    let metrics_service_ip = services
+        .get("nodeactivator-metrics")
+        .await?
+        .spec
+        .and_then(|spec| spec.cluster_ip)
+        .context("metrics Service did not receive a ClusterIP")?;
+    work.create_tls_material(context, &metrics_service_ip)?;
     work.apply_fixture(context)?;
 
     let deployments: Api<Deployment> = Api::namespaced(context.client.clone(), &context.namespace);
@@ -237,7 +245,14 @@ impl TestWork {
         Ok(())
     }
 
-    fn create_tls_material(&self, context: &E2eContext) -> Result<()> {
+    fn apply_metrics_service(&self, context: &E2eContext) -> Result<()> {
+        apply_yaml(&format!(
+            "apiVersion: v1\nkind: Service\nmetadata:\n  name: nodeactivator-metrics\n  namespace: {}\nspec:\n  selector:\n    app: nodeactivator-e2e\n  ports:\n  - name: https\n    port: 443\n    targetPort: https\n",
+            context.namespace
+        ))
+    }
+
+    fn create_tls_material(&self, context: &E2eContext, service_ip: &str) -> Result<()> {
         let cert = self.dir.join("tls.crt");
         let key = self.dir.join("tls.key");
         let serving_ca_cert = self.dir.join("tls-ca.crt");
@@ -289,8 +304,8 @@ impl TestWork {
         fs::write(
             &extensions,
             format!(
-                "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:nodeactivator-metrics.{0}.svc,DNS:nodeactivator-metrics.{0}.svc.cluster.local\n",
-                context.namespace
+                "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:nodeactivator-metrics.{0}.svc,DNS:nodeactivator-metrics.{0}.svc.cluster.local,IP:{1}\n",
+                context.namespace, service_ip
             ),
         )?;
         run_command(
