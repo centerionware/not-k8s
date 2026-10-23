@@ -4538,8 +4538,16 @@ async fn apply_object(
         .get("_nodemigrateSourceWasRunning")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let hpa_scaled_to_zero = apply_value
+        .get("_nodemigrateHpaScaledToZero")
+        .filter(|condition| {
+            condition.get("type").and_then(Value::as_str) == Some("ScaledToZero")
+                && condition.get("status").and_then(Value::as_str) == Some("True")
+        })
+        .cloned();
     if let Some(object) = apply_value.as_object_mut() {
         object.remove("_nodemigrateSourceWasRunning");
+        object.remove("_nodemigrateHpaScaledToZero");
     }
     let ephemeral_containers = take_pod_ephemeral_containers(&mut apply_value)
         .context("preparing Pod ephemeral containers for migration")?;
@@ -4727,6 +4735,13 @@ async fn apply_object(
         };
         match result {
             Ok(applied) => {
+                if let Some(condition) = &hpa_scaled_to_zero {
+                    restore_hpa_scaled_to_zero(&api, name, condition)
+                        .await
+                        .with_context(|| {
+                            format!("restoring HPA scale-to-zero ownership state for {name}")
+                        })?;
+                }
                 if let Some(ephemeral_containers) = &ephemeral_containers {
                     return restore_pod_ephemeral_containers(&api, name, ephemeral_containers)
                         .await
@@ -4748,6 +4763,52 @@ async fn apply_object(
         }
     }
     bail!("destination kept changing {type_meta}/{kind} {name} during migration")
+}
+
+async fn restore_hpa_scaled_to_zero(
+    api: &Api<DynamicObject>,
+    name: &str,
+    condition: &Value,
+) -> Result<()> {
+    const WRITE_ATTEMPTS: usize = 3;
+    for attempt in 0..WRITE_ATTEMPTS {
+        let current = api
+            .get(name)
+            .await
+            .context("reading destination HPA status before restoring scale-to-zero state")?;
+        let mut conditions = current
+            .data
+            .pointer("/status/conditions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(existing) = conditions.iter_mut().find(|existing| {
+            existing.get("type").and_then(Value::as_str) == Some("ScaledToZero")
+        }) {
+            *existing = condition.clone();
+        } else {
+            conditions.push(condition.clone());
+        }
+        let resource_version = current.metadata.resource_version.as_deref();
+        let mut patch = serde_json::json!({"status": {"conditions": conditions}});
+        if let Some(resource_version) = resource_version {
+            patch["metadata"] = serde_json::json!({"resourceVersion": resource_version});
+        }
+        match api
+            .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(kube::Error::Api(response))
+                if response.code == 409 && attempt + 1 < WRITE_ATTEMPTS =>
+            {
+                // The HPA controller may have updated status concurrently.
+                // Re-read and merge the ownership condition into fresh state.
+            }
+            Err(error) => return Err(error).context("patching destination HPA status"),
+        }
+    }
+    bail!("destination HPA {name} kept changing while restoring its zero-state condition")
 }
 
 fn preserves_destination_k3s_node_password_secret(
@@ -5288,6 +5349,23 @@ fn sanitize(mut object: Value) -> Option<SanitizedObject> {
         // writes.
         object["_nodemigrateSourceWasRunning"] = Value::Bool(true);
     }
+    if is_hpa(&object) {
+        if let Some(condition) = object
+            .pointer("/status/conditions")
+            .and_then(Value::as_array)
+            .and_then(|conditions| {
+                conditions.iter().find(|condition| {
+                    condition.get("type").and_then(Value::as_str) == Some("ScaledToZero")
+                        && condition.get("status").and_then(Value::as_str) == Some("True")
+                })
+            })
+        {
+            // Unlike computed HPA metrics/counts, this condition records
+            // controller ownership of replicas=0. Kubernetes 1.37 keeps an
+            // HPA from waking a workload that was manually paused at zero.
+            object["_nodemigrateHpaScaledToZero"] = condition.clone();
+        }
+    }
     object.as_object_mut()?.remove("status");
     let metadata = object.get_mut("metadata")?.as_object_mut()?;
     let source_uid = metadata
@@ -5308,6 +5386,14 @@ fn sanitize(mut object: Value) -> Option<SanitizedObject> {
         value: object,
         source_uid,
     })
+}
+
+fn is_hpa(object: &Value) -> bool {
+    object.get("kind").and_then(Value::as_str) == Some("HorizontalPodAutoscaler")
+        && object
+            .get("apiVersion")
+            .and_then(Value::as_str)
+            .is_some_and(|version| version.starts_with("autoscaling/"))
 }
 
 fn write_export_manifest(
@@ -6556,6 +6642,76 @@ current-context: test
         assert!(pod_status_is_terminal_or_exited(&failed));
         assert!(pod_status_is_terminal_or_exited(&exited));
         assert!(!pod_status_is_terminal_or_exited(&running));
+    }
+
+    #[test]
+    fn migration_export_preserves_only_hpa_owned_scale_to_zero_state() {
+        let hpa = sanitize(serde_json::json!({
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": "queue-worker", "namespace": "apps"},
+            "spec": {
+                "scaleTargetRef": {
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "name": "queue-worker"
+                },
+                "minReplicas": 0,
+                "maxReplicas": 8,
+                "metrics": [{
+                    "type": "External",
+                    "external": {
+                        "metric": {"name": "queue_depth"},
+                        "target": {"type": "Value", "value": "1"}
+                    }
+                }]
+            },
+            "status": {
+                "currentReplicas": 0,
+                "desiredReplicas": 0,
+                "currentMetrics": [{
+                    "type": "External",
+                    "external": {"current": {"value": "0"}}
+                }],
+                "conditions": [
+                    {"type": "AbleToScale", "status": "True", "reason": "ReadyForNewScale"},
+                    {
+                        "type": "ScaledToZero",
+                        "status": "True",
+                        "reason": "ScaledToZero",
+                        "message": "HPA owns the zero replica state"
+                    }
+                ]
+            }
+        }))
+        .expect("HPA should be exported");
+
+        assert!(hpa.value.get("status").is_none());
+        assert_eq!(hpa.value["spec"]["minReplicas"], 0);
+        assert_eq!(
+            hpa.value["_nodemigrateHpaScaledToZero"]["type"],
+            "ScaledToZero"
+        );
+        assert_eq!(
+            hpa.value["_nodemigrateHpaScaledToZero"]["status"],
+            "True"
+        );
+
+        let manually_paused = sanitize(serde_json::json!({
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": "manual-zero", "namespace": "apps"},
+            "spec": {"minReplicas": 0, "maxReplicas": 8},
+            "status": {
+                "desiredReplicas": 0,
+                "conditions": [{"type": "ScalingActive", "status": "True"}]
+            }
+        }))
+        .expect("manually paused HPA should be exported");
+        assert!(manually_paused
+            .value
+            .get("_nodemigrateHpaScaledToZero")
+            .is_none());
     }
 
     #[test]

@@ -955,10 +955,14 @@ fn behavior_tolerance(rules: Option<&k8s_openapi::api::autoscaling::v2::HPAScali
         .unwrap_or(DEFAULT_TOLERANCE)
 }
 
-fn supports_scaling_from_zero(metrics: &[k8s_openapi::api::autoscaling::v2::MetricSpec]) -> bool {
-    metrics
-        .iter()
-        .any(|metric| matches!(metric.type_.as_str(), "Object" | "External"))
+fn is_hpa_owned_zero_state(
+    desired_replicas: i32,
+    conditions: &[HorizontalPodAutoscalerCondition],
+) -> bool {
+    desired_replicas == 0
+        && conditions
+            .iter()
+            .any(|condition| condition.type_ == "ScaledToZero" && condition.status == "True")
 }
 
 async fn reconcile_hpa(
@@ -1015,13 +1019,12 @@ async fn reconcile_hpa(
             .status
             .as_ref()
             .and_then(|status| status.conditions.as_ref())
-            .is_some_and(|conditions| {
-                conditions.iter().any(|condition| {
-                    condition.type_ == "ScaledToZero" && condition.status == "True"
-                })
-            });
-        let can_scale_from_zero = supports_scaling_from_zero(&metrics);
-        if current_desired == 0 && !scaled_to_zero && !can_scale_from_zero {
+            .is_some_and(|conditions| is_hpa_owned_zero_state(current_desired, conditions));
+        // Kubernetes 1.37 distinguishes a target the HPA scaled to zero from
+        // one an operator paused manually. Object and External metrics make
+        // scaling from an HPA-owned zero possible, but do not override a
+        // manual pause.
+        if current_desired == 0 && !scaled_to_zero {
             anyhow::bail!("HPA target is manually scaled to zero; scaling is paused until it is scaled above zero");
         }
         let tolerances = (
@@ -1428,20 +1431,19 @@ mod tests {
     }
 
     #[test]
-    fn only_object_and_external_metrics_can_scale_from_zero() {
-        use super::supports_scaling_from_zero;
-        use k8s_openapi::api::autoscaling::v2::MetricSpec;
+    fn only_hpa_owned_zero_state_can_scale_from_zero() {
+        use super::is_hpa_owned_zero_state;
 
-        let metric = |type_: &str| MetricSpec {
-            type_: type_.to_string(),
-            ..Default::default()
-        };
-        assert!(supports_scaling_from_zero(&[metric("Object")]));
-        assert!(supports_scaling_from_zero(&[metric("External")]));
-        assert!(!supports_scaling_from_zero(&[
-            metric("Resource"),
-            metric("Pods")
-        ]));
+        let condition =
+            |status: &str| k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscalerCondition {
+                type_: "ScaledToZero".to_string(),
+                status: status.to_string(),
+                ..Default::default()
+            };
+        assert!(!is_hpa_owned_zero_state(0, &[]));
+        assert!(!is_hpa_owned_zero_state(0, &[condition("False")]));
+        assert!(is_hpa_owned_zero_state(0, &[condition("True")]));
+        assert!(!is_hpa_owned_zero_state(1, &[condition("True")]));
     }
 
     #[test]

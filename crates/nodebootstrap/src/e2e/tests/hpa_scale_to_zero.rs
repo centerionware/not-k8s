@@ -126,9 +126,29 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
             .spec
             .and_then(|spec| spec.replicas)
             .unwrap_or_default()
-            == 0,
-        "backend must start at zero replicas"
+            > 0,
+        "backend must start above zero so the HPA owns its transition to zero"
     );
+    context
+        .wait_until(
+            "the HPA to scale the backend down to its owned zero state",
+            Duration::from_secs(180),
+            || {
+                let deployments = deployments.clone();
+                let hpas = hpas.clone();
+                async move {
+                    let replicas = deployments
+                        .get("backend")
+                        .await?
+                        .spec
+                        .and_then(|spec| spec.replicas)
+                        .unwrap_or_default();
+                    let hpa = hpas.get("backend").await?;
+                    Ok(replicas == 0 && hpa_is_scaled_to_zero(&hpa))
+                }
+            },
+        )
+        .await?;
     let hpa = hpas.get("backend").await?;
     anyhow::ensure!(
         hpa.spec.as_ref().and_then(|spec| spec.min_replicas) == Some(0),
@@ -716,7 +736,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: {{name: backend, namespace: {namespace}}}
 spec:
-  replicas: 0
+  replicas: 1
   selector: {{matchLabels: {{app: backend}}}}
   template:
     metadata: {{labels: {{app: backend}}}}

@@ -16,21 +16,21 @@ the upstream round trip completed. K3s passed as well. This resolves the
 corresponding harness issues recorded below; no general build or full e2e
 gate ran.
 
-## Confirmed full-migration gap: HPA reconciliation
+## HPA migration and Kubernetes 1.37 scale-to-zero
 
-The migration acceptance inventory requires autoscaler behavior at source,
-nodestore, and returned-source checkpoints. `nodecontroller` currently has
-only the disruption controller; its module documentation explicitly scopes
-out `horizontalpodautoscaler-controller`, and there is no HPA reconciliation
-implementation in its controller set. API object transfer and semantic
-comparison therefore cannot prove that an HPA continues scaling after the
-destination becomes authoritative. This is an acceptance gap in
-`nodecontroller`, exercised by the `nodemigrate` fixtures, not a failure in
-the passing run 36871609082. The next implementation must provide bounded
-HPA reconciliation against the aggregated metrics API and the Scale
-subresource, then add a live CPU-utilization scale-up/scale-down scenario to
-the K3s and upstream source → nodestore → returned fixtures. No HPA behavior
-is claimed as tested yet.
+`nodecontroller` now implements `horizontalpodautoscaler-controller`, and the
+`nodemigrate` integration fixture exercises an `autoscaling/v2` CPU HPA at
+source, nodestore, and returned-source checkpoints. The HPA API object is
+included by generic discovery-based export/import and its spec is compared in
+the migration snapshots.
+
+Kubernetes 1.37 also uses `status.conditions[ScaledToZero=True]` to distinguish
+an HPA-owned zero-replica target from one manually paused at zero. The HPA
+controller now keeps manually scaled zero paused. Since migration normally
+discards computed status, the export retains this ownership condition as
+migration metadata and restores it through the destination HPA status
+subresource after import. Focused unit coverage is present; the full migration
+round trip for a zero-replica HPA and its condition remains unverified.
 
 ## Previous branch-runtime matrix 36865090999
 

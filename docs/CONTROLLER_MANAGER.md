@@ -601,7 +601,9 @@ are implemented and e2e-verified.
   multiple-metric maximum recommendations, HPA min/max bounds, configurable
   direction-specific tolerances, stabilization, and scale rate policies.
   Kubernetes 1.37 scale-to-zero uses the standard `ScaledToZero` condition and requires an
-  Object or External metric in the HPA spec. The complete upstream
+  Object or External metric in the HPA spec. A target must start above zero;
+  the HPA can wake it later only after recording `ScaledToZero=True`, while a
+  manually scaled zero remains paused. The complete upstream
   readiness/missing-sample algorithm remains an implementation gap. This
   controller does not buffer Service requests. That behavior must come from
   an independently deployed addon Pod that exposes standard
