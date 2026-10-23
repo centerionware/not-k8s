@@ -48,8 +48,7 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
         )
         .await;
     if let Err(error) = ready {
-        let signer_pods_api: Api<Pod> =
-            Api::namespaced(context.client.clone(), &context.namespace);
+        let signer_pods_api: Api<Pod> = Api::namespaced(context.client.clone(), &context.namespace);
         let signer_pods = signer_pods_api
             .list(&ListParams::default().labels("app=nodeactivator-cert-signer"))
             .await
@@ -59,22 +58,25 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
             let Some(name) = pod.metadata.name else {
                 continue;
             };
-            let log = signer_pods_api
-                .logs(
-                    &name,
-                    &LogParams {
-                        previous: true,
-                        ..Default::default()
-                    },
-                )
-                .await;
-            signer_logs.push(match log {
-                Ok(log) => format!("pod/{name} previous logs:\n{log}"),
-                Err(error) => format!("pod/{name} previous log error: {error:#}"),
-            });
+            for previous in [false, true] {
+                let log = signer_pods_api
+                    .logs(
+                        &name,
+                        &LogParams {
+                            previous,
+                            ..Default::default()
+                        },
+                    )
+                    .await;
+                let label = if previous { "previous" } else { "current" };
+                signer_logs.push(match log {
+                    Ok(log) => format!("pod/{name} {label} logs:\n{log}"),
+                    Err(error) => format!("pod/{name} {label} log error: {error:#}"),
+                });
+            }
         }
         anyhow::bail!(
-            "{error:#}; previous certificate signer logs:\n{}",
+            "{error:#}; certificate signer logs:\n{}",
             signer_logs.join("\n"),
         );
     }
