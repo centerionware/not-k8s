@@ -49,8 +49,13 @@ on:
         required: false
         type: boolean
         default: false
+      nodeactivator:
+        description: Enable Node Activator through nodemigrate's standard flag
+        required: false
+        type: boolean
+        default: false
       nodeactivator_image:
-        description: Install the branch-built scale-from-zero addon image
+        description: Override the Node Activator image used by the migration test
         required: false
         type: string
         default: ''
@@ -303,9 +308,9 @@ jobs:
         run: cargo build --release --features cri -p notk8s
 
       - name: Build addon image
-        if: inputs.nodeactivator_image != ''
+        if: inputs.nodeactivator == true || inputs.nodeactivator_image != ''
         env:
-          NODEMIGRATE_NODEACTIVATOR_IMAGE: ${{ inputs.nodeactivator_image }}
+          NODEMIGRATE_NODEACTIVATOR_IMAGE: ${{ inputs.nodeactivator_image != '' && inputs.nodeactivator_image || format('notk8s-nodeactivator:ci-{0}', github.sha) }}
         run: |
           set -euo pipefail
           cargo build --release -p nodeactivator --bins
@@ -352,10 +357,12 @@ jobs:
           NODEMIGRATE_TEST_LOG: ${{ runner.temp }}/nodemigrate-${{ matrix.source }}.log
           NODEMIGRATE_CILIUM_KPR: ${{ inputs.cilium_kpr }}
           NODEMIGRATE_METRICS_SERVER: ${{ inputs.metrics_server }}
-          NODEMIGRATE_NODEACTIVATOR_IMAGE: ${{ inputs.nodeactivator_image }}
+          NODEMIGRATE_NODEACTIVATOR: ${{ inputs.nodeactivator }}
+          NODEMIGRATE_NODEACTIVATOR_IMAGE: ${{ inputs.nodeactivator_image != '' && inputs.nodeactivator_image || (inputs.nodeactivator && format('notk8s-nodeactivator:ci-{0}', github.sha)) || '' }}
+          NODEBOOTSTRAP_NODEACTIVATOR_IMAGE: ${{ inputs.nodeactivator && (inputs.nodeactivator_image != '' && inputs.nodeactivator_image || format('notk8s-nodeactivator:ci-{0}', github.sha)) || '' }}
         run: |
           set -euo pipefail
-          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,GH_TOKEN,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG,NODEMIGRATE_CILIUM_KPR,NODEMIGRATE_METRICS_SERVER,NODEMIGRATE_NODEACTIVATOR_IMAGE \
+          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,GH_TOKEN,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG,NODEMIGRATE_CILIUM_KPR,NODEMIGRATE_METRICS_SERVER,NODEMIGRATE_NODEACTIVATOR,NODEMIGRATE_NODEACTIVATOR_IMAGE,NODEBOOTSTRAP_NODEACTIVATOR_IMAGE \
             bash .github/scripts/nodemigrate-integration.sh
 
       - name: Upload test log
