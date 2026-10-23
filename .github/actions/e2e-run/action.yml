@@ -138,6 +138,7 @@ runs:
         NEEDS_DRIVERS: ${{ inputs.needs_drivers }}
         SHARD: ${{ inputs.shard }}
         NETWORK: ${{ inputs.network }}
+        NODEBOOTSTRAP_E2E_REQUIRE_SCALE_TO_ZERO: 'true'
         NODEBOOTSTRAP_SERVICE_CIDR: ${{ inputs.cidr || '10.43.0.0/16' }}
         NODEBOOTSTRAP_SERVICE_CIDR6: ${{ inputs.cidr6 }}
       shell: bash

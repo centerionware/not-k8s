@@ -35,13 +35,26 @@ fn hpa_is_scaled_to_zero(hpa: &HorizontalPodAutoscaler) -> bool {
     })
 }
 
+fn unsupported_flow_environment(reason: impl Into<String>) -> anyhow::Error {
+    let reason = reason.into();
+    if std::env::var_os("NODEBOOTSTRAP_E2E_REQUIRE_SCALE_TO_ZERO").is_some() {
+        anyhow::anyhow!("required HPA scale-to-zero e2e cannot run: {reason}")
+    } else {
+        skip_test(reason)
+    }
+}
+
 pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) -> Result<()> {
     if crate::config::Config::from_env()?.nodelet_runtime() != "cri" {
-        return Err(skip_test("HPA scale-to-zero flow requires the CRI runtime"));
+        return Err(unsupported_flow_environment(
+            "HPA scale-to-zero flow requires the CRI runtime",
+        ));
     }
     for tool in ["docker", "ctr", "openssl", "kubectl"] {
         if Command::new(tool).arg("--version").output().is_err() {
-            return Err(skip_test(format!("HPA scale-to-zero flow requires {tool}")));
+            return Err(unsupported_flow_environment(format!(
+                "HPA scale-to-zero flow requires {tool}"
+            )));
         }
     }
 
