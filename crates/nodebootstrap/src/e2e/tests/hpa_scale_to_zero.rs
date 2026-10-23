@@ -391,6 +391,42 @@ impl TestWork {
             .join()
             .map_err(|_| anyhow::anyhow!("bootstrap addon installation thread panicked"))?;
         if let Err(error) = install {
+            let activator_logs = Command::new("kubectl")
+                .args([
+                    "--request-timeout=10s",
+                    "logs",
+                    "deployment/nodeactivator",
+                    "--namespace",
+                    "kube-system",
+                    "--tail=100",
+                    "--timestamps",
+                ])
+                .output()
+                .context("getting bootstrap activator logs after addon installation failed")?;
+            let activator_previous_logs = Command::new("kubectl")
+                .args([
+                    "--request-timeout=10s",
+                    "logs",
+                    "deployment/nodeactivator",
+                    "--namespace",
+                    "kube-system",
+                    "--previous",
+                    "--tail=100",
+                    "--timestamps",
+                ])
+                .output()
+                .context("getting prior bootstrap activator logs after addon installation failed")?;
+            let activator_pods = Command::new("kubectl")
+                .args([
+                    "--request-timeout=10s",
+                    "describe",
+                    "pods",
+                    "--namespace",
+                    "kube-system",
+                    "--selector=app.kubernetes.io/name=nodeactivator",
+                ])
+                .output()
+                .context("describing bootstrap activator Pods after addon installation failed")?;
             let signer_logs = Command::new("kubectl")
                 .args([
                     "--request-timeout=10s",
@@ -415,7 +451,13 @@ impl TestWork {
                 .output()
                 .context("getting PodCertificateRequest state after addon installation failed")?;
             anyhow::bail!(
-                "installing the bootstrap addon: {error:#}; certificate signer logs:\n{}{}\nPodCertificateRequests:\n{}{}",
+                "installing the bootstrap addon: {error:#}; nodeactivator logs:\n{}{}\nprevious nodeactivator logs:\n{}{}\nnodeactivator Pod state:\n{}{}\ncertificate signer logs:\n{}{}\nPodCertificateRequests:\n{}{}",
+                String::from_utf8_lossy(&activator_logs.stdout),
+                String::from_utf8_lossy(&activator_logs.stderr),
+                String::from_utf8_lossy(&activator_previous_logs.stdout),
+                String::from_utf8_lossy(&activator_previous_logs.stderr),
+                String::from_utf8_lossy(&activator_pods.stdout),
+                String::from_utf8_lossy(&activator_pods.stderr),
                 String::from_utf8_lossy(&signer_logs.stdout),
                 String::from_utf8_lossy(&signer_logs.stderr),
                 String::from_utf8_lossy(&requests.stdout),
