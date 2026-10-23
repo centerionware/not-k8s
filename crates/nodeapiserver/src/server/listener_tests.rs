@@ -835,6 +835,37 @@ mod tests {
     }
 
     #[test]
+    fn watch_event_matches_namespace_filters_replayed_and_live_events() {
+        let prefix = crate::storage::keys::list_prefix(
+            "certificates.k8s.io",
+            "podcertificaterequests",
+            Some("kube-system"),
+        );
+        let event = |key: &[u8]| crate::cacher::store::WatchEvent {
+            kind: crate::cacher::store::EventKind::Added,
+            key: key.to_vec(),
+            value: Vec::new(),
+            revision: 1,
+        };
+        let bookmark = crate::cacher::store::WatchEvent {
+            kind: crate::cacher::store::EventKind::Bookmark,
+            key: Vec::new(),
+            value: Vec::new(),
+            revision: 1,
+        };
+
+        assert!(watch_event_matches_namespace(
+            &event(b"/registry/podcertificaterequests/kube-system/request"),
+            prefix.as_bytes(),
+        ));
+        assert!(!watch_event_matches_namespace(
+            &event(b"/registry/podcertificaterequests/another-namespace/request"),
+            prefix.as_bytes(),
+        ));
+        assert!(watch_event_matches_namespace(&bookmark, prefix.as_bytes()));
+    }
+
+    #[test]
     fn watch_event_matches_selector_filters_on_labels() {
         let reqs = crate::cacher::selector::parse_label_selector("env=prod").unwrap();
         let matching = crate::cacher::store::WatchEvent {
