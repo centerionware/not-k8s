@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow, ensure};
 use base64::Engine;
-use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, SecondsFormat, Utc};
+use chrono::{DateTime, NaiveDateTime, SecondsFormat, Utc};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Pod, Service};
 use kube::api::{Api, Patch, PatchParams};
@@ -13,7 +13,6 @@ use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 use tracing::{info, warn};
 
 const SIGNER_NAME: &str = "nodeactivator.notk8s.io/serving";
@@ -161,14 +160,14 @@ async fn issue_for_request(
         .await
         .context("reading requesting Pod")?;
     ensure!(
-        pod.metadata.uid.as_deref() == Some(pod_uid.as_str()),
+        pod.metadata.uid.as_deref() == Some(pod_uid),
         "PodCertificateRequest UID does not match the live Pod"
     );
     ensure!(
         pod.spec
             .as_ref()
             .and_then(|pod_spec| pod_spec.service_account_name.as_deref())
-            == Some(service_account.as_str()),
+            == Some(service_account),
         "requesting Pod has a different ServiceAccount"
     );
     ensure!(
