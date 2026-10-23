@@ -26,6 +26,78 @@ subjects:
   name: nodeactivator
   namespace: kube-system
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nodeactivator-cert-signer
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nodeactivator-cert-signer
+  namespace: kube-system
+rules:
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["podcertificaterequests", "podcertificaterequests/status"]
+  verbs: ["get", "list", "watch", "patch", "update"]
+- apiGroups: [""]
+  resources: ["pods", "services"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nodeactivator-cert-signer
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nodeactivator-cert-signer
+subjects:
+- kind: ServiceAccount
+  name: nodeactivator-cert-signer
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nodeactivator-cert-signer
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nodeactivator-cert-signer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nodeactivator-cert-signer
+    spec:
+      serviceAccountName: nodeactivator-cert-signer
+      containers:
+      - name: signer
+        image: nodeactivator:latest
+        imagePullPolicy: IfNotPresent
+        command: ["/usr/local/bin/nodeactivator-cert-signer"]
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: NODEACTIVATOR_SIGNER_CA_CERT
+          value: /var/run/nodeactivator-signer/ca.crt
+        - name: NODEACTIVATOR_SIGNER_CA_KEY
+          value: /var/run/nodeactivator-signer/ca.key
+        volumeMounts:
+        - name: signer-ca
+          mountPath: /var/run/nodeactivator-signer
+          readOnly: true
+      volumes:
+      - name: signer-ca
+        secret:
+          secretName: nodeactivator-signer-ca
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -74,10 +146,8 @@ spec:
         - name: metrics-https
           containerPort: 8443
         env:
-        - name: ACTIVATOR_TLS_CERT
-          value: /var/run/nodeactivator/tls/tls.crt
-        - name: ACTIVATOR_TLS_KEY
-          value: /var/run/nodeactivator/tls/tls.key
+        - name: ACTIVATOR_TLS_BUNDLE
+          value: /var/run/nodeactivator/tls/credential.pem
         - name: ACTIVATOR_PROXY_CLIENT_CA
           value: /var/run/nodeactivator/proxy-ca/ca.crt
         - name: ACTIVATOR_TIMEOUT_SECONDS
@@ -112,8 +182,13 @@ spec:
             drop: ["ALL"]
       volumes:
       - name: serving-cert
-        secret:
-          secretName: nodeactivator-serving
+        projected:
+          sources:
+          - podCertificate:
+              signerName: nodeactivator.notk8s.io/serving
+              keyType: ECDSAP256
+              maxExpirationSeconds: 86400
+              credentialBundlePath: credential.pem
       - name: proxy-client-ca
         secret:
           secretName: nodeapiserver-proxy-client-ca
@@ -144,6 +219,6 @@ spec:
     namespace: kube-system
     name: nodeactivator-metrics
     port: 443
-  # Replace this with the base64-encoded PEM CA that signed the serving
-  # certificate stored in Secret/nodeactivator-serving.
+  # Replace this with the base64-encoded PEM CA certificate mounted into the
+  # nodeactivator-cert-signer Pod from Secret/nodeactivator-signer-ca.
   caBundle: REPLACE_WITH_BASE64_SERVING_CA

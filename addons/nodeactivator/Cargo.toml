@@ -10,8 +10,13 @@ authors.workspace = true
 name = "nodeactivator"
 path = "src/main.rs"
 
+[[bin]]
+name = "nodeactivator-cert-signer"
+path = "src/cert_signer.rs"
+
 [dependencies]
 anyhow = { workspace = true }
+base64 = "0.22"
 bytes = "1"
 chrono = { workspace = true }
 futures = { workspace = true }

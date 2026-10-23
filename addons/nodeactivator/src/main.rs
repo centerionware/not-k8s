@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use futures::StreamExt;
 use http::{HeaderMap, Method, Request, Response, StatusCode, Uri};
@@ -17,11 +17,11 @@ use kube::{Client, ResourceExt};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::env;
-use std::fs::File;
-use std::io::BufReader;
+use std::fs;
+use std::io::{BufReader, Cursor};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -212,7 +212,7 @@ async fn proxy_request(request: Request<Incoming>, state: Arc<State>) -> Respons
             return status_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "request body exceeds 1 MiB\n",
-            )
+            );
         }
     };
     let target = format!("{}{}", route.backend_url, parts.uri);
@@ -405,7 +405,7 @@ async fn metrics_request(request: Request<Incoming>, state: Arc<State>) -> Respo
     match authorize_metric_request(request.headers(), namespace, metric, &state.kube_client).await {
         Ok(true) => {}
         Ok(false) => {
-            return status_response(StatusCode::FORBIDDEN, "external metric access denied\n")
+            return status_response(StatusCode::FORBIDDEN, "external metric access denied\n");
         }
         Err(error) => {
             warn!(error = ?error, "external metric authorization check failed");
@@ -466,12 +466,13 @@ async fn authorize_metric_request(
 async fn serve_connection(
     stream: TcpStream,
     peer: SocketAddr,
-    tls: Option<TlsAcceptor>,
+    tls: Option<Arc<RwLock<TlsAcceptor>>>,
     state: Arc<State>,
     metrics: bool,
     _slot: tokio::sync::OwnedSemaphorePermit,
 ) {
     if let Some(acceptor) = tls {
+        let acceptor = acceptor.read().await.clone();
         match acceptor.accept(stream).await {
             Ok(stream) => serve_http_connection(stream, peer, state, metrics, _slot).await,
             Err(error) => {
@@ -514,7 +515,7 @@ async fn serve_http_connection<I>(
 
 async fn serve(
     address: SocketAddr,
-    tls: Option<TlsAcceptor>,
+    tls: Option<Arc<RwLock<TlsAcceptor>>>,
     state: Arc<State>,
     metrics: bool,
 ) -> Result<()> {
@@ -548,22 +549,18 @@ fn required_env(name: &str) -> Result<String> {
     env::var(name).with_context(|| format!("{name} must be set"))
 }
 
-fn server_tls_acceptor() -> Result<TlsAcceptor> {
-    let cert_file = required_env("ACTIVATOR_TLS_CERT")?;
-    let key_file = required_env("ACTIVATOR_TLS_KEY")?;
-    let proxy_ca_file = required_env("ACTIVATOR_PROXY_CLIENT_CA")?;
-    let mut cert_reader =
-        BufReader::new(File::open(&cert_file).context("opening TLS certificate")?);
+fn server_tls_acceptor(bundle: &[u8], proxy_ca_file: &str) -> Result<TlsAcceptor> {
+    let mut cert_reader = BufReader::new(Cursor::new(bundle));
     let certificates = rustls_pemfile::certs(&mut cert_reader)
         .collect::<std::result::Result<Vec<CertificateDer<'static>>, _>>()?;
     if certificates.is_empty() {
         return Err(anyhow!("TLS certificate file contains no certificates"));
     }
-    let mut key_reader = BufReader::new(File::open(&key_file).context("opening TLS private key")?);
+    let mut key_reader = BufReader::new(Cursor::new(bundle));
     let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_reader)?
         .ok_or_else(|| anyhow!("TLS private key file contains no key"))?;
     let mut ca_reader =
-        BufReader::new(File::open(&proxy_ca_file).context("opening proxy client CA")?);
+        BufReader::new(fs::File::open(proxy_ca_file).context("opening proxy client CA")?);
     let client_ca = rustls_pemfile::certs(&mut ca_reader)
         .collect::<std::result::Result<Vec<CertificateDer<'static>>, _>>()?;
     let mut roots = RootCertStore::empty();
@@ -575,6 +572,35 @@ fn server_tls_acceptor() -> Result<TlsAcceptor> {
         .with_client_cert_verifier(verifier)
         .with_single_cert(certificates, key)?;
     Ok(TlsAcceptor::from(Arc::new(config)))
+}
+
+async fn reload_server_tls(
+    bundle_path: String,
+    proxy_ca_file: String,
+    acceptor: Arc<RwLock<TlsAcceptor>>,
+    mut previous_bundle: Vec<u8>,
+) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let bundle = match fs::read(&bundle_path) {
+            Ok(bundle) if bundle != previous_bundle => bundle,
+            Ok(_) => continue,
+            Err(error) => {
+                warn!(path = %bundle_path, error = ?error, "reading rotated PodCertificate bundle failed");
+                continue;
+            }
+        };
+        match server_tls_acceptor(&bundle, &proxy_ca_file) {
+            Ok(updated) => {
+                *acceptor.write().await = updated;
+                previous_bundle = bundle;
+                info!(path = %bundle_path, "reloaded rotated PodCertificate bundle");
+            }
+            Err(error) => {
+                warn!(error = ?error, "loading rotated PodCertificate bundle failed; retaining previous certificate")
+            }
+        }
+    }
 }
 
 #[tokio::main]
@@ -616,7 +642,16 @@ async fn main() -> Result<()> {
     let metrics_address = metrics_address
         .parse()
         .context("parsing ACTIVATOR_METRICS_ADDR")?;
-    let tls = server_tls_acceptor()?;
+    let bundle_path = required_env("ACTIVATOR_TLS_BUNDLE")?;
+    let proxy_ca_file = required_env("ACTIVATOR_PROXY_CLIENT_CA")?;
+    let bundle = fs::read(&bundle_path).context("reading projected PodCertificate bundle")?;
+    let tls = Arc::new(RwLock::new(server_tls_acceptor(&bundle, &proxy_ca_file)?));
+    tokio::spawn(reload_server_tls(
+        bundle_path,
+        proxy_ca_file,
+        tls.clone(),
+        bundle,
+    ));
     let watcher_state = state.clone();
     let watcher = tokio::spawn(async move { watch_front_services(client, watcher_state).await });
     tokio::select! {

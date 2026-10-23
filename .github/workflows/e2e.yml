@@ -125,6 +125,7 @@ jobs:
           set -euo pipefail
           cargo build --release --locked -p nodeactivator --target x86_64-unknown-linux-musl
           install -m0755 "$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/release/nodeactivator" e2e-bin/nodeactivator
+          install -m0755 "$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/release/nodeactivator-cert-signer" e2e-bin/nodeactivator-cert-signer
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7

@@ -3,7 +3,7 @@ use super::skip_test;
 use anyhow::{Context, Result};
 use base64::Engine;
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{Pod, Service};
+use k8s_openapi::api::core::v1::Pod;
 use kube::api::Api;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,14 +25,7 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
     let work = TestWork::create(context)?;
     work.load_test_images()?;
     work.apply_metrics_service(context)?;
-    let services: Api<Service> = Api::namespaced(context.client.clone(), &context.namespace);
-    let metrics_service_ip = services
-        .get("nodeactivator-metrics")
-        .await?
-        .spec
-        .and_then(|spec| spec.cluster_ip)
-        .context("metrics Service did not receive a ClusterIP")?;
-    work.create_tls_material(context, &metrics_service_ip)?;
+    work.create_tls_material()?;
     work.apply_fixture(context)?;
 
     let deployments: Api<Deployment> = Api::namespaced(context.client.clone(), &context.namespace);
@@ -175,12 +168,26 @@ async fn wait_for_apiservice(context: &E2eContext, timeout: Duration) -> Result<
             ])
             .output()
             .context("getting nodeactivator logs")?;
+        let signer_logs = Command::new("kubectl")
+            .args([
+                "--request-timeout=10s",
+                "logs",
+                "deployment/nodeactivator-cert-signer",
+                "--namespace",
+                &context.namespace,
+                "--tail=100",
+                "--timestamps",
+            ])
+            .output()
+            .context("getting nodeactivator certificate signer logs")?;
         anyhow::bail!(
-            "{error:#}; APIService state:\n{}{}\nnodeactivator logs:\n{}{}",
+            "{error:#}; APIService state:\n{}{}\nnodeactivator logs:\n{}{}\ncertificate signer logs:\n{}{}",
             String::from_utf8_lossy(&apiservice.stdout),
             String::from_utf8_lossy(&apiservice.stderr),
             String::from_utf8_lossy(&addon_logs.stdout),
             String::from_utf8_lossy(&addon_logs.stderr),
+            String::from_utf8_lossy(&signer_logs.stdout),
+            String::from_utf8_lossy(&signer_logs.stderr),
         );
     }
     Ok(())
@@ -189,6 +196,7 @@ async fn wait_for_apiservice(context: &E2eContext, timeout: Duration) -> Result<
 struct TestWork {
     dir: PathBuf,
     activator_image: String,
+    signer_image: String,
 }
 
 impl TestWork {
@@ -202,15 +210,22 @@ impl TestWork {
         Ok(Self {
             dir,
             activator_image: format!("nodeactivator-e2e:{}", context.namespace),
+            signer_image: format!("nodeactivator-cert-signer-e2e:{}", context.namespace),
         })
     }
 
     fn load_test_images(&self) -> Result<()> {
         let binary = Path::new("dist-bin/nodeactivator");
+        let signer_binary = Path::new("dist-bin/nodeactivator-cert-signer");
         anyhow::ensure!(
             binary.is_file(),
             "e2e artifact is missing {}",
             binary.display()
+        );
+        anyhow::ensure!(
+            signer_binary.is_file(),
+            "e2e artifact is missing {}",
+            signer_binary.display()
         );
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let output = Command::new("docker")
@@ -230,6 +245,23 @@ impl TestWork {
             "docker build failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        let output = Command::new("docker")
+            .current_dir(&repo)
+            .args([
+                "build",
+                "--file",
+                "addons/nodeactivator/e2e-cert-signer.Dockerfile",
+                "--tag",
+                &self.signer_image,
+                ".",
+            ])
+            .output()
+            .context("building the e2e nodeactivator certificate signer image")?;
+        anyhow::ensure!(
+            output.status.success(),
+            "docker build failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         root_run(&["docker", "pull", BUSYBOX_IMAGE])?;
         let archive = self.dir.join("images.tar");
         let archive_string = archive.to_string_lossy().into_owned();
@@ -240,6 +272,7 @@ impl TestWork {
             &archive_string,
             BUSYBOX_IMAGE,
             &self.activator_image,
+            &self.signer_image,
         ])?;
         root_run(&["ctr", "-n", "k8s.io", "images", "import", &archive_string])?;
         Ok(())
@@ -247,18 +280,14 @@ impl TestWork {
 
     fn apply_metrics_service(&self, context: &E2eContext) -> Result<()> {
         apply_yaml(&format!(
-            "apiVersion: v1\nkind: Service\nmetadata:\n  name: nodeactivator-metrics\n  namespace: {}\nspec:\n  selector:\n    app: nodeactivator-e2e\n  ports:\n  - name: https\n    port: 443\n    targetPort: https\n",
+            "apiVersion: v1\nkind: Service\nmetadata:\n  name: nodeactivator-metrics\n  namespace: {}\nspec:\n  selector:\n    app.kubernetes.io/name: nodeactivator\n  ports:\n  - name: https\n    port: 443\n    targetPort: https\n",
             context.namespace
         ))
     }
 
-    fn create_tls_material(&self, context: &E2eContext, service_ip: &str) -> Result<()> {
-        let cert = self.dir.join("tls.crt");
-        let key = self.dir.join("tls.key");
+    fn create_tls_material(&self) -> Result<()> {
         let serving_ca_cert = self.dir.join("tls-ca.crt");
         let serving_ca_key = self.dir.join("tls-ca.key");
-        let csr = self.dir.join("tls.csr");
-        let extensions = self.dir.join("server-ext.cnf");
         run_command(
             "openssl",
             &[
@@ -268,7 +297,7 @@ impl TestWork {
                 "rsa:2048",
                 "-nodes",
                 "-days",
-                "1",
+                "365",
                 "-keyout",
                 serving_ca_key
                     .to_str()
@@ -285,69 +314,18 @@ impl TestWork {
                 "keyUsage=critical,keyCertSign,cRLSign",
             ],
         )?;
-        run_command(
-            "openssl",
-            &[
-                "req",
-                "-new",
-                "-newkey",
-                "rsa:2048",
-                "-nodes",
-                "-keyout",
-                key.to_str().context("TLS key path is not UTF-8")?,
-                "-out",
-                csr.to_str().context("TLS CSR path is not UTF-8")?,
-                "-subj",
-                "/CN=nodeactivator-metrics",
-            ],
-        )?;
-        fs::write(
-            &extensions,
-            format!(
-                "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:nodeactivator-metrics.{0}.svc,DNS:nodeactivator-metrics.{0}.svc.cluster.local,IP:{1}\n",
-                context.namespace, service_ip
-            ),
-        )?;
-        run_command(
-            "openssl",
-            &[
-                "x509",
-                "-req",
-                "-in",
-                csr.to_str().context("TLS CSR path is not UTF-8")?,
-                "-CA",
-                serving_ca_cert
-                    .to_str()
-                    .context("serving CA cert path is not UTF-8")?,
-                "-CAkey",
-                serving_ca_key
-                    .to_str()
-                    .context("serving CA key path is not UTF-8")?,
-                "-CAcreateserial",
-                "-out",
-                cert.to_str().context("TLS cert path is not UTF-8")?,
-                "-days",
-                "1",
-                "-sha256",
-                "-extfile",
-                extensions
-                    .to_str()
-                    .context("TLS extensions path is not UTF-8")?,
-            ],
-        )?;
         Ok(())
     }
 
     fn apply_fixture(&self, context: &E2eContext) -> Result<()> {
-        let cert = fs::read(self.dir.join("tls.crt"))?;
-        let key = fs::read(self.dir.join("tls.key"))?;
         let serving_ca = fs::read(self.dir.join("tls-ca.crt"))?;
+        let serving_ca_key = fs::read(self.dir.join("tls-ca.key"))?;
         let proxy_ca = fs::read(kube_pki_dir().join("front-proxy-ca.crt"))?;
         let yaml = fixture_yaml(
             &context.namespace,
             &self.activator_image,
-            &base64::engine::general_purpose::STANDARD.encode(cert),
-            &base64::engine::general_purpose::STANDARD.encode(key),
+            &self.signer_image,
+            &base64::engine::general_purpose::STANDARD.encode(serving_ca_key),
             &base64::engine::general_purpose::STANDARD.encode(proxy_ca),
             &base64::engine::general_purpose::STANDARD.encode(serving_ca),
         );
@@ -386,6 +364,9 @@ impl Drop for TestWork {
         let _ = Command::new("docker")
             .args(["image", "rm", &self.activator_image])
             .output();
+        let _ = Command::new("docker")
+            .args(["image", "rm", &self.signer_image])
+            .output();
         let _ = Command::new("kubectl")
             .args([
                 "delete",
@@ -408,14 +389,27 @@ impl Drop for TestWork {
                 ])
                 .output();
         }
+        for resource in [
+            ["rolebinding", "nodeactivator-e2e-signer"],
+            ["role", "nodeactivator-e2e-signer"],
+        ] {
+            let _ = Command::new("kubectl")
+                .args([
+                    "delete",
+                    resource[0],
+                    resource[1],
+                    "--ignore-not-found=true",
+                ])
+                .output();
+        }
     }
 }
 
 fn fixture_yaml(
     namespace: &str,
     image: &str,
-    cert: &str,
-    key: &str,
+    signer_image: &str,
+    signer_ca_key: &str,
     proxy_ca: &str,
     serving_ca: &str,
 ) -> String {
@@ -423,9 +417,8 @@ fn fixture_yaml(
         r#"
 apiVersion: v1
 kind: Secret
-metadata: {{name: nodeactivator-serving, namespace: {namespace}}}
-type: kubernetes.io/tls
-data: {{tls.crt: {cert}, tls.key: {key}}}
+metadata: {{name: nodeactivator-signer-ca, namespace: {namespace}}}
+data: {{ca.crt: {serving_ca}, ca.key: {signer_ca_key}}}
 ---
 apiVersion: v1
 kind: Secret
@@ -435,6 +428,54 @@ data: {{"ca.crt": {proxy_ca}}}
 apiVersion: v1
 kind: ServiceAccount
 metadata: {{name: nodeactivator, namespace: {namespace}}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {{name: nodeactivator-e2e-signer, namespace: {namespace}}}
+rules:
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["podcertificaterequests", "podcertificaterequests/status"]
+  verbs: ["get", "list", "watch", "patch", "update"]
+- apiGroups: [""]
+  resources: ["pods", "services"]
+  verbs: ["get"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {{name: nodeactivator-cert-signer, namespace: {namespace}}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {{name: nodeactivator-e2e-signer, namespace: {namespace}}}
+roleRef: {{apiGroup: rbac.authorization.k8s.io, kind: Role, name: nodeactivator-e2e-signer}}
+subjects:
+- {{kind: ServiceAccount, name: nodeactivator-cert-signer, namespace: {namespace}}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {{name: nodeactivator-cert-signer, namespace: {namespace}}}
+spec:
+  replicas: 1
+  selector: {{matchLabels: {{app: nodeactivator-cert-signer}}}}
+  template:
+    metadata: {{labels: {{app: nodeactivator-cert-signer}}}}
+    spec:
+      serviceAccountName: nodeactivator-cert-signer
+      containers:
+      - name: signer
+        image: {signer_image}
+        imagePullPolicy: Never
+        env:
+        - name: POD_NAMESPACE
+          valueFrom: {{fieldRef: {{fieldPath: metadata.namespace}}}}
+        - name: NODEACTIVATOR_SIGNER_CA_CERT
+          value: /signer-ca/ca.crt
+        - name: NODEACTIVATOR_SIGNER_CA_KEY
+          value: /signer-ca/ca.key
+        volumeMounts:
+        - {{name: signer-ca, mountPath: /signer-ca, readOnly: true}}
+      volumes:
+      - {{name: signer-ca, secret: {{secretName: nodeactivator-signer-ca}}}}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -465,7 +506,10 @@ spec:
   replicas: 1
   selector: {{matchLabels: {{app: nodeactivator-e2e}}}}
   template:
-    metadata: {{labels: {{app: nodeactivator-e2e}}}}
+    metadata:
+      labels:
+        app: nodeactivator-e2e
+        app.kubernetes.io/name: nodeactivator
     spec:
       serviceAccountName: nodeactivator
       containers:
@@ -473,8 +517,7 @@ spec:
         image: {image}
         imagePullPolicy: Never
         env:
-        - {{name: ACTIVATOR_TLS_CERT, value: /tls/tls.crt}}
-        - {{name: ACTIVATOR_TLS_KEY, value: /tls/tls.key}}
+        - {{name: ACTIVATOR_TLS_BUNDLE, value: /tls/credential.pem}}
         - {{name: ACTIVATOR_PROXY_CLIENT_CA, value: /proxy-ca/ca.crt}}
         - {{name: ACTIVATOR_TIMEOUT_SECONDS, value: "180"}}
         ports:
@@ -485,14 +528,21 @@ spec:
         - {{name: proxy-ca, mountPath: /proxy-ca, readOnly: true}}
         readinessProbe: {{httpGet: {{path: /readyz, port: http}}, periodSeconds: 3}}
       volumes:
-      - {{name: tls, secret: {{secretName: nodeactivator-serving}}}}
+      - name: tls
+        projected:
+          sources:
+          - podCertificate:
+              signerName: nodeactivator.notk8s.io/serving
+              keyType: ECDSAP256
+              maxExpirationSeconds: 86400
+              credentialBundlePath: credential.pem
       - {{name: proxy-ca, secret: {{secretName: nodeapiserver-proxy-client-ca}}}}
 ---
 apiVersion: v1
 kind: Service
 metadata: {{name: nodeactivator-metrics, namespace: {namespace}}}
 spec:
-  selector: {{app: nodeactivator-e2e}}
+  selector: {{app.kubernetes.io/name: nodeactivator}}
   ports:
   - {{name: https, port: 443, targetPort: https}}
 ---
