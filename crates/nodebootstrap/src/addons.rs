@@ -105,11 +105,8 @@ async fn wait_for_api_service(client: &kube::Client, name: &str) -> Result<()> {
 }
 
 async fn signer_ca(client: &kube::Client) -> Result<(String, String)> {
-    use k8s_openapi::api::core::v1::Secret;
-    use kube::{
-        api::{Api, ObjectMeta, PostParams},
-        core::ByteString,
-    };
+    use k8s_openapi::{ByteString, api::core::v1::Secret};
+    use kube::api::{Api, ObjectMeta, PostParams};
     use std::collections::BTreeMap;
 
     let secrets: Api<Secret> = Api::namespaced(client.clone(), "kube-system");
