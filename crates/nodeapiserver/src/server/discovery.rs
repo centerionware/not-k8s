@@ -519,8 +519,8 @@ fn group_discovery_value_with_resources(
             let resources = codegen::api_resources_by_group_version().get(&(group, version.as_str()));
             let mut sorted: Vec<&codegen::api_resources::ApiResource> = resources.map(|r| r.iter().copied().collect()).unwrap_or_default();
             sorted.sort_by_key(|r| r.resource);
-            let mut resource_values: Vec<Value> = sorted.iter().map(|r| api_resource_discovery_value(r)).collect();
-            let resource_values = nest_api_group_subresources(resource_values);
+            let resource_values: Vec<Value> = sorted.iter().map(|r| api_resource_discovery_value(r)).collect();
+            let mut resource_values = nest_api_group_subresources(resource_values);
             resource_values.extend(crds.iter().filter(|r| r.group == group && &r.version == version).map(crd_resource_discovery_value));
             if let Some((_, _, remote_list)) = resource_lists.iter().find(|(remote_group, remote_version, _)| remote_group == group && remote_version == version) {
                 resource_values.extend(aggregated_resource_discovery_values(group, version, remote_list));
