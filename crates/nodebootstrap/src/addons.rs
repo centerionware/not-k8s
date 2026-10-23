@@ -207,7 +207,7 @@ fn render_nodeactivator(image: &str, ca: &str, key: &str) -> Result<String> {
     let secret = format!(
         "---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: nodeactivator-signer-ca\n  namespace: kube-system\ntype: Opaque\ndata:\n  ca.crt: {encoded_ca}\n  ca.key: {encoded_key}\n"
     );
-    Ok(format!("{secret}{manifest}"))
+    Ok(format!("{secret}---\n{manifest}"))
 }
 
 fn render_metrics_server(ca_bundle: &str) -> String {
@@ -318,7 +318,9 @@ mod tests {
         )
         .expect("render addon manifest");
         let encoded_ca = base64::engine::general_purpose::STANDARD.encode("dedicated-ca");
+        let encoded_key = base64::engine::general_purpose::STANDARD.encode("dedicated-key");
         assert!(manifest.contains("image: registry.example/activator:v1"));
+        assert!(manifest.contains(format!("ca.key: {encoded_key}\n---\napiVersion: v1").as_str()));
         assert!(manifest.contains(format!("caBundle: {encoded_ca}").as_str()));
         assert!(manifest.contains("name: extension-apiserver-authentication"));
         assert!(!manifest.contains("nodeapiserver-proxy-client-ca"));
