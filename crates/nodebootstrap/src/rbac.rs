@@ -542,6 +542,24 @@ globalDefault: false
 description: " system-cluster-critical"
 ---
 "#;
+    // kube-apiserver's RBAC bootstrap policy creates this namespaced role so
+    // aggregated API servers can read only the delegated-auth configuration.
+    let extension_auth_reader_role = r#"
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: extension-apiserver-authentication-reader
+  namespace: kube-system
+  labels:
+    kubernetes.io/bootstrapping: rbac-defaults
+    rbac.authorization.k8s.io/autoupdate: "true"
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["extension-apiserver-authentication"]
+  verbs: ["get", "list", "watch"]
+---
+"#;
     let controller_roles: String = CONTROLLER_SA_NAMES
         .iter()
         .map(|name| {
@@ -562,7 +580,7 @@ rules:
         })
         .collect();
     format!(
-        r#"{system_priority_classes}
+        r#"{system_priority_classes}{extension_auth_reader_role}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -872,6 +890,8 @@ mod tests {
             "name: system:discovery",
             "name: \"system:controller:replicaset-controller\"",
             "name: system:public-info-viewer",
+            "name: extension-apiserver-authentication-reader",
+            "resourceNames: [\"extension-apiserver-authentication\"]",
             "name: system:monitoring",
             "name: nodebootstrap:public-info-viewer",
             "name: system:unauthenticated",

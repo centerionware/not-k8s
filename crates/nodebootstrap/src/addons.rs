@@ -288,6 +288,7 @@ mod tests {
             )
         );
         assert!(manifest.contains("insecureSkipTLSVerify: true"));
+        assert!(manifest.contains("name: metrics-server-auth-reader, namespace: kube-system"));
     }
 
     #[test]
