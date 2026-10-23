@@ -217,7 +217,7 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
                         .unwrap_or_default()
                         == 0
                         && backend.status.as_ref().is_some_and(|status| {
-                            status.replicas == 0
+                            status.replicas == Some(0)
                                 && status.ready_replicas.unwrap_or_default() == 0
                                 && status.available_replicas.unwrap_or_default() == 0
                         });
