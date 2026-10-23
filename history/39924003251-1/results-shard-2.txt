@@ -1,0 +1,31 @@
+commit: 0044909bf90f021e3dc3b8d10a3a3c8f3540d899
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/39924003251
+timestamp (UTC): 2026-10-23T08:37:28Z
+shard: 2/5
+exit code: 0
+----------------------------------------
+bootstrap e2e: 1 test(s), shard 2/5
+▶ 2026-10-23T08:35:15.038Z test_hpa_scale_to_zero_activator_full_flow ... service/nodeactivator-metrics created
+secret/nodeactivator-signer-ca created
+secret/nodeapiserver-proxy-client-ca created
+serviceaccount/nodeactivator created
+role.rbac.authorization.k8s.io/nodeactivator-e2e-signer created
+clusterrole.rbac.authorization.k8s.io/nodeactivator-e2e-signer-nodes created
+clusterrolebinding.rbac.authorization.k8s.io/nodeactivator-e2e-signer-nodes created
+serviceaccount/nodeactivator-cert-signer created
+rolebinding.rbac.authorization.k8s.io/nodeactivator-e2e-signer created
+deployment.apps/nodeactivator-cert-signer created
+clusterrole.rbac.authorization.k8s.io/nodeactivator-e2e-services created
+clusterrolebinding.rbac.authorization.k8s.io/nodeactivator-e2e-services created
+clusterrolebinding.rbac.authorization.k8s.io/nodeactivator-e2e-auth-delegator created
+deployment.apps/nodeactivator created
+service/nodeactivator-metrics unchanged
+apiservice.apiregistration.k8s.io/v1beta1.external.metrics.k8s.io created
+configmap/backend-content created
+deployment.apps/backend created
+service/backend created
+service/front created
+horizontalpodautoscaler.autoscaling/backend created
+pod/caller created
+PASS (133338ms)
+Results: 1 passed, 0 skipped, 0 failed
