@@ -28,20 +28,25 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+    info!("starting nodeactivator PodCertificate signer");
 
     let ca_cert = env::var("NODEACTIVATOR_SIGNER_CA_CERT")
         .unwrap_or_else(|_| "/var/run/nodeactivator-signer/ca.crt".to_string());
     let ca_key = env::var("NODEACTIVATOR_SIGNER_CA_KEY")
         .unwrap_or_else(|_| "/var/run/nodeactivator-signer/ca.key".to_string());
+    info!("loading in-cluster Kubernetes client");
     let client = Client::try_default()
         .await
         .context("loading in-cluster Kubernetes client")?;
+    info!("loaded in-cluster Kubernetes client");
     run(client, &ca_cert, &ca_key).await
 }
 
 async fn run(client: Client, ca_cert: &str, ca_key: &str) -> Result<()> {
     let namespace = env::var("POD_NAMESPACE").context("POD_NAMESPACE must be set")?;
+    info!(namespace, "discovering PodCertificateRequest API");
     let resource = pod_certificate_resource(&client).await?;
+    info!(api_version = %resource.api_version, "watching PodCertificateRequests");
     let requests: Api<DynamicObject> = Api::namespaced_with(client.clone(), &namespace, &resource);
     let config = watcher::Config::default();
     let mut stream = Box::pin(watcher::watcher(requests, config));
