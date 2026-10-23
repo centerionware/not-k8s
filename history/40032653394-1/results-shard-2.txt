@@ -1,0 +1,164 @@
+commit: a2d3c3dc107ad0c52b154de0fe9a14b70d388f71
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/40032653394
+timestamp (UTC): 2026-10-23T22:37:40Z
+shard: 2/5
+exit code: 1
+----------------------------------------
+bootstrap e2e: 1 test(s), shard 2/5
+▶ 2026-10-23T22:32:03.843Z test_hpa_scale_to_zero_activator_full_flow ... FAIL (323627ms)
+    installing the bootstrap addon: Deployment/kube-system/nodeactivator did not become Available within 5 minutes; nodeactivator logs:
+2026-10-23T22:37:16.222201402Z Error: opening proxy client CA
+2026-10-23T22:37:16.22222591Z 
+2026-10-23T22:37:16.222227926Z Caused by:
+2026-10-23T22:37:16.22222976Z     No such file or directory (os error 2)
+
+previous nodeactivator logs:
+Error from server (NotFound): the server could not find the requested resource (get pods nodeactivator-23059f5fcde87e9d-m8ght)
+
+nodeactivator Pod state:
+Name:             nodeactivator-23059f5fcde87e9d-m8ght
+Namespace:        kube-system
+Priority:         0
+Service Account:  nodeactivator
+Node:             runnervmdkmh8/10.1.0.122
+Start Time:       Fri, 23 Oct 2026 22:37:16 +0000
+Labels:           app.kubernetes.io/name=nodeactivator
+                  pod-template-hash=23059f5fcde87e9d
+Annotations:      <none>
+Status:           Pending
+Message:          waiting for projected volume(s) to be materialized: serving-cert
+SeccompProfile:   RuntimeDefault
+IP:               10.42.0.6
+IPs:
+  IP:           10.42.0.6
+Controlled By:  ReplicaSet/nodeactivator-23059f5fcde87e9d
+Containers:
+  nodeactivator:
+    Container ID:   containerd://3260815b86fa2b91121a2e233fcfbd89b156e968cc80c091cf72ab860544dd12
+    Image:          nodeactivator-bootstrap-e2e:nk-e2e-4772-7de14142
+    Image ID:       sha256:48d5e3f5fdcdfb67f97e8d00dec834ab3992c4b625326bd1492a7f85d2f33392
+    Ports:          8080/TCP (http), 8443/TCP (metrics-https)
+    Host Ports:     0/TCP (http), 0/TCP (metrics-https)
+    State:          Waiting
+      Reason:       CrashLoopBackOff
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    1
+      Started:      Mon, 01 Jan 0001 00:00:00 +0000
+      Finished:     Fri, 23 Oct 2026 22:37:16 +0000
+    Ready:          False
+    Restart Count:  15
+    Limits:
+      memory:  128Mi
+    Requests:
+      cpu:      25m
+      memory:   48Mi
+    Liveness:   http-get http://:http/healthz delay=0s timeout=1s period=10s successThreshold=1 failureThreshold=3
+    Readiness:  http-get http://:http/readyz delay=0s timeout=1s period=5s successThreshold=1 failureThreshold=3
+    Environment:
+      ACTIVATOR_TLS_BUNDLE:       /var/run/nodeactivator/tls/credential.pem
+      ACTIVATOR_PROXY_CLIENT_CA:  /var/run/nodeactivator/proxy-ca/ca.crt
+      ACTIVATOR_TIMEOUT_SECONDS:  180
+    Mounts:
+      /var/run/nodeactivator/proxy-ca from proxy-client-ca (ro)
+      /var/run/nodeactivator/tls from serving-cert (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-29797 (ro)
+Conditions:
+  Type                  Status
+  PodScheduled          True 
+  Initialized           True 
+  ContainersReady       False 
+  Ready                 False 
+  PodResizeInProgress   False 
+Volumes:
+  serving-cert:
+    Type:  Projected (a volume that contains injected data from multiple sources)
+  proxy-client-ca:
+    Type:      ConfigMap (a volume populated by a ConfigMap)
+    Name:      extension-apiserver-authentication
+    Optional:  false
+  kube-api-access-29797:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Burstable
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:                      <none>
+
+certificate signer logs:
+2026-10-23T22:32:20.307191473Z 2026-10-23T22:32:20.307104Z  INFO nodeactivator_cert_signer: starting nodeactivator PodCertificate signer
+2026-10-23T22:32:20.307310188Z 2026-10-23T22:32:20.307263Z  INFO nodeactivator_cert_signer: loading in-cluster Kubernetes client
+2026-10-23T22:32:20.307545954Z 2026-10-23T22:32:20.307507Z  INFO nodeactivator_cert_signer: loaded in-cluster Kubernetes client
+2026-10-23T22:32:20.307640419Z 2026-10-23T22:32:20.307564Z  INFO nodeactivator_cert_signer: discovering PodCertificateRequest API namespace="kube-system"
+2026-10-23T22:32:20.318826336Z 2026-10-23T22:32:20.318702Z  INFO nodeactivator_cert_signer: watching PodCertificateRequests api_version=certificates.k8s.io/v1alpha1
+2026-10-23T22:32:20.423922871Z 2026-10-23T22:32:20.423732Z  INFO nodeactivator_cert_signer: issued unique nodeactivator serving certificate namespace="kube-system" pod="nodeactivator-23059f5fcde87e9d-m8ght" pod_uid="088c04bb-0d52-4a13-89bc-48d03faa4ed9" request="pc-088c04bb0d52-0-52cc586546a1"
+2026-10-23T22:37:10.330004528Z 2026-10-23T22:37:10.329798Z  WARN nodeactivator_cert_signer: PodCertificateRequest watch failed error=WatchFailed(ReadEvents(Custom { kind: Other, error: Service(hyper::Error(Body, Custom { kind: UnexpectedEof, error: "peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof" })) }))
+
+PodCertificateRequests:
+apiVersion: v1
+items:
+- apiVersion: certificates.k8s.io/v1alpha1
+  kind: PodCertificateRequest
+  metadata:
+    creationTimestamp: "2026-10-23T22:32:20Z"
+    generation: 1
+    name: pc-088c04bb0d52-0-52cc586546a1
+    namespace: kube-system
+    ownerReferences:
+    - apiVersion: v1
+      blockOwnerDeletion: false
+      controller: false
+      kind: Pod
+      name: nodeactivator-23059f5fcde87e9d-m8ght
+      uid: 088c04bb-0d52-4a13-89bc-48d03faa4ed9
+    resourceVersion: "371"
+    uid: ab3ed2fe-4645-4712-9d11-c8b7689c7ddb
+  spec:
+    maxExpirationSeconds: 86400
+    nodeName: runnervmdkmh8
+    nodeUID: 7429164b-622e-479f-8313-a08a41ce72f5
+    pkixPublicKey: MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEw4cDPSiLEMeuPleuzoD4B6tnLx1hxqgrk9ZCkFpm0tdQ+BnsE4xqFOte5Puz2TZGEG3DMQhxqNpT/+IPn4vJQQ==
+    podName: nodeactivator-23059f5fcde87e9d-m8ght
+    podUID: 088c04bb-0d52-4a13-89bc-48d03faa4ed9
+    proofOfPossession: MEUCIHpoBWVoCmFZxQs5IWi5mUKmrqB1qOhrH0Nh0z+E/sTOAiEA42JA8bzo9JhY7dbny5O71EsjDvW3jeMrHz5wzV5F6fk=
+    serviceAccountName: nodeactivator
+    serviceAccountUID: c3232904-154c-4b43-8211-ace89311aa1d
+    signerName: nodeactivator.notk8s.io/serving
+  status:
+    beginRefreshAt: "2026-10-24T14:32:20Z"
+    certificateChain: |
+      -----BEGIN CERTIFICATE-----
+      MIICHjCCAcWgAwIBAgIUYA43H/JVVuVwNOX4f9NS3v0t/VwwCgYIKoZIzj0EAwIw
+      ITEfMB0GA1UEAwwWcmNnZW4gc2VsZiBzaWduZWQgY2VydDAeFw0yNjEwMjMyMjMy
+      MjBaFw0yNjEwMjQyMjMyMjBaMBgxFjAUBgNVBAMMDW5vZGVhY3RpdmF0b3IwWTAT
+      BgcqhkjOPQIBBggqhkjOPQMBBwNCAATDhwM9KIsQx64+V67OgPgHq2cvHWHGqCuT
+      1kKQWmbS11D4GewTjGoU617k+7PZNkYQbcMxCHGo2lP/4g+fi8lBo4HjMIHgMAwG
+      A1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgWgMBMGA1UdJQQMMAoGCCsGAQUFBwMB
+      MGsGA1UdEQRkMGKCJW5vZGVhY3RpdmF0b3ItbWV0cmljcy5rdWJlLXN5c3RlbS5z
+      dmOCM25vZGVhY3RpdmF0b3ItbWV0cmljcy5rdWJlLXN5c3RlbS5zdmMuY2x1c3Rl
+      ci5sb2NhbIcECisAAzAdBgNVHQ4EFgQUc4xNyyofVP/Vwlv+tlkXAT4Y+l0wHwYD
+      VR0jBBgwFoAU3F+wvBg1YX6EhqwkK2AhX5BId8cwCgYIKoZIzj0EAwIDRwAwRAIg
+      JhoXJXqtLh1qlKDxPXp2cLnL5LiTzQVXG7RwR/ioSTsCIFQGHSm6yWAxBn1krFMp
+      n/v44fwhbOircrigUUyqIDEz
+      -----END CERTIFICATE-----
+    conditions:
+    - lastTransitionTime: "2026-10-23T22:32:20Z"
+      message: nodeactivator serving certificate issued
+      reason: Issued
+      status: "True"
+      type: Issued
+    notAfter: "2026-10-24T22:32:20Z"
+    notBefore: "2026-10-23T22:32:20Z"
+kind: List
+metadata:
+  resourceVersion: ""
+
+failure snapshot /api/v1/namespaces/nk-e2e-4772-7de14142/events: {"apiVersion":"v1","items":[],"kind":"EventList","metadata":{"resourceVersion":"739"}}
+failure snapshot /api/v1/namespaces/nk-e2e-4772-7de14142/pods: {"apiVersion":"v1","items":[],"kind":"PodList","metadata":{"resourceVersion":"800"}}
+failure snapshot /api/v1/namespaces/nk-e2e-4772-7de14142/services: {"apiVersion":"v1","items":[],"kind":"ServiceList","metadata":{"resourceVersion":"739"}}
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-4772-7de14142/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[],"kind":"EndpointSliceList","metadata":{"resourceVersion":"739"}}
+Error: bootstrap e2e failed: 1 test(s): test_hpa_scale_to_zero_activator_full_flow
