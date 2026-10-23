@@ -65,6 +65,8 @@ mod garbage_collection;
 mod generic_ephemeral_volume;
 #[path = "tests/hooks.rs"]
 mod hooks;
+#[path = "tests/hpa_scale_to_zero.rs"]
+mod hpa_scale_to_zero;
 #[path = "tests/host_recovery.rs"]
 mod host_recovery;
 #[path = "tests/node_status.rs"]
@@ -216,6 +218,10 @@ const TESTS: &[TestCase] = &[
     },
     TestCase {
         name: "test_nodeapiserver_hpa_scale_to_zero_validation",
+        group: TestGroup::General,
+    },
+    TestCase {
+        name: "test_hpa_scale_to_zero_activator_full_flow",
         group: TestGroup::General,
     },
     TestCase {
@@ -1558,8 +1564,13 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
                 continue;
             }
         };
+        let test_timeout = if name == "test_hpa_scale_to_zero_activator_full_flow" {
+            Duration::from_secs(600)
+        } else {
+            Duration::from_secs(300)
+        };
         let result = tokio::time::timeout(
-            Duration::from_secs(300),
+            test_timeout,
             run_test(name, &test_context),
         )
         .await;
@@ -1587,7 +1598,7 @@ async fn run_async(only: Option<&str>, shard: Option<&str>) -> Result<()> {
             Err(_) => {
                 println!("FAIL ({}ms)", started.elapsed().as_millis());
                 eprintln!(
-                    "    test exceeded the 300-second safety timeout; the next test will run after cleanup"
+                    "    test exceeded its {test_timeout:?} safety timeout; the next test will run after cleanup"
                 );
                 test_context.capture_failure().await;
                 test_context.cleanup().await;
@@ -1881,6 +1892,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         },
         "test_nodeapiserver_hpa_scale_to_zero_validation" => {
             bootstrap::nodeapiserver_hpa_scale_to_zero_validation(context).await
+        },
+        "test_hpa_scale_to_zero_activator_full_flow" => {
+            hpa_scale_to_zero::hpa_scale_to_zero_activator_full_flow(context).await
         },
         "test_nodeapiserver_rejects_invalid_metadata_keys" => {
             bootstrap::nodeapiserver_rejects_invalid_metadata_keys(context).await
