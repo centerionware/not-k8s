@@ -106,6 +106,10 @@ fn migrate_to_nodestore(
         std::env::var("NODEBOOTSTRAP_JOIN_ENDPOINT").is_ok_and(|endpoint| !endpoint.is_empty());
     validate_skip_api_import(request, source, joins_existing)?;
     if source.role == detect::NodeRole::Worker {
+        ensure!(
+            !request.metrics_server && request.nodeactivator_image.is_none(),
+            "metrics-server and nodeactivator-image must be enabled on a control-plane migration"
+        );
         return migrate_worker_to_nodestore(request, source);
     }
     service::validate_disable_support(source)?;
@@ -179,6 +183,7 @@ fn migrate_to_nodestore(
         None
     };
     let mut bootstrap = bootstrap_command(source, disable_nodeproxy)?;
+    append_optional_addon_flags(&mut bootstrap, request);
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
     let destination_node_exists = if joins_existing {
         target_api.ready().context(
@@ -215,8 +220,14 @@ fn migrate_to_nodestore(
         } else {
             "nodeproxy enabled"
         };
+        let addons = match (request.metrics_server, request.nodeactivator_image.as_deref()) {
+            (true, Some(image)) => format!("metrics-server; nodeactivator image={image}"),
+            (true, None) => "metrics-server".to_string(),
+            (false, Some(image)) => format!("nodeactivator image={image}"),
+            (false, None) => "none".to_string(),
+        };
         println!(
-            "Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}; proxy={proxy}{replacement}; replace-existing-node={replace_existing_node}; cluster-api-import={}; {}source service will be disabled; uninstall-after-migrate={}",
+            "Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}; proxy={proxy}{replacement}; addons={addons}; replace-existing-node={replace_existing_node}; cluster-api-import={}; {}source service will be disabled; uninstall-after-migrate={}",
             request.from,
             if joins_existing {
                 "existing cluster"
@@ -1875,6 +1886,15 @@ fn bootstrap_command(
     bootstrap_command_with_config(args, config, source_api_server_name)
 }
 
+fn append_optional_addon_flags(command: &mut Command, request: &request::MigrationRequest) {
+    if request.metrics_server {
+        command.arg("--metrics-server");
+    }
+    if let Some(image) = &request.nodeactivator_image {
+        command.arg(format!("--nodeactivator-image={image}"));
+    }
+}
+
 fn prepare_migration_pki(
     command: &mut Command,
     source: &detect::Installation,
@@ -2301,6 +2321,7 @@ fn print_help() {
          Usage:\n\
          \x20 nodemigrate inspect\n\
          \x20 nodemigrate to=nodestore from=k3s [uninstall-after-migrate=true]\n\
+         \x20 nodemigrate to=nodestore from=k3s metrics-server=true nodeactivator-image=IMAGE\n\
          \x20 nodemigrate to=nodestore from=kubernetes\n\
          \x20 nodemigrate to=k3s from=nodestore\n\
          \x20 nodemigrate to=kubernetes from=nodestore\n\
@@ -2315,6 +2336,9 @@ fn print_help() {
          target quorum returns, run import-export=/path once to import cluster\n\
          state. Use skip-api-export=true for later nodes after target API\n\
          readiness.\n\
+         Optional destination addons are metrics-server=true and\n\
+         nodeactivator-image=IMAGE (the activator image must be available to\n\
+         the destination nodes).\n\
          \n\
          `inspect` reports detected local Kubernetes installations. Migration\n\
          exports Kubernetes API objects into a protected recovery directory,\n\
@@ -2330,13 +2354,29 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_nodeproxy_mode, apply_cni_runtime_paths, confirm_migration, detect_csi_staging_root,
+        append_nodeproxy_mode, append_optional_addon_flags, apply_cni_runtime_paths, confirm_migration, detect_csi_staging_root,
         migration_csi_staging_root, nodeproxy_should_be_disabled, replacement_worker_args,
         source_api_pki_paths, preserve_pki_file,
         reverse_node_replacement_state, rollback_reverse_migration_with,
         validate_destination_node_replacement, validate_reverse_control_plane_options,
         validate_skip_api_import,
     };
+
+    #[test]
+    fn migration_forwards_optional_addon_flags_to_bootstrap() {
+        let request = MigrationRequest::parse(&[
+            "to=nodestore".to_string(), "from=k3s".to_string(),
+            "metrics-server=true".to_string(),
+            "nodeactivator-image=registry.example/activator:v1".to_string(),
+        ]).unwrap();
+        let mut command = Command::new("bootstrap");
+        append_optional_addon_flags(&mut command, &request);
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, vec![
+            "--metrics-server".to_string(),
+            "--nodeactivator-image=registry.example/activator:v1".to_string(),
+        ]);
+    }
     use crate::transfer::NodeSchedulingState;
     use crate::{
         detect::{ClusterConfig, Installation, K3sDatastore, NodeRole},

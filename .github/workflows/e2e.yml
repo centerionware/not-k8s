@@ -43,6 +43,11 @@ on:
         required: false
         default: ''
         type: string
+      metrics_server:
+        description: 'Install metrics-server through optional bootstrap support'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -212,6 +217,7 @@ jobs:
           cluster_domain: ${{ inputs.cluster_domain }}
           cidr: ${{ inputs.cidr }}
           cidr6: ${{ inputs.cidr6 }}
+          metrics_server: ${{ inputs.metrics_server }}
           results_prefix: history/${{ github.run_id }}-${{ github.run_attempt }}
 
   cleanup-e2e-artifact:

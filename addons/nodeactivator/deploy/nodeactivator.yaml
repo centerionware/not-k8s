@@ -212,8 +212,11 @@ spec:
               maxExpirationSeconds: 86400
               credentialBundlePath: credential.pem
       - name: proxy-client-ca
-        secret:
-          secretName: nodeapiserver-proxy-client-ca
+        configMap:
+          name: extension-apiserver-authentication
+          items:
+          - key: requestheader-client-ca-file
+            path: ca.crt
 ---
 apiVersion: v1
 kind: Service

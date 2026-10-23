@@ -15,6 +15,26 @@ returns to zero.
 
 ## Build and install
 
+The bootstrapper can install both optional addons after the control plane is
+ready. Build or publish the activator image first so every node can pull it:
+
+```sh
+./target/debug/nodebootstrap --metrics-server \
+  --nodeactivator-image=registry.example/nodeactivator:v1
+```
+
+For migration to nodestore, use the corresponding migration options:
+
+```sh
+notk8s migrate from=k3s to=nodestore metrics-server=true \
+  nodeactivator-image=registry.example/nodeactivator:v1
+```
+
+Metrics Server supplies resource metrics such as CPU and memory. Kubernetes
+1.37 HPA scale-to-zero uses object or external metrics; the Node Activator
+exposes its request count through the standard External Metrics API. Either
+addon can be enabled independently.
+
 Build from the repository root and make the image available to the cluster's
 nodes. The image contains both the activator and its PodCertificate signer:
 
@@ -31,41 +51,13 @@ nodeactivator ServiceAccount and the metrics Service. Keep its CA private key
 in the `nodeactivator-signer-ca` Secret; the signer never shares that key with
 the activator or other cluster components.
 
-Create a dedicated serving CA and Secret (protect and rotate the CA key
-according to your cluster's PKI policy):
-
-```sh
-openssl req -x509 -newkey rsa:3072 -nodes -days 365 \
-  -keyout nodeactivator-ca.key -out nodeactivator-ca.crt \
-  -subj /CN=nodeactivator-serving-ca \
-  -addext 'basicConstraints=critical,CA:TRUE' \
-  -addext 'keyUsage=critical,keyCertSign,cRLSign'
-kubectl create secret generic nodeactivator-signer-ca -n kube-system \
-  --from-file=ca.crt=nodeactivator-ca.crt --from-file=ca.key=nodeactivator-ca.key
-```
-
-The metrics listener also requires a client certificate signed by the
-apiserver aggregation proxy CA. For the standard request-header setup, obtain
-that CA from
-`extension-apiserver-authentication`:
-
-```sh
-kubectl get configmap extension-apiserver-authentication -n kube-system \
-  -o go-template='{{index .data "requestheader-client-ca-file"}}' > proxy-ca.crt
-kubectl create secret generic nodeapiserver-proxy-client-ca -n kube-system \
-  --from-file=ca.crt=proxy-ca.crt
-```
-
-Replace `REPLACE_WITH_BASE64_SERVING_CA` in
-[`deploy/nodeactivator.yaml`](deploy/nodeactivator.yaml) with the base64 encoded
-PEM contents of `nodeactivator-ca.crt`, then apply it. Both the projected
-`podCertificate` volume and `certificates.k8s.io/v1` PodCertificateRequest API
-require Kubernetes 1.37 or newer.
-
-```sh
-kubectl apply -f addons/nodeactivator/deploy/nodeactivator.yaml
-kubectl wait --for=condition=Available apiservice/v1beta1.external.metrics.k8s.io
-```
+The bootstrap installer creates and retains a dedicated signer CA Secret,
+mounts the aggregation proxy CA directly from
+`extension-apiserver-authentication`, renders the APIService CA bundle, and
+applies the Pod RBAC and Deployments. It does not reuse the proxy CA or any
+other component certificate for serving. Both the projected `podCertificate`
+volume and `certificates.k8s.io/v1` PodCertificateRequest API require
+Kubernetes 1.37 or newer.
 
 The metrics server validates the APIService aggregator's mTLS client
 certificate and uses a `SubjectAccessReview` for every metric request. Its
@@ -109,9 +101,12 @@ spec:
     targetPort: http
 ```
 
-The application Deployment can start with zero replicas. The HPA uses only
-standard Kubernetes fields; the external metric selector chooses the front
-Service by name:
+Start the application Deployment above zero so the HPA can observe a normal
+scale-down and record its `ScaledToZero` condition. Kubernetes 1.37 then lets
+that HPA wake it from zero using the external metric. A manual scale to zero
+pauses the HPA until the Deployment is manually raised again. The HPA uses
+only standard Kubernetes fields; the external metric selector chooses the
+front Service by name:
 
 ```yaml
 apiVersion: autoscaling/v2

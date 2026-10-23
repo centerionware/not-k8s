@@ -15,6 +15,7 @@ pub mod fetch;
 pub mod kubeconfig;
 pub mod kube_api;
 pub mod manifests;
+pub mod addons;
 pub mod pkg;
 pub mod pki;
 pub mod rbac;
@@ -167,6 +168,9 @@ pub fn run_all() -> Result<()> {
         services::wait_for_control_plane_readiness(&cfg)?;
     }
     services::ensure_nodeproxy(&cfg)?;
+    if cfg.install_metrics_server || cfg.nodeactivator_image.is_some() {
+        addons::install(&cfg)?;
+    }
     Ok(())
 }
 
@@ -468,6 +472,15 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
             std::env::set_var("NODEBOOTSTRAP_DISABLE_DNS", "1");
             continue;
         }
+        if arg == "--metrics-server" {
+            std::env::set_var("NODEBOOTSTRAP_METRICS_SERVER", "1");
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--nodeactivator-image=") {
+            anyhow::ensure!(!value.trim().is_empty(), "--nodeactivator-image requires an image reference");
+            std::env::set_var("NODEBOOTSTRAP_NODEACTIVATOR_IMAGE", value);
+            continue;
+        }
         if arg == "--uninstall" {
             std::env::set_var("NODEBOOTSTRAP_UNINSTALL", "1");
             continue;
@@ -761,6 +774,8 @@ fn print_help() {
     println!("  --without-flannel      skip flannel and remember external CNI for updates");
     println!("  --cni=none             use an externally-managed CNI for this run");
     println!("  --disable-dns          do not install or configure CoreDNS");
+    println!("  --metrics-server       install Kubernetes resource metrics server");
+    println!("  --nodeactivator-image=REF install the HTTP activator and PodCertificate signer");
     println!("  --cluster-domain=NAME  use NAME instead of cluster.local");
     println!("  --cidr=IP/PREFIX       service network (default 10.43.0.0/16)");
     println!("  --cidr6=IP/PREFIX      optional IPv6 service network");

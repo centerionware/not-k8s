@@ -60,6 +60,7 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
 
     let work = TestWork::create(context)?;
     work.load_test_images()?;
+    work.install_bootstrap_addon()?;
     work.apply_metrics_service(context)?;
     work.create_tls_material()?;
     work.apply_fixture(context)?;
@@ -349,6 +350,7 @@ struct TestWork {
     dir: PathBuf,
     activator_image: String,
     signer_image: String,
+    bootstrap_image: String,
 }
 
 impl TestWork {
@@ -363,7 +365,32 @@ impl TestWork {
             dir,
             activator_image: format!("nodeactivator-e2e:{}", context.namespace),
             signer_image: format!("nodeactivator-cert-signer-e2e:{}", context.namespace),
+            bootstrap_image: format!("nodeactivator-bootstrap-e2e:{}", context.namespace),
         })
+    }
+
+    fn install_bootstrap_addon(&self) -> Result<()> {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let output = Command::new("docker")
+            .current_dir(&repo)
+            .args([
+                "build", "--file", "addons/nodeactivator/e2e-addon.Dockerfile",
+                "--tag", &self.bootstrap_image, ".",
+            ])
+            .output()
+            .context("building the combined bootstrap addon image")?;
+        anyhow::ensure!(output.status.success(), "docker build for bootstrap addon failed: {}", String::from_utf8_lossy(&output.stderr));
+        let archive = self.dir.join("bootstrap-addon.tar");
+        let archive_string = archive.to_string_lossy().into_owned();
+        root_run(&["docker", "save", "--output", &archive_string, &self.bootstrap_image])?;
+        root_run(&["ctr", "-n", "k8s.io", "images", "import", &archive_string])?;
+
+        let mut config = crate::config::Config::from_env()?;
+        config.nodeactivator_image = Some(self.bootstrap_image.clone());
+        tokio::task::spawn_blocking(move || crate::addons::install(&config))
+            .await
+            .context("joining bootstrap addon installation")??;
+        Ok(())
     }
 
     fn load_test_images(&self) -> Result<()> {
@@ -518,6 +545,9 @@ impl Drop for TestWork {
             .output();
         let _ = Command::new("docker")
             .args(["image", "rm", &self.signer_image])
+            .output();
+        let _ = Command::new("docker")
+            .args(["image", "rm", &self.bootstrap_image])
             .output();
         let _ = Command::new("kubectl")
             .args([

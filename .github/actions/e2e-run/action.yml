@@ -28,6 +28,9 @@ inputs:
   cidr6:
     description: 'cidr6'
     default: ''
+  metrics_server:
+    description: 'metrics_server'
+    default: 'false'
   results_branch:
     description: 'results_branch'
     default: 'e2e-results'
@@ -45,6 +48,7 @@ runs:
         CLUSTER_DOMAIN: ${{ inputs.cluster_domain }}
         CIDR: ${{ inputs.cidr }}
         CIDR6: ${{ inputs.cidr6 }}
+        METRICS_SERVER: ${{ inputs.metrics_server }}
         RUST_LOG: info,nk_watch_trace=debug,nk_controller_trace=debug,kube_runtime::watcher=debug
         # The idle watchdog's connection kill is left enabled (the
         # deployment default): it is the recovery for a stalled bookmark
@@ -67,6 +71,9 @@ runs:
         [[ -z "$CIDR6" ]] || args+=("--cidr6=$CIDR6")
         if [[ "$NETWORK" == external ]]; then
           args+=(--without-flannel --proxy=none)
+        fi
+        if [[ "$METRICS_SERVER" == true ]]; then
+          args+=(--metrics-server)
         fi
         # The bootstrapper must use its kube client directly. Put a
         # failing kubectl shim first on PATH so any install-time regression
