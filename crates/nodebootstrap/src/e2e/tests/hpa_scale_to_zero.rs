@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::Api;
+use kube::api::{Api, ListParams, LogParams};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -48,25 +48,34 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
         )
         .await;
     if let Err(error) = ready {
-        let signer_logs = Command::new("kubectl")
-            .args([
-                "--request-timeout=10s",
-                "logs",
-                "deployment/nodeactivator-cert-signer",
-                "--namespace",
-                &context.namespace,
-                "--all-pods=true",
-                "--all-containers=true",
-                "--prefix",
-                "--previous",
-                "--timestamps",
-            ])
-            .output()
-            .context("getting previous nodeactivator certificate signer logs")?;
+        let signer_pods_api: Api<Pod> =
+            Api::namespaced(context.client.clone(), &context.namespace);
+        let signer_pods = signer_pods_api
+            .list(&ListParams::default().labels("app=nodeactivator-cert-signer"))
+            .await
+            .context("listing nodeactivator certificate signer Pods")?;
+        let mut signer_logs = Vec::new();
+        for pod in signer_pods.items {
+            let Some(name) = pod.metadata.name else {
+                continue;
+            };
+            let log = signer_pods_api
+                .logs(
+                    &name,
+                    &LogParams {
+                        previous: true,
+                        ..Default::default()
+                    },
+                )
+                .await;
+            signer_logs.push(match log {
+                Ok(log) => format!("pod/{name} previous logs:\n{log}"),
+                Err(error) => format!("pod/{name} previous log error: {error:#}"),
+            });
+        }
         anyhow::bail!(
-            "{error:#}; previous certificate signer logs:\n{}{}",
-            String::from_utf8_lossy(&signer_logs.stdout),
-            String::from_utf8_lossy(&signer_logs.stderr),
+            "{error:#}; previous certificate signer logs:\n{}",
+            signer_logs.join("\n"),
         );
     }
     wait_for_apiservice(context, Duration::from_secs(120)).await?;
