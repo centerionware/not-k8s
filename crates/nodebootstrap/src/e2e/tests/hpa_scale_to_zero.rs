@@ -387,9 +387,10 @@ impl TestWork {
 
         let mut config = crate::config::Config::from_env()?;
         config.nodeactivator_image = Some(self.bootstrap_image.clone());
-        tokio::task::spawn_blocking(move || crate::addons::install(&config))
-            .await
-            .context("joining bootstrap addon installation")??;
+        let install = std::thread::spawn(move || crate::addons::install(&config))
+            .join()
+            .map_err(|_| anyhow::anyhow!("bootstrap addon installation thread panicked"))?;
+        install.context("installing the bootstrap addon")?;
         Ok(())
     }
 

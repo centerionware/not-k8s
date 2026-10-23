@@ -80,22 +80,36 @@ async fn wait_for_deployment(client: &kube::Client, name: &str) -> Result<()> {
 }
 
 async fn wait_for_api_service(client: &kube::Client, name: &str) -> Result<()> {
-    use k8s_openapi::api::apiregistration::v1::APIService;
-    use kube::api::Api;
-    let services: Api<APIService> = Api::all(client.clone());
+    use kube::{
+        api::{Api, DynamicObject},
+        core::GroupVersionKind,
+        discovery::ApiResource,
+    };
+    let resource = ApiResource::from_gvk(&GroupVersionKind::gvk(
+        "apiregistration.k8s.io",
+        "v1",
+        "APIService",
+    ));
+    let services: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
     for _ in 0..60 {
         if let Some(service) = services
             .get_opt(name)
             .await
             .context("checking aggregated API readiness")?
         {
-            if service.status.is_some_and(|status| {
-                status
-                    .conditions
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|condition| condition.type_ == "Available" && condition.status == "True")
-            }) {
+            if service
+                .data
+                .pointer("/status/conditions")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|conditions| {
+                    conditions.iter().any(|condition| {
+                        condition.get("type").and_then(serde_json::Value::as_str)
+                            == Some("Available")
+                            && condition.get("status").and_then(serde_json::Value::as_str)
+                                == Some("True")
+                    })
+                })
+            {
                 return Ok(());
             }
         }
