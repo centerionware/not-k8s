@@ -21,7 +21,6 @@ const NODEACTIVATOR_LABEL_VALUE: &str = "nodeactivator";
 const SERVICE_NAME: &str = "nodeactivator-metrics";
 
 fn main() -> Result<()> {
-    eprintln!("nodeactivator certificate signer entered main");
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -29,6 +28,9 @@ fn main() -> Result<()> {
         )
         .init();
     info!("starting nodeactivator PodCertificate signer");
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .context("installing the rustls ring crypto provider")?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
