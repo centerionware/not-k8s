@@ -91,31 +91,49 @@ async fn wait_for_api_service(client: &kube::Client, name: &str) -> Result<()> {
         "APIService",
     ));
     let services: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
+    let mut last_status = "APIService has not been observed yet".to_string();
     for _ in 0..60 {
         if let Some(service) = services
             .get_opt(name)
             .await
             .context("checking aggregated API readiness")?
         {
-            if service
+            let conditions = service
                 .data
                 .pointer("/status/conditions")
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(|conditions| {
-                    conditions.iter().any(|condition| {
-                        condition.get("type").and_then(serde_json::Value::as_str)
-                            == Some("Available")
-                            && condition.get("status").and_then(serde_json::Value::as_str)
-                                == Some("True")
-                    })
+                .and_then(serde_json::Value::as_array);
+            if let Some(available) = conditions.and_then(|conditions| {
+                conditions.iter().find(|condition| {
+                    condition.get("type").and_then(serde_json::Value::as_str) == Some("Available")
                 })
-            {
-                return Ok(());
+            }) {
+                let status = available
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Unknown");
+                let reason = available
+                    .get("reason")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unspecified");
+                let message = available
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("no condition message");
+                last_status = format!("Available={status}, reason={reason}: {message}");
+                if status == "True" {
+                    return Ok(());
+                }
+            } else {
+                last_status = "APIService has no Available condition".to_string();
             }
+        } else {
+            last_status = "APIService object is not present".to_string();
         }
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
-    anyhow::bail!("APIService/{name} did not become Available within 5 minutes")
+    anyhow::bail!(
+        "APIService/{name} did not become Available within 5 minutes; last observed status: {last_status}"
+    )
 }
 
 async fn signer_ca(client: &kube::Client) -> Result<(String, String)> {
