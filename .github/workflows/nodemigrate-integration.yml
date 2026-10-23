@@ -44,6 +44,16 @@ on:
         required: false
         type: boolean
         default: false
+      metrics_server:
+        description: Install metrics-server through nodebootstrap during migration
+        required: false
+        type: boolean
+        default: false
+      nodeactivator_image:
+        description: Install the branch-built scale-from-zero addon image
+        required: false
+        type: string
+        default: ''
   pull_request:
     paths:
       - '.github/scripts/nodemigrate-integration.sh'
@@ -292,6 +302,19 @@ jobs:
       - name: Build branch runtime
         run: cargo build --release --features cri -p notk8s
 
+      - name: Build addon image
+        if: inputs.nodeactivator_image != ''
+        env:
+          NODEMIGRATE_NODEACTIVATOR_IMAGE: ${{ inputs.nodeactivator_image }}
+        run: |
+          set -euo pipefail
+          cargo build --release -p nodeactivator --bins
+          mkdir -p dist-bin
+          install -m0755 target/release/nodeactivator dist-bin/nodeactivator
+          install -m0755 target/release/nodeactivator-cert-signer dist-bin/nodeactivator-cert-signer
+          docker build --file addons/nodeactivator/e2e-addon.Dockerfile \
+            --tag "$NODEMIGRATE_NODEACTIVATOR_IMAGE" .
+
       - name: Fetch latest runtime
         if: inputs.runtime_source != 'branch'
         env:
@@ -328,9 +351,11 @@ jobs:
           NODEMIGRATE_SOURCE_DIST: ${{ matrix.source }}
           NODEMIGRATE_TEST_LOG: ${{ runner.temp }}/nodemigrate-${{ matrix.source }}.log
           NODEMIGRATE_CILIUM_KPR: ${{ inputs.cilium_kpr }}
+          NODEMIGRATE_METRICS_SERVER: ${{ inputs.metrics_server }}
+          NODEMIGRATE_NODEACTIVATOR_IMAGE: ${{ inputs.nodeactivator_image }}
         run: |
           set -euo pipefail
-          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,GH_TOKEN,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG,NODEMIGRATE_CILIUM_KPR \
+          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,GH_TOKEN,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG,NODEMIGRATE_CILIUM_KPR,NODEMIGRATE_METRICS_SERVER,NODEMIGRATE_NODEACTIVATOR_IMAGE \
             bash .github/scripts/nodemigrate-integration.sh
 
       - name: Upload test log

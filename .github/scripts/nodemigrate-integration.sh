@@ -3583,6 +3583,209 @@ verify_hpa_scaling() {
     wait_for_hpa_replicas 3 "$stage scale-up restore"
 }
 
+verify_nodeactivator_hpa_wakeup() {
+    local stage="$1" deadline pod_logs
+    kubectl delete hpa migration-activator -n migration-apps --ignore-not-found=true
+    kubectl delete deployment migration-activator-backend -n migration-apps --ignore-not-found=true
+    kubectl delete service migration-activator-front migration-activator-backend -n migration-apps --ignore-not-found=true
+    kubectl delete pod migration-activator-caller -n migration-apps --ignore-not-found=true
+    cat <<'YAML' | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: migration-activator-backend
+  namespace: migration-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: migration-activator-backend
+  template:
+    metadata:
+      labels:
+        app: migration-activator-backend
+    spec:
+      containers:
+      - name: http
+        image: busybox:1.36.1
+        command: ["sh", "-c", "echo migration-activator-response > /www/index.html; exec httpd -f -p 8080 -h /www"]
+        resources:
+          requests:
+            cpu: 1m
+            memory: 1Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: migration-activator-backend
+  namespace: migration-apps
+spec:
+  selector:
+    app: migration-activator-backend
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: migration-activator-front
+  namespace: migration-apps
+  labels:
+    activator.notk8s.io/enabled: "true"
+  annotations:
+    activator.notk8s.io/backend-url: http://migration-activator-backend.migration-apps.svc.cluster.local:8080
+spec:
+  selector:
+    app.kubernetes.io/name: nodeactivator
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: migration-activator
+  namespace: migration-apps
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: migration-activator-backend
+  minReplicas: 0
+  maxReplicas: 3
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 0
+  metrics:
+  - type: External
+    external:
+      metric:
+        name: activator_requests_active
+        selector:
+          matchLabels:
+            service: migration-activator-front
+      target:
+        type: Value
+        value: "1"
+YAML
+    deadline=$((SECONDS + 300))
+    while (( SECONDS < deadline )); do
+        if kubectl get deployment migration-activator-backend -n migration-apps -o json \
+            | jq -e '.spec.replicas == 0' >/dev/null \
+            && kubectl get hpa migration-activator -n migration-apps -o json \
+                | jq -e 'any(.status.conditions[]?; .type == "ScaledToZero" and .status == "True")' >/dev/null; then
+            break
+        fi
+        sleep 3
+    done
+    kubectl get hpa migration-activator -n migration-apps -o json | jq -e '
+      .spec.minReplicas == 0 and
+      any(.status.conditions[]?; .type == "ScaledToZero" and .status == "True")
+    ' >/dev/null || {
+        echo "HPA did not own the zero-replica backend at stage=$stage" >&2
+        kubectl get hpa migration-activator -n migration-apps -o yaml >&2 || true
+        kubectl get deployment migration-activator-backend -n migration-apps -o yaml >&2 || true
+        kubectl get --raw '/apis/external.metrics.k8s.io/v1beta1/namespaces/migration-apps/activator_requests_active?labelSelector=service%3Dmigration-activator-front' >&2 || true
+        return 1
+    }
+    cat <<'YAML' | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: migration-activator-caller
+  namespace: migration-apps
+spec:
+  restartPolicy: Never
+  containers:
+  - name: caller
+    image: busybox:1.36.1
+    command: ["sh", "-c", "wget -T 240 -qO- http://migration-activator-front.migration-apps.svc/; echo ACTIVATOR_REQUEST_FINISHED; sleep 3600"]
+YAML
+    deadline=$((SECONDS + 300))
+    pod_logs=""
+    while (( SECONDS < deadline )); do
+        pod_logs="$(kubectl logs pod/migration-activator-caller -n migration-apps 2>/dev/null || true)"
+        if grep -Fq ACTIVATOR_REQUEST_FINISHED <<< "$pod_logs"; then
+            grep -Fq migration-activator-response <<< "$pod_logs" || {
+                echo "activator request completed without a backend response at stage=$stage: $pod_logs" >&2
+                return 1
+            }
+            break
+        fi
+        sleep 3
+    done
+    grep -Fq ACTIVATOR_REQUEST_FINISHED <<< "$pod_logs" || {
+        echo "buffered request did not complete through the activator at stage=$stage" >&2
+        kubectl get hpa,deployment,pod,service -n migration-apps >&2 || true
+        kubectl logs deployment/nodeactivator -n kube-system --tail=100 >&2 || true
+        return 1
+    }
+    kubectl get deployment migration-activator-backend -n migration-apps -o json | jq -e '
+      .spec.replicas == 1 and (.status.availableReplicas // 0) == 1
+    ' >/dev/null || {
+        echo "external metric did not wake the zero-replica backend at stage=$stage" >&2
+        kubectl get hpa migration-activator -n migration-apps -o yaml >&2 || true
+        kubectl get deployment migration-activator-backend -n migration-apps -o yaml >&2 || true
+        return 1
+    }
+    kubectl delete hpa migration-activator -n migration-apps
+    kubectl delete deployment migration-activator-backend -n migration-apps
+    kubectl delete service migration-activator-front migration-activator-backend -n migration-apps
+    kubectl delete pod migration-activator-caller -n migration-apps
+    echo "PASS migrated cluster buffered a request and activated its HPA-scaled-to-zero backend at stage=$stage"
+}
+
+verify_migration_optional_addons() {
+    local stage="$1" api_service_json images
+    if [[ "${NODEMIGRATE_METRICS_SERVER:-false}" == true ]]; then
+        kubectl rollout status deployment/metrics-server -n kube-system --timeout=5m
+        kubectl get deployment metrics-server -n kube-system -o json | jq -e '
+          any(.spec.template.spec.containers[]?; .image == "registry.k8s.io/metrics-server/metrics-server:v0.9.0")
+        ' >/dev/null || {
+            echo "nodebootstrap metrics-server image is missing after migration at stage=$stage" >&2
+            kubectl get deployment metrics-server -n kube-system -o yaml >&2 || true
+            return 1
+        }
+        api_service_json="$(kubectl get apiservice v1beta1.metrics.k8s.io -o json)"
+        jq -e 'any(.status.conditions[]?; .type == "Available" and .status == "True")' \
+            <<< "$api_service_json" >/dev/null || {
+            echo "metrics-server APIService is unavailable after migration at stage=$stage" >&2
+            return 1
+        }
+        kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes >/dev/null
+    fi
+    if [[ -n "${NODEMIGRATE_NODEACTIVATOR_IMAGE:-}" ]]; then
+        kubectl rollout status deployment/nodeactivator-cert-signer -n kube-system --timeout=5m
+        kubectl rollout status deployment/nodeactivator -n kube-system --timeout=5m
+        images="$(kubectl get deployment/nodeactivator deployment/nodeactivator-cert-signer -n kube-system -o json \
+            | jq -r '[.items[].spec.template.spec.containers[].image] | unique | join(" ")')"
+        [[ "$images" == "$NODEMIGRATE_NODEACTIVATOR_IMAGE" ]] || {
+            echo "nodebootstrap activator deployments do not use the requested image at stage=$stage: $images" >&2
+            return 1
+        }
+        api_service_json="$(kubectl get apiservice v1beta1.external.metrics.k8s.io -o json)"
+        jq -e 'any(.status.conditions[]?; .type == "Available" and .status == "True")' \
+            <<< "$api_service_json" >/dev/null || {
+            echo "activator external metrics APIService is unavailable after migration at stage=$stage" >&2
+            return 1
+        }
+        kubectl get podcertificaterequests.certificates.k8s.io --all-namespaces -o json | jq -e '
+          [.items[]? | select(.spec.signerName == "nodeactivator.notk8s.io/serving")
+            | select(any(.status.conditions[]?; .type == "Issued" and .status == "True"))]
+          | length >= 2
+        ' >/dev/null || {
+            echo "activator and signer Pods have not each received a Pod certificate at stage=$stage" >&2
+            kubectl get podcertificaterequests.certificates.k8s.io --all-namespaces -o yaml >&2 || true
+            return 1
+        }
+        verify_nodeactivator_hpa_wakeup "$stage"
+    fi
+    echo "PASS migration-selected optional addon installation at stage=$stage"
+}
+
 verify_stage() {
     local stage="$1"
     local stage_dir="$CHECKPOINT_DIR/$stage"
@@ -3620,6 +3823,7 @@ verify_stage() {
             }
             echo "PASS nodeproxy owns Service routing without kube-proxy"
         fi
+        verify_migration_optional_addons "$stage"
     fi
     capture_cilium_agent_cri_security "$CURRENT_KUBECONFIG"
     verify_ingress_spec "$stage"
@@ -4962,6 +5166,27 @@ assert_migratable_api_objects_retained() {
     echo "PASS: all source API object identities and durable fixture state were retained at stage $2"
 }
 
+prepare_nodeactivator_image() {
+    local image="${NODEMIGRATE_NODEACTIVATOR_IMAGE:-}" archive socket imported=false
+    [[ -n "$image" ]] || return 0
+    docker image inspect "$image" >/dev/null || {
+        echo "requested nodeactivator CI image is not present in Docker: $image" >&2
+        return 1
+    }
+    archive="$(mktemp --suffix=.tar)"
+    docker save --output "$archive" "$image"
+    for socket in /run/k3s/containerd/containerd.sock /run/containerd/containerd.sock; do
+        [[ -S "$socket" ]] || continue
+        ctr --address "$socket" --namespace k8s.io images import "$archive"
+        imported=true
+    done
+    rm -f "$archive"
+    [[ "$imported" == true ]] || {
+        echo "no source or destination containerd socket was available to preload $image" >&2
+        return 1
+    }
+}
+
 main() {
     need_root
     install_tools
@@ -4973,6 +5198,7 @@ main() {
     # comparison continues to check the complete CSI StatefulSet spec.
     KUBECONFIG="$SOURCE_KUBECONFIG" ensure_csi_can_access_nodelet_root
     install_workloads
+    prepare_nodeactivator_image
     KUBECONFIG="$SOURCE_KUBECONFIG" pin_hostpath_driver_to_fixture_volumes
     verify_stage source "$SOURCE_KUBECONFIG"
     capture_source_csi_device_volume
@@ -5194,10 +5420,17 @@ main() {
     TARGET_WATCH_PID=$!
     echo "Migrating $SOURCE_DIST -> nodestore"
     local migration_status=0
+    local -a migration_args=(to=nodestore "from=$SOURCE_DIST")
+    if [[ "${NODEMIGRATE_METRICS_SERVER:-false}" == true ]]; then
+        migration_args+=(metrics-server=true)
+    fi
+    if [[ -n "${NODEMIGRATE_NODEACTIVATOR_IMAGE:-}" ]]; then
+        migration_args+=("nodeactivator-image=$NODEMIGRATE_NODEACTIVATOR_IMAGE")
+    fi
     (
         export NODEMIGRATE_SOURCE_KUBECONFIG="$SOURCE_KUBECONFIG"
         export NODEMIGRATE_DESTINATION_KUBECONFIG="$nodestore_kubeconfig"
-        exec "$MIGRATE" to=nodestore "from=$SOURCE_DIST"
+        exec "$MIGRATE" "${migration_args[@]}"
     ) &
     local migration_pid=$!
     if wait "$migration_pid"; then

@@ -327,6 +327,16 @@ fn migrate_to_nodestore(
         }
         eprintln!("nodemigrate: protected Kubernetes API import completed");
     }
+    // Source API import can replace addon objects installed by the initial
+    // bootstrap. Reconcile explicitly selected destination addons afterward
+    // so the requested bootstrap configuration is the final cluster state.
+    if !joins_existing && (request.metrics_server || request.nodeactivator_image.is_some()) {
+        let mut reconcile = bootstrap_command(source, disable_nodeproxy)?;
+        append_optional_addon_flags(&mut reconcile, request);
+        prepare_migration_pki(&mut reconcile, source, &export)?;
+        run_bootstrap(reconcile)
+            .context("reconciling requested destination addons after API import")?;
+    }
     if !joins_existing
         && source
             .cluster
@@ -501,6 +511,7 @@ fn migrate_to_nodestore(
             export.dir.display()
         );
         let mut reconcile = bootstrap_command(source, disable_nodeproxy)?;
+        append_optional_addon_flags(&mut reconcile, request);
         prepare_migration_pki(&mut reconcile, source, &export)?;
         run_bootstrap(reconcile)
             .context("reconciling nodestore after source uninstall")?;

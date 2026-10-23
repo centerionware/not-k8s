@@ -9,6 +9,22 @@ command -v jq >/dev/null 2>&1 || {
     exit 2
 }
 
+selected_addon_objects='{"items":[
+  {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"metrics-server","namespace":"kube-system"}},
+  {"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"nodeactivator-services"}},
+  {"apiVersion":"certificates.k8s.io/v1","kind":"PodCertificateRequest","metadata":{"name":"pod-a","namespace":"kube-system"},"spec":{"signerName":"nodeactivator.notk8s.io/serving"}}
+]}'
+selected_normalized="$(jq -c '.items[]' <<< "$selected_addon_objects" \
+    | NODEMIGRATE_METRICS_SERVER=true NODEMIGRATE_NODEACTIVATOR_IMAGE=registry.example/nodeactivator:v1 jq -cS -f "$FILTER")"
+[[ -z "$selected_normalized" ]] || {
+    echo "selected optional addon objects were included in source parity snapshots" >&2
+    exit 1
+}
+[[ "$(jq -cS -f "$FILTER" <<< '{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"metrics-server","namespace":"kube-system"}}')" != null ]] || {
+    echo "metrics-server Deployment was normalized away when its addon was not selected" >&2
+    exit 1
+}
+
 source_application="$(jq -cn '{items:[
   {apiVersion:"v1",kind:"ConfigMap",metadata:{name:"kube-root-ca.crt",namespace:"migration-apps",annotations:{"kubernetes.io/description":"source CA"}},data:{"ca.crt":"source-ca"}},
   {apiVersion:"apps/v1",kind:"StatefulSet",metadata:{name:"database",namespace:"migration-apps"},spec:{volumeClaimTemplates:[{apiVersion:"v1",kind:"PersistentVolumeClaim",metadata:{name:"data"},spec:{accessModes:["ReadWriteOnce"],resources:{requests:{storage:"1Gi"}}}}]}}
