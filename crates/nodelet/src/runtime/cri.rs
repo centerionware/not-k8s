@@ -94,6 +94,7 @@ mod container_support;
 mod env;
 mod events_gc;
 mod pod_resources_snapshot;
+mod pod_certificate;
 mod pod_runtime_impl;
 mod resources;
 mod sandbox;
@@ -113,6 +114,7 @@ pub(crate) use container_state::*;
 pub(crate) use container_support::*;
 pub(crate) use env::*;
 pub(crate) use events_gc::*;
+pub(crate) use pod_certificate::*;
 #[allow(unused_imports)]
 pub(crate) use pod_runtime_impl::*;
 pub(crate) use resources::*;

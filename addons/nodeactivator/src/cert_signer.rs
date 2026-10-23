@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use base64::Engine;
 use chrono::{DateTime, NaiveDateTime, SecondsFormat, Utc};
 use futures::StreamExt;
-use k8s_openapi::api::core::v1::{Pod, Service};
+use k8s_openapi::api::core::v1::{Node, Pod, Service, ServiceAccount};
 use kube::api::{Api, Patch, PatchParams};
 use kube::core::{ApiResource, DynamicObject};
 use kube::runtime::watcher::{self, Event};
@@ -41,13 +41,7 @@ async fn main() -> Result<()> {
 
 async fn run(client: Client, ca_cert: &str, ca_key: &str) -> Result<()> {
     let namespace = env::var("POD_NAMESPACE").context("POD_NAMESPACE must be set")?;
-    let resource = ApiResource {
-        group: "certificates.k8s.io".to_string(),
-        version: "v1".to_string(),
-        api_version: "certificates.k8s.io/v1".to_string(),
-        kind: "PodCertificateRequest".to_string(),
-        plural: "podcertificaterequests".to_string(),
-    };
+    let resource = pod_certificate_resource(&client).await?;
     let requests: Api<DynamicObject> = Api::namespaced_with(client.clone(), &namespace, &resource);
     let config = watcher::Config::default();
     let mut stream = Box::pin(watcher::watcher(requests, config));
@@ -119,6 +113,28 @@ async fn mark_failed(
     Ok(())
 }
 
+async fn pod_certificate_resource(client: &Client) -> Result<ApiResource> {
+    for version in ["v1", "v1alpha1"] {
+        let group_version = format!("certificates.k8s.io/{version}");
+        if let Ok(resources) = client.list_api_group_resources(&group_version).await {
+            if resources
+                .resources
+                .iter()
+                .any(|resource| resource.name == "podcertificaterequests")
+            {
+                return Ok(ApiResource {
+                    group: "certificates.k8s.io".to_string(),
+                    version: version.to_string(),
+                    api_version: group_version,
+                    kind: "PodCertificateRequest".to_string(),
+                    plural: "podcertificaterequests".to_string(),
+                });
+            }
+        }
+    }
+    anyhow::bail!("API server does not serve PodCertificateRequests in v1 or v1alpha1")
+}
+
 async fn issue_for_request(
     client: &Client,
     resource: &ApiResource,
@@ -170,6 +186,33 @@ async fn issue_for_request(
             == Some(service_account),
         "requesting Pod has a different ServiceAccount"
     );
+    let service_accounts: Api<ServiceAccount> = Api::namespaced(client.clone(), &namespace);
+    let service_account_object = service_accounts
+        .get(service_account)
+        .await
+        .context("reading requesting ServiceAccount")?;
+    ensure!(
+        service_account_object.metadata.uid.as_deref()
+            == Some(required_string(spec, "serviceAccountUID")?),
+        "PodCertificateRequest ServiceAccount UID does not match the live ServiceAccount"
+    );
+    let requested_node_name = required_string(spec, "nodeName")?;
+    ensure!(
+        pod.spec
+            .as_ref()
+            .and_then(|pod_spec| pod_spec.node_name.as_deref())
+            == Some(requested_node_name),
+        "PodCertificateRequest node does not match the live Pod assignment"
+    );
+    let nodes: Api<Node> = Api::all(client.clone());
+    let node = nodes
+        .get(requested_node_name)
+        .await
+        .context("reading requesting Node")?;
+    ensure!(
+        node.metadata.uid.as_deref() == Some(required_string(spec, "nodeUID")?),
+        "PodCertificateRequest Node UID does not match the live Node"
+    );
     ensure!(
         pod.labels()
             .get(NODEACTIVATOR_LABEL)
@@ -205,13 +248,12 @@ async fn issue_for_request(
         .context("metrics Service has no ClusterIP")?
         .parse::<IpAddr>()
         .context("metrics Service ClusterIP is not a valid IP address")?;
-    let csr_der = spec
-        .get("stubPKCS10Request")
-        .and_then(Value::as_str)
-        .context("PodCertificateRequest has no PKCS#10 request")?;
-    let csr_der = base64::engine::general_purpose::STANDARD
-        .decode(csr_der)
-        .context("decoding PodCertificateRequest PKCS#10 request")?;
+    let stable_csr = spec.get("stubPKCS10Request").and_then(Value::as_str);
+    let alpha_public_key = spec.get("pkixPublicKey").and_then(Value::as_str);
+    ensure!(
+        stable_csr.is_some() ^ alpha_public_key.is_some(),
+        "PodCertificateRequest must contain exactly one supported public-key request field"
+    );
 
     let max_expiration = spec
         .get("maxExpirationSeconds")
@@ -223,24 +265,85 @@ async fn issue_for_request(
         "nodeactivator signer supports a 24-hour certificate lifetime"
     );
     let work_dir = RequestWorkDir::create(&pod_uid, &request.name_any())?;
-    let csr_path = work_dir.path.join("request.der");
+    let request_path = work_dir.path.join(if stable_csr.is_some() {
+        "request.der"
+    } else {
+        "public-key.der"
+    });
+    let public_key_pem = work_dir.path.join("public-key.pem");
     let extensions_path = work_dir.path.join("server-ext.cnf");
     let cert_path = work_dir.path.join("issued.crt");
     let serial_path = work_dir.path.join("ca.srl");
-    fs::write(&csr_path, csr_der)?;
+    let request_bytes = base64::engine::general_purpose::STANDARD
+        .decode(
+            stable_csr
+                .or(alpha_public_key)
+                .context("missing PodCertificateRequest public key")?,
+        )
+        .context("decoding PodCertificateRequest public-key material")?;
+    fs::write(&request_path, request_bytes)?;
     fs::write(
         &extensions_path,
         format!(
             "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:{SERVICE_NAME}.{namespace}.svc,DNS:{SERVICE_NAME}.{namespace}.svc.cluster.local,IP:{service_ip}\n"
         ),
     )?;
-    run_openssl(&[
-        "x509",
-        "-req",
-        "-inform",
-        "DER",
-        "-in",
-        path_arg(&csr_path)?,
+    let mut openssl_args = vec!["x509"];
+    if stable_csr.is_some() {
+        run_openssl(&[
+            "req",
+            "-verify",
+            "-inform",
+            "DER",
+            "-in",
+            path_arg(&request_path)?,
+            "-noout",
+        ])?;
+        openssl_args.extend(["-req", "-inform", "DER", "-in"]);
+    } else {
+        run_openssl(&[
+            "pkey",
+            "-pubin",
+            "-inform",
+            "DER",
+            "-in",
+            path_arg(&request_path)?,
+            "-out",
+            path_arg(&public_key_pem)?,
+        ])?;
+        let proof = spec
+            .get("proofOfPossession")
+            .and_then(Value::as_str)
+            .context("alpha PodCertificateRequest has no proof of possession")?;
+        let proof_path = work_dir.path.join("proof.bin");
+        let pod_uid_path = work_dir.path.join("pod-uid.txt");
+        fs::write(
+            &proof_path,
+            base64::engine::general_purpose::STANDARD
+                .decode(proof)
+                .context("decoding alpha PodCertificateRequest proof of possession")?,
+        )?;
+        fs::write(&pod_uid_path, pod_uid.as_bytes())?;
+        run_openssl(&[
+            "dgst",
+            "-sha256",
+            "-verify",
+            path_arg(&public_key_pem)?,
+            "-signature",
+            path_arg(&proof_path)?,
+            path_arg(&pod_uid_path)?,
+        ])?;
+        openssl_args.extend(["-new", "-force_pubkey"]);
+    }
+    if alpha_public_key.is_some() {
+        // In the alpha API, kube-apiserver has already checked the proof of
+        // possession and the signer receives the public key directly.
+        openssl_args.push(path_arg(&public_key_pem)?);
+        openssl_args.extend(["-subj", "/CN=nodeactivator"]);
+    } else {
+        openssl_args.push(path_arg(&request_path)?);
+    }
+    openssl_args.extend([
         "-CA",
         ca_cert,
         "-CAkey",
@@ -255,7 +358,8 @@ async fn issue_for_request(
         "-sha256",
         "-extfile",
         path_arg(&extensions_path)?,
-    ])?;
+    ]);
+    run_openssl(&openssl_args)?;
     let certificate_chain = fs::read_to_string(&cert_path)?;
     let dates = openssl_output(&[
         "x509",

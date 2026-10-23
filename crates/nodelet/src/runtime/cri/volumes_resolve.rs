@@ -344,7 +344,7 @@ impl CriRuntime {
         id: &PodId,
         projected: &k8s_openapi::api::core::v1::ProjectedVolumeSource,
     ) -> Result<()> {
-        for source in projected.sources.as_deref().unwrap_or(&[]) {
+        for (source_index, source) in projected.sources.as_deref().unwrap_or(&[]).iter().enumerate() {
             if let Some(cm) = &source.config_map {
                 let optional = cm.optional.unwrap_or(false);
                 match Api::<ConfigMap>::namespaced(self.client.clone(), &id.namespace).get(&cm.name).await {
@@ -412,6 +412,9 @@ impl CriRuntime {
                         );
                     }
                 }
+            } else if let Some(pod_certificate) = &source.pod_certificate {
+                self.write_pod_certificate_projection(dir, pod, id, source_index, pod_certificate)
+                    .await?;
             } else if source.cluster_trust_bundle.is_some() {
                 warn!(
                     pod = %format!("{}/{}", id.namespace, id.name),

@@ -392,6 +392,8 @@ impl Drop for TestWork {
         for resource in [
             ["rolebinding", "nodeactivator-e2e-signer"],
             ["role", "nodeactivator-e2e-signer"],
+            ["clusterrolebinding", "nodeactivator-e2e-signer-nodes"],
+            ["clusterrole", "nodeactivator-e2e-signer-nodes"],
         ] {
             let _ = Command::new("kubectl")
                 .args([
@@ -437,8 +439,23 @@ rules:
   resources: ["podcertificaterequests", "podcertificaterequests/status"]
   verbs: ["get", "list", "watch", "patch", "update"]
 - apiGroups: [""]
-  resources: ["pods", "services"]
+  resources: ["pods", "services", "serviceaccounts"]
   verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {{name: nodeactivator-e2e-signer-nodes}}
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {{name: nodeactivator-e2e-signer-nodes}}
+roleRef: {{apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: nodeactivator-e2e-signer-nodes}}
+subjects:
+- {{kind: ServiceAccount, name: nodeactivator-cert-signer, namespace: {namespace}}}
 ---
 apiVersion: v1
 kind: ServiceAccount
