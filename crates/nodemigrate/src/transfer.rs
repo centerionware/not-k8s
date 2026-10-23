@@ -4554,8 +4554,9 @@ fn convert_hpa_v2beta1_spec(object: &mut Value) -> Result<()> {
         let metric_type = metric
             .get("type")
             .and_then(Value::as_str)
+            .map(str::to_owned)
             .context("autoscaling/v2beta1 HPA metric has no type")?;
-        match metric_type {
+        match metric_type.as_str() {
             "Resource" | "ContainerResource" => {
                 let field = if metric_type == "Resource" {
                     "resource"
