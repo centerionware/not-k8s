@@ -29,7 +29,7 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
     work.apply_fixture(context)?;
 
     let deployments: Api<Deployment> = Api::namespaced(context.client.clone(), &context.namespace);
-    context
+    let ready = context
         .wait_until(
             "nodeactivator to become ready",
             Duration::from_secs(180),
@@ -46,7 +46,29 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
                 }
             },
         )
-        .await?;
+        .await;
+    if let Err(error) = ready {
+        let signer_logs = Command::new("kubectl")
+            .args([
+                "--request-timeout=10s",
+                "logs",
+                "deployment/nodeactivator-cert-signer",
+                "--namespace",
+                &context.namespace,
+                "--all-pods=true",
+                "--all-containers=true",
+                "--prefix",
+                "--previous",
+                "--timestamps",
+            ])
+            .output()
+            .context("getting previous nodeactivator certificate signer logs")?;
+        anyhow::bail!(
+            "{error:#}; previous certificate signer logs:\n{}{}",
+            String::from_utf8_lossy(&signer_logs.stdout),
+            String::from_utf8_lossy(&signer_logs.stderr),
+        );
+    }
     wait_for_apiservice(context, Duration::from_secs(120)).await?;
 
     let backend = deployments.get("backend").await?;
