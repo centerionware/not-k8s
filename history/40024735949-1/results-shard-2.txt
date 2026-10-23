@@ -1,0 +1,14 @@
+commit: cd6f80e0cc2295fa5f3703ccf1932db108287f4b
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/40024735949
+timestamp (UTC): 2026-10-23T21:29:23Z
+shard: 2/5
+exit code: 1
+----------------------------------------
+bootstrap e2e: 1 test(s), shard 2/5
+▶ 2026-10-23T21:23:22.844Z test_hpa_scale_to_zero_activator_full_flow ... FAIL (321239ms)
+    installing the bootstrap addon: Deployment/kube-system/nodeactivator did not become Available within 5 minutes
+failure snapshot /api/v1/namespaces/nk-e2e-5718-ff314c35/events: {"apiVersion":"v1","items":[],"kind":"EventList","metadata":{"resourceVersion":"39877"}}
+failure snapshot /api/v1/namespaces/nk-e2e-5718-ff314c35/services: {"apiVersion":"v1","items":[],"kind":"ServiceList","metadata":{"resourceVersion":"39880"}}
+failure snapshot /api/v1/namespaces/nk-e2e-5718-ff314c35/pods: {"apiVersion":"v1","items":[],"kind":"PodList","metadata":{"resourceVersion":"39877"}}
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-5718-ff314c35/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[],"kind":"EndpointSliceList","metadata":{"resourceVersion":"45613"}}
+Error: bootstrap e2e failed: 1 test(s): test_hpa_scale_to_zero_activator_full_flow
