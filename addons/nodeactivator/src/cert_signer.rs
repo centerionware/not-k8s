@@ -30,7 +30,7 @@ fn main() -> Result<()> {
     info!("starting nodeactivator PodCertificate signer");
     rustls::crypto::ring::default_provider()
         .install_default()
-        .context("installing the rustls ring crypto provider")?;
+        .map_err(|_| anyhow!("a rustls crypto provider was already installed"))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
