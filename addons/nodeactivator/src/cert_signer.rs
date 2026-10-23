@@ -20,8 +20,8 @@ const NODEACTIVATOR_LABEL: &str = "app.kubernetes.io/name";
 const NODEACTIVATOR_LABEL_VALUE: &str = "nodeactivator";
 const SERVICE_NAME: &str = "nodeactivator-metrics";
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    eprintln!("nodeactivator certificate signer entered main");
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -29,7 +29,14 @@ async fn main() -> Result<()> {
         )
         .init();
     info!("starting nodeactivator PodCertificate signer");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building nodeactivator certificate signer runtime")?;
+    runtime.block_on(run_from_environment())
+}
 
+async fn run_from_environment() -> Result<()> {
     let ca_cert = env::var("NODEACTIVATOR_SIGNER_CA_CERT")
         .unwrap_or_else(|_| "/var/run/nodeactivator-signer/ca.crt".to_string());
     let ca_key = env::var("NODEACTIVATOR_SIGNER_CA_KEY")
