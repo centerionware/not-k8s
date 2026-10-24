@@ -3600,7 +3600,7 @@ verify_hpa_scaling() {
 }
 
 verify_nodeactivator_hpa_wakeup() {
-    local stage="$1" deadline pod_logs probe
+    local stage="$1" deadline pod_logs probe activation_observed=false request_status
     kubectl delete hpa migration-activator -n migration-apps --ignore-not-found=true
     kubectl delete deployment migration-activator-backend -n migration-apps --ignore-not-found=true
     kubectl delete service migration-activator-front migration-activator-backend -n migration-apps --ignore-not-found=true
@@ -3622,12 +3622,30 @@ spec:
     spec:
       containers:
       - name: http
-        image: busybox:1.36.1
-        command: ["sh", "-c", "mkdir -p /www; echo migration-activator-response > /www/index.html; exec httpd -f -p 8080 -h /www"]
+        image: python:3.12-alpine
+        command: ["python3", "-u", "-c"]
+        args:
+        - |
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          import time
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  body = b"migration-activator-response"
+                  self.send_response(200)
+                  self.send_header("Content-Length", str(len(body)))
+                  self.end_headers()
+                  time.sleep(30)
+                  self.wfile.write(body)
+
+              def log_message(self, *_args):
+                  pass
+
+          HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
         resources:
           requests:
             cpu: 1m
-            memory: 1Mi
+            memory: 16Mi
 ---
 apiVersion: v1
 kind: Service
@@ -3723,31 +3741,67 @@ YAML
             --all-containers --prefix --tail=100 >&2 || true
         return 1
     }
-    if ! pod_logs="$(kubectl exec -n migration-apps migration-standalone -- sh -ec \
-        'wget -T 240 -qO- http://migration-activator-front.migration-apps.svc/; echo ACTIVATOR_REQUEST_FINISHED')"; then
-        echo "buffered request did not complete through the activator at stage=$stage" >&2
-        kubectl get hpa,deployment,pod,service -n migration-apps >&2 || true
-        kubectl get endpointslice -n migration-apps \
-            -l kubernetes.io/service-name=migration-activator-front -o yaml >&2 || true
+    kubectl exec -n migration-apps migration-standalone -- sh -ec '
+      rm -f /tmp/activator-response /tmp/activator-status /tmp/activator-client.log
+      (
+        if wget -T 240 -qO- http://migration-activator-front.migration-apps.svc/ \
+          > /tmp/activator-response; then
+          result=0
+        else
+          result=$?
+        fi
+        printf "%s\n" "$result" > /tmp/activator-status
+      ) </dev/null >/tmp/activator-client.log 2>&1 &
+    '
+    deadline=$((SECONDS + 180))
+    while (( SECONDS < deadline )); do
+        if kubectl exec -n migration-apps migration-standalone -- \
+            sh -c 'test -f /tmp/activator-status' >/dev/null 2>&1; then
+            break
+        fi
+        if kubectl get deployment migration-activator-backend -n migration-apps -o json \
+            | jq -e '.spec.replicas == 1 and (.status.availableReplicas // 0) == 1' >/dev/null \
+            && kubectl get hpa migration-activator -n migration-apps -o json \
+                | jq -e '.status.desiredReplicas == 1' >/dev/null \
+            && kubectl get --raw '/apis/external.metrics.k8s.io/v1beta1/namespaces/migration-apps/activator_requests_active?labelSelector=service%3Dmigration-activator-front' \
+                | jq -e 'any(.items[]?; .value == "1")' >/dev/null; then
+            activation_observed=true
+            break
+        fi
+        sleep 2
+    done
+    [[ "$activation_observed" == true ]] || {
+        echo "external metric did not wake the backend while the request was active at stage=$stage" >&2
+        kubectl get hpa migration-activator -n migration-apps -o yaml >&2 || true
+        kubectl get deployment migration-activator-backend -n migration-apps -o yaml >&2 || true
         kubectl get --raw '/apis/external.metrics.k8s.io/v1beta1/namespaces/migration-apps/activator_requests_active?labelSelector=service%3Dmigration-activator-front' >&2 || true
+        kubectl exec -n migration-apps migration-standalone -- sh -c \
+            'cat /tmp/activator-client.log 2>/dev/null || true' >&2 || true
         kubectl logs -n kube-system -l app.kubernetes.io/name=nodeactivator \
             --all-containers --prefix --tail=100 >&2 || true
         return 1
-    fi
+    }
+    deadline=$((SECONDS + 300))
+    while (( SECONDS < deadline )); do
+        if request_status="$(kubectl exec -n migration-apps migration-standalone -- \
+            sh -c 'cat /tmp/activator-status 2>/dev/null' 2>/dev/null)"; then
+            break
+        fi
+        sleep 2
+    done
+    [[ "$request_status" == 0 ]] || {
+        echo "buffered request did not complete successfully at stage=$stage status=${request_status:-pending}" >&2
+        kubectl get hpa,deployment,pod,service -n migration-apps >&2 || true
+        kubectl exec -n migration-apps migration-standalone -- sh -c \
+            'cat /tmp/activator-client.log 2>/dev/null || true' >&2 || true
+        kubectl logs -n kube-system -l app.kubernetes.io/name=nodeactivator \
+            --all-containers --prefix --tail=100 >&2 || true
+        return 1
+    }
+    pod_logs="$(kubectl exec -n migration-apps migration-standalone -- \
+        sh -c 'cat /tmp/activator-response')"
     grep -Fq migration-activator-response <<< "$pod_logs" || {
         echo "activator request completed without a backend response at stage=$stage: $pod_logs" >&2
-        return 1
-    }
-    grep -Fq ACTIVATOR_REQUEST_FINISHED <<< "$pod_logs" || {
-        echo "activator request did not report completion at stage=$stage: $pod_logs" >&2
-        return 1
-    }
-    kubectl get deployment migration-activator-backend -n migration-apps -o json | jq -e '
-      .spec.replicas == 1 and (.status.availableReplicas // 0) == 1
-    ' >/dev/null || {
-        echo "external metric did not wake the zero-replica backend at stage=$stage" >&2
-        kubectl get hpa migration-activator -n migration-apps -o yaml >&2 || true
-        kubectl get deployment migration-activator-backend -n migration-apps -o yaml >&2 || true
         return 1
     }
     kubectl delete hpa migration-activator -n migration-apps
