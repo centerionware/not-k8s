@@ -569,7 +569,11 @@ pub(crate) fn pod_field_value(pod: &Pod, field_path: &str) -> Option<String> {
     }
 }
 
-fn pod_env_field_value(pod: &Pod, field_path: &str, sandbox_ip: Option<&str>) -> Option<String> {
+pub(crate) fn pod_env_field_value(
+    pod: &Pod,
+    field_path: &str,
+    sandbox_ip: Option<&str>,
+) -> Option<String> {
     // Downward-API env is expanded before the Pod status write can expose its
     // IP. The CRI sandbox already has the assigned address at that point.
     pod_field_value(pod, field_path).or_else(|| match field_path {
@@ -706,6 +710,7 @@ impl CriRuntime {
                 .and_then(|source| source.field_ref.as_ref())
                 .is_some_and(|reference| {
                     matches!(reference.field_path.as_str(), "status.podIP" | "status.podIPs")
+                        && pod_field_value(pod, &reference.field_path).is_none()
                 })
         });
         let sandbox_ip = if needs_sandbox_ip {
