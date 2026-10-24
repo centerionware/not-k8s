@@ -65,6 +65,27 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
     work.create_tls_material()?;
     work.apply_fixture(context)?;
 
+    let activator_slices: Api<EndpointSlice> =
+        Api::namespaced(context.client.clone(), &context.namespace);
+    context
+        .wait_until(
+            "the Activator to publish its standard EndpointSlice for the selectorless front Service",
+            Duration::from_secs(90),
+            || {
+                let activator_slices = activator_slices.clone();
+                async move {
+                    let slices = activator_slices
+                        .list(&ListParams::default().labels(
+                            "kubernetes.io/service-name=front,endpointslice.kubernetes.io/managed-by=nodeactivator.notk8s.io",
+                        ))
+                        .await?
+                        .items;
+                    Ok(endpoint_slices_have_ready_endpoint(&slices))
+                }
+            },
+        )
+        .await?;
+
     let deployments: Api<Deployment> = Api::namespaced(context.client.clone(), &context.namespace);
     let hpas: Api<HorizontalPodAutoscaler> =
         Api::namespaced(context.client.clone(), &context.namespace);
@@ -775,6 +796,9 @@ rules:
 - apiGroups: [""]
   resources: ["services"]
   verbs: ["list", "watch"]
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["get", "create", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -811,6 +835,8 @@ spec:
         - {{name: ACTIVATOR_TLS_BUNDLE, value: /tls/credential.pem}}
         - {{name: ACTIVATOR_PROXY_CLIENT_CA, value: /proxy-ca/ca.crt}}
         - {{name: ACTIVATOR_TIMEOUT_SECONDS, value: "180"}}
+        - name: ACTIVATOR_POD_IP
+          valueFrom: {{fieldRef: {{fieldPath: status.podIP}}}}
         ports:
         - {{name: http, containerPort: 8080}}
         - {{name: https, containerPort: 8443}}
@@ -887,7 +913,6 @@ metadata:
   labels: {{activator.notk8s.io/enabled: "true"}}
   annotations: {{activator.notk8s.io/backend-url: "http://backend.{namespace}.svc.cluster.local:80"}}
 spec:
-  selector: {{app: nodeactivator-e2e}}
   ports: [{{port: 80, targetPort: http}}]
 ---
 apiVersion: autoscaling/v2

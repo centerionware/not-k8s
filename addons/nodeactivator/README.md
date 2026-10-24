@@ -111,12 +111,18 @@ metadata:
   annotations:
     activator.notk8s.io/backend-url: http://app-backend.default.svc.cluster.local:80
 spec:
-  selector:
-    app.kubernetes.io/name: nodeactivator
   ports:
   - port: 80
     targetPort: http
 ```
+
+The front Service must be selectorless. The Activator watches opted-in
+Services and creates a standard EndpointSlice in each Service's namespace
+pointing to its own Pod IP. This lets a single Activator Deployment in
+`kube-system` serve front Services in workload namespaces without relying on
+cross-namespace Pod selection, which Kubernetes Services do not support. Each
+front Service must expose one TCP port; the EndpointSlice directs it to the
+Activator's HTTP listener.
 
 Start the application Deployment above zero so the HPA can observe a normal
 scale-down and record its `ScaledToZero` condition. Kubernetes 1.37 then lets

@@ -11,7 +11,9 @@ use k8s_openapi::api::authorization::v1::{
     ResourceAttributes, SubjectAccessReview, SubjectAccessReviewSpec,
 };
 use k8s_openapi::api::core::v1::Service;
-use kube::api::{Api, PostParams};
+use k8s_openapi::api::discovery::v1::{Endpoint, EndpointConditions, EndpointPort, EndpointSlice};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
+use kube::api::{Api, Patch, PatchParams, PostParams};
 use kube::runtime::watcher::{self, Event};
 use kube::{Client, ResourceExt};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -22,7 +24,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{BufReader, Cursor};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -33,6 +35,7 @@ use tracing::{info, warn};
 
 const BACKEND_ANNOTATION: &str = "activator.notk8s.io/backend-url";
 const MANAGED_LABEL: &str = "activator.notk8s.io/enabled";
+const SLICE_MANAGED_BY: &str = "nodeactivator.notk8s.io";
 const METRIC_NAME: &str = "activator_requests_active";
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
@@ -47,10 +50,12 @@ struct Route {
 
 struct State {
     routes: RwLock<HashMap<String, Route>>,
+    services: RwLock<HashMap<String, Service>>,
     counters: Mutex<HashMap<String, Arc<AtomicUsize>>>,
     ready: AtomicBool,
     client: reqwest::Client,
     kube_client: Client,
+    pod_ip: Option<IpAddr>,
     queue_slots: Arc<Semaphore>,
     activation_timeout: Duration,
 }
@@ -69,6 +74,10 @@ impl State {
         let name = service.name_any();
         let namespace = service.namespace().unwrap_or_default();
         let service_key = format!("{namespace}/{name}");
+        self.services
+            .write()
+            .await
+            .insert(service_key.clone(), service.clone());
         let route = service
             .metadata
             .annotations
@@ -84,10 +93,14 @@ impl State {
                         backend_url: url.as_str().trim_end_matches('/').to_string(),
                     })
             });
+        let selectorless = service
+            .spec
+            .as_ref()
+            .is_some_and(|spec| spec.selector.is_none());
         let hosts = service_host(&name, &namespace);
         let mut routes = self.routes.write().await;
         routes.retain(|_, route| route.service_key != service_key);
-        if let Some(route) = route {
+        if let Some(route) = route.filter(|_| selectorless) {
             self.counter(&service_key);
             for host in hosts {
                 routes.insert(host, route.clone());
@@ -98,12 +111,17 @@ impl State {
                 .expect("request metric lock poisoned")
                 .remove(&service_key);
         }
+        drop(routes);
+        if let Err(error) = self.reconcile_endpoint_slice(service).await {
+            warn!(namespace, service = %name, error = ?error, "reconciling Activator EndpointSlice failed");
+        }
     }
 
     async fn remove_service(&self, service: &Service) {
         let name = service.name_any();
         let namespace = service.namespace().unwrap_or_default();
         let service_key = format!("{namespace}/{name}");
+        self.services.write().await.remove(&service_key);
         self.routes
             .write()
             .await
@@ -112,6 +130,158 @@ impl State {
             .lock()
             .expect("request metric lock poisoned")
             .remove(&service_key);
+        if let Err(error) = self.delete_endpoint_slice(&namespace, &name).await {
+            warn!(namespace, service = %name, error = ?error, "deleting Activator EndpointSlice failed");
+        }
+    }
+
+    async fn mark_ready(&self) {
+        self.ready.store(true, Ordering::Release);
+        let services = self
+            .services
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for service in services {
+            if let Err(error) = self.reconcile_endpoint_slice(&service).await {
+                warn!(namespace = ?service.namespace(), service = %service.name_any(), error = ?error, "publishing ready Activator EndpointSlice failed");
+            }
+        }
+    }
+
+    async fn reconcile_endpoint_slice(&self, service: &Service) -> Result<()> {
+        let name = service.name_any();
+        let namespace = service.namespace().unwrap_or_default();
+        let enabled = service
+            .metadata
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get(MANAGED_LABEL))
+            .is_some_and(|value| value == "true");
+        let selectorless = service
+            .spec
+            .as_ref()
+            .is_some_and(|spec| spec.selector.is_none());
+        let backend_configured = service
+            .metadata
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.get(BACKEND_ANNOTATION))
+            .is_some_and(|backend| !backend.is_empty());
+        let Some(ip) = self
+            .pod_ip
+            .filter(|_| enabled && selectorless && backend_configured)
+        else {
+            return self.delete_endpoint_slice(&namespace, &name).await;
+        };
+        let service_spec = service.spec.as_ref().context("front Service has no spec")?;
+        let [service_port] = service_spec.ports.as_deref().unwrap_or_default() else {
+            anyhow::bail!("Activator front Service must have exactly one port");
+        };
+        let protocol = service_port.protocol.as_deref().unwrap_or("TCP");
+        anyhow::ensure!(
+            protocol == "TCP",
+            "Activator front Service port must use TCP"
+        );
+        let service_uid = service.uid().context("front Service has no UID")?;
+        let slice_name = format!("nodeactivator-{name}");
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("kubernetes.io/service-name".to_string(), name.clone());
+        labels.insert(
+            "endpointslice.kubernetes.io/managed-by".to_string(),
+            SLICE_MANAGED_BY.to_string(),
+        );
+        let slice = EndpointSlice {
+            address_type: if ip.is_ipv4() { "IPv4" } else { "IPv6" }.to_string(),
+            endpoints: Some(vec![Endpoint {
+                addresses: vec![ip.to_string()],
+                conditions: Some(EndpointConditions {
+                    ready: Some(self.ready.load(Ordering::Acquire)),
+                    serving: Some(self.ready.load(Ordering::Acquire)),
+                    terminating: Some(false),
+                }),
+                ..Default::default()
+            }]),
+            metadata: ObjectMeta {
+                name: Some(slice_name.clone()),
+                namespace: Some(namespace.clone()),
+                labels: Some(labels),
+                owner_references: Some(vec![OwnerReference {
+                    api_version: "v1".to_string(),
+                    kind: "Service".to_string(),
+                    name: name.clone(),
+                    uid: service_uid,
+                    controller: Some(true),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+            ports: Some(vec![EndpointPort {
+                name: service_port.name.clone(),
+                port: Some(8080),
+                protocol: Some("TCP".to_string()),
+                ..Default::default()
+            }]),
+        };
+        let slices: Api<EndpointSlice> = Api::namespaced(self.kube_client.clone(), &namespace);
+        match slices.get(&slice_name).await {
+            Ok(existing) => {
+                let managed_by = existing
+                    .metadata
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels.get("endpointslice.kubernetes.io/managed-by"));
+                anyhow::ensure!(
+                    managed_by.is_some_and(|value| value == SLICE_MANAGED_BY),
+                    "refusing to take over EndpointSlice {namespace}/{slice_name} not managed by Node Activator"
+                );
+            }
+            Err(kube::Error::Api(error)) if error.code == 404 => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("getting EndpointSlice {namespace}/{slice_name}"));
+            }
+        }
+        slices
+            .patch(
+                &slice_name,
+                &PatchParams::apply(SLICE_MANAGED_BY).force(),
+                &Patch::Apply(&slice),
+            )
+            .await
+            .with_context(|| format!("applying EndpointSlice {namespace}/{slice_name}"))?;
+        Ok(())
+    }
+
+    async fn delete_endpoint_slice(&self, namespace: &str, service: &str) -> Result<()> {
+        let slices: Api<EndpointSlice> = Api::namespaced(self.kube_client.clone(), namespace);
+        let name = format!("nodeactivator-{service}");
+        match slices.get(&name).await {
+            Ok(slice) => {
+                let managed_by = slice
+                    .metadata
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels.get("endpointslice.kubernetes.io/managed-by"));
+                if !managed_by.is_some_and(|value| value == SLICE_MANAGED_BY) {
+                    return Ok(());
+                }
+            }
+            Err(kube::Error::Api(error)) if error.code == 404 => return Ok(()),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("getting EndpointSlice {namespace}/{name}"));
+            }
+        }
+        match slices.delete(&name, &Default::default()).await {
+            Ok(_) => Ok(()),
+            Err(kube::Error::Api(error)) if error.code == 404 => Ok(()),
+            Err(error) => {
+                Err(error).with_context(|| format!("deleting EndpointSlice {namespace}/{name}"))
+            }
+        }
     }
 }
 
@@ -141,7 +311,7 @@ async fn watch_front_services(client: Client, state: Arc<State>) -> Result<()> {
             }
             Some(Ok(Event::Delete(service))) => state.remove_service(&service).await,
             Some(Ok(Event::Init)) => {}
-            Some(Ok(Event::InitDone)) => state.ready.store(true, Ordering::Release),
+            Some(Ok(Event::InitDone)) => state.mark_ready().await,
             Some(Err(error)) => warn!(error = ?error, "Service watch event failed"),
             None => return Err(anyhow!("front Service watch ended")),
         }
@@ -620,8 +790,12 @@ async fn main() -> Result<()> {
     let client = Client::try_default()
         .await
         .context("loading in-cluster Kubernetes client")?;
+    let pod_ip = env::var("ACTIVATOR_POD_IP")
+        .ok()
+        .and_then(|value| value.parse::<IpAddr>().ok());
     let state = Arc::new(State {
         routes: RwLock::new(HashMap::new()),
+        services: RwLock::new(HashMap::new()),
         counters: Mutex::new(HashMap::new()),
         ready: AtomicBool::new(false),
         client: reqwest::Client::builder()
@@ -629,6 +803,7 @@ async fn main() -> Result<()> {
             .build()
             .context("building backend HTTP client")?,
         kube_client: client.clone(),
+        pod_ip,
         queue_slots: Arc::new(Semaphore::new(MAX_ACTIVE_REQUESTS)),
         activation_timeout: Duration::from_secs(activation_timeout),
     });

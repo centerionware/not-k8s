@@ -3652,8 +3652,6 @@ metadata:
   annotations:
     activator.notk8s.io/backend-url: http://migration-activator-backend.migration-apps.svc.cluster.local:8080
 spec:
-  selector:
-    app.kubernetes.io/name: nodeactivator
   ports:
   - name: http
     port: 80

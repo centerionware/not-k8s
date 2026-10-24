@@ -12,6 +12,9 @@ rules:
 - apiGroups: [""]
   resources: ["services"]
   verbs: ["list", "watch"]
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["get", "create", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -197,6 +200,10 @@ spec:
           value: /var/run/nodeactivator/proxy-ca/ca.crt
         - name: ACTIVATOR_TIMEOUT_SECONDS
           value: "180"
+        - name: ACTIVATOR_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
         volumeMounts:
         - name: serving-cert
           mountPath: /var/run/nodeactivator/tls
