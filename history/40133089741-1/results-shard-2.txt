@@ -1,0 +1,151 @@
+commit: 21a50b704b60da5193ef75ac7ba8cdabfe564caa
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/40133089741
+timestamp (UTC): 2026-10-24T21:28:23Z
+shard: 2/5
+exit code: 1
+----------------------------------------
+bootstrap e2e: 1 test(s), shard 2/5
+▶ 2026-10-24T21:22:42.197Z test_hpa_scale_to_zero_activator_full_flow ... FAIL (327866ms)
+    installing the bootstrap addon: Deployment/kube-system/nodeactivator did not become Available within 5 minutes; Deployment status: observed_generation=1, generation=1, available_replicas=0, status=Some(DeploymentStatus { available_replicas: Some(0), collision_count: None, conditions: None, observed_generation: Some(1), ready_replicas: Some(0), replicas: Some(1), terminating_replicas: None, unavailable_replicas: Some(1), updated_replicas: Some(1) })
+Pod nodeactivator-feeda28896aa83e2-tvnb8: Pod { metadata: ObjectMeta { annotations: None, creation_timestamp: Some(Time(2026-10-24T21:23:02Z)), deletion_grace_period_seconds: None, deletion_timestamp: None, finalizers: None, generate_name: None, generation: Some(1), labels: Some({"app.kubernetes.io/name": "nodeactivator", "pod-template-hash": "feeda28896aa83e2"}), managed_fields: None, name: Some("nodeactivator-feeda28896aa83e2-tvnb8"), namespace: Some("kube-system"), owner_references: Some([OwnerReference { api_version: "apps/v1", block_owner_deletion: Some(true), controller: Some(true), kind: "ReplicaSet", name: "nodeactivator-feeda28896aa83e2", uid: "1fa3c776-b634-474a-8474-ddb7d46c1b77" }]), resource_version: Some("268"), self_link: None, uid: Some("8ad135af-8eb5-4ddb-9913-4c4b149cd4ec") }, spec: Some(PodSpec { active_deadline_seconds: None, affinity: None, automount_service_account_token: Some(true), containers: [Container { args: None, command: None, env: Some([EnvVar { name: "ACTIVATOR_TLS_BUNDLE", value: Some("/var/run/nodeactivator/tls/credential.pem"), value_from: None }, EnvVar { name: "ACTIVATOR_PROXY_CLIENT_CA", value: Some("/var/run/nodeactivator/proxy-ca/ca.crt"), value_from: None }, EnvVar { name: "ACTIVATOR_TIMEOUT_SECONDS", value: Some("180"), value_from: None }, EnvVar { name: "ACTIVATOR_POD_IP", value: None, value_from: Some(EnvVarSource { config_map_key_ref: None, field_ref: Some(ObjectFieldSelector { api_version: None, field_path: "status.podIP" }), file_key_ref: None, resource_field_ref: None, secret_key_ref: None }) }]), env_from: None, image: Some("nodeactivator-bootstrap-e2e:nk-e2e-4605-19bcba2a"), image_pull_policy: Some("IfNotPresent"), lifecycle: None, liveness_probe: Some(Probe { exec: None, failure_threshold: Some(3), grpc: None, http_get: Some(HTTPGetAction { host: None, http_headers: None, path: Some("/healthz"), port: String("http"), scheme: Some("HTTP") }), initial_delay_seconds: None, period_seconds: Some(10), success_threshold: Some(1), tcp_socket: None, termination_grace_period_seconds: None, timeout_seconds: Some(1) }), name: "nodeactivator", ports: Some([ContainerPort { container_port: 8080, host_ip: None, host_port: None, name: Some("http"), protocol: Some("TCP") }, ContainerPort { container_port: 8443, host_ip: None, host_port: None, name: Some("metrics-https"), protocol: Some("TCP") }]), readiness_probe: Some(Probe { exec: None, failure_threshold: Some(3), grpc: None, http_get: Some(HTTPGetAction { host: None, http_headers: None, path: Some("/readyz"), port: String("http"), scheme: Some("HTTP") }), initial_delay_seconds: None, period_seconds: Some(5), success_threshold: Some(1), tcp_socket: None, termination_grace_period_seconds: None, timeout_seconds: Some(1) }), resize_policy: None, resources: Some(ResourceRequirements { claims: None, limits: Some({"memory": Quantity("128Mi")}), requests: Some({"cpu": Quantity("25m"), "memory": Quantity("48Mi")}) }), restart_policy: None, restart_policy_rules: None, security_context: Some(SecurityContext { allow_privilege_escalation: Some(false), app_armor_profile: None, capabilities: Some(Capabilities { add: None, drop: Some(["ALL"]) }), privileged: None, proc_mount: None, read_only_root_filesystem: Some(true), run_as_group: None, run_as_non_root: None, run_as_user: None, se_linux_options: None, seccomp_profile: None, windows_options: None }), startup_probe: None, stdin: None, stdin_once: None, termination_message_path: Some("/dev/termination-log"), termination_message_policy: Some("File"), tty: None, volume_devices: None, volume_mounts: Some([VolumeMount { mount_path: "/var/run/nodeactivator/tls", mount_propagation: None, name: "serving-cert", read_only: Some(true), recursive_read_only: None, sub_path: None, sub_path_expr: None }, VolumeMount { mount_path: "/var/run/nodeactivator/proxy-ca", mount_propagation: None, name: "proxy-client-ca", read_only: Some(true), recursive_read_only: None, sub_path: None, sub_path_expr: None }, VolumeMount { mount_path: "/var/run/secrets/kubernetes.io/serviceaccount", mount_propagation: None, name: "kube-api-access-409d3", read_only: Some(true), recursive_read_only: None, sub_path: None, sub_path_expr: None }]), working_dir: None }], dns_config: None, dns_policy: Some("ClusterFirst"), enable_service_links: Some(true), ephemeral_containers: None, host_aliases: None, host_ipc: None, host_network: None, host_pid: None, host_users: None, hostname: None, hostname_override: None, image_pull_secrets: None, init_containers: None, node_name: Some("runnervmr9t6g"), node_selector: None, os: None, overhead: None, preemption_policy: Some("PreemptLowerPriority"), priority: Some(0), priority_class_name: None, readiness_gates: None, resource_claims: None, resources: None, restart_policy: Some("Always"), runtime_class_name: None, scheduler_name: Some("default-scheduler"), scheduling_gates: None, security_context: Some(PodSecurityContext { app_armor_profile: None, fs_group: None, fs_group_change_policy: None, run_as_group: Some(10001), run_as_non_root: Some(true), run_as_user: Some(10001), se_linux_change_policy: None, se_linux_options: None, seccomp_profile: Some(SeccompProfile { localhost_profile: None, type_: "RuntimeDefault" }), supplemental_groups: None, supplemental_groups_policy: None, sysctls: None, windows_options: None }), service_account: None, service_account_name: Some("nodeactivator"), set_hostname_as_fqdn: None, share_process_namespace: None, subdomain: None, termination_grace_period_seconds: Some(30), tolerations: Some([Toleration { effect: Some("NoExecute"), key: Some("node.kubernetes.io/not-ready"), operator: Some("Exists"), toleration_seconds: Some(300), value: None }, Toleration { effect: Some("NoExecute"), key: Some("node.kubernetes.io/unreachable"), operator: Some("Exists"), toleration_seconds: Some(300), value: None }]), topology_spread_constraints: None, volumes: Some([Volume { aws_elastic_block_store: None, azure_disk: None, azure_file: None, cephfs: None, cinder: None, config_map: None, csi: None, downward_api: None, empty_dir: None, ephemeral: None, fc: None, flex_volume: None, flocker: None, gce_persistent_disk: None, git_repo: None, glusterfs: None, host_path: None, image: None, iscsi: None, name: "serving-cert", nfs: None, persistent_volume_claim: None, photon_persistent_disk: None, portworx_volume: None, projected: Some(ProjectedVolumeSource { default_mode: Some(420), sources: Some([VolumeProjection { cluster_trust_bundle: None, config_map: None, downward_api: None, pod_certificate: Some(PodCertificateProjection { certificate_chain_path: None, credential_bundle_path: Some("credential.pem"), key_path: None, key_type: "ECDSAP256", max_expiration_seconds: Some(86400), signer_name: "nodeactivator.notk8s.io/serving" }), secret: None, service_account_token: None }]) }), quobyte: None, rbd: None, scale_io: None, secret: None, storageos: None, vsphere_volume: None }, Volume { aws_elastic_block_store: None, azure_disk: None, azure_file: None, cephfs: None, cinder: None, config_map: Some(ConfigMapVolumeSource { default_mode: Some(420), items: Some([KeyToPath { key: "requestheader-client-ca-file", mode: None, path: "ca.crt" }]), name: "extension-apiserver-authentication", optional: None }), csi: None, downward_api: None, empty_dir: None, ephemeral: None, fc: None, flex_volume: None, flocker: None, gce_persistent_disk: None, git_repo: None, glusterfs: None, host_path: None, image: None, iscsi: None, name: "proxy-client-ca", nfs: None, persistent_volume_claim: None, photon_persistent_disk: None, portworx_volume: None, projected: None, quobyte: None, rbd: None, scale_io: None, secret: None, storageos: None, vsphere_volume: None }, Volume { aws_elastic_block_store: None, azure_disk: None, azure_file: None, cephfs: None, cinder: None, config_map: None, csi: None, downward_api: None, empty_dir: None, ephemeral: None, fc: None, flex_volume: None, flocker: None, gce_persistent_disk: None, git_repo: None, glusterfs: None, host_path: None, image: None, iscsi: None, name: "kube-api-access-409d3", nfs: None, persistent_volume_claim: None, photon_persistent_disk: None, portworx_volume: None, projected: Some(ProjectedVolumeSource { default_mode: Some(420), sources: Some([VolumeProjection { cluster_trust_bundle: None, config_map: None, downward_api: None, pod_certificate: None, secret: None, service_account_token: Some(ServiceAccountTokenProjection { audience: None, expiration_seconds: Some(3607), path: "token" }) }, VolumeProjection { cluster_trust_bundle: None, config_map: Some(ConfigMapProjection { items: Some([KeyToPath { key: "ca.crt", mode: None, path: "ca.crt" }]), name: "kube-root-ca.crt", optional: None }), downward_api: None, pod_certificate: None, secret: None, service_account_token: None }, VolumeProjection { cluster_trust_bundle: None, config_map: None, downward_api: Some(DownwardAPIProjection { items: Some([DownwardAPIVolumeFile { field_ref: Some(ObjectFieldSelector { api_version: Some("v1"), field_path: "metadata.namespace" }), mode: None, path: "namespace", resource_field_ref: None }]) }), pod_certificate: None, secret: None, service_account_token: None }]) }), quobyte: None, rbd: None, scale_io: None, secret: None, storageos: None, vsphere_volume: None }]) }), status: Some(PodStatus { conditions: Some([PodCondition { last_probe_time: None, last_transition_time: Some(Time(2026-10-24T21:23:02Z)), message: Some("Successfully assigned kube-system/nodeactivator-feeda28896aa83e2-tvnb8 to runnervmr9t6g"), observed_generation: None, reason: Some("Scheduled"), status: "True", type_: "PodScheduled" }, PodCondition { last_probe_time: None, last_transition_time: Some(Time(2026-10-24T21:23:02Z)), message: None, observed_generation: Some(1), reason: None, status: "False", type_: "Initialized" }, PodCondition { last_probe_time: None, last_transition_time: Some(Time(2026-10-24T21:23:02Z)), message: None, observed_generation: Some(1), reason: None, status: "False", type_: "ContainersReady" }, PodCondition { last_probe_time: None, last_transition_time: Some(Time(2026-10-24T21:23:02Z)), message: None, observed_generation: Some(1), reason: None, status: "False", type_: "Ready" }, PodCondition { last_probe_time: None, last_transition_time: Some(Time(2026-10-24T21:23:02Z)), message: None, observed_generation: Some(1), reason: None, status: "False", type_: "PodResizeInProgress" }]), container_statuses: None, ephemeral_container_statuses: None, extended_resource_claim_status: None, host_ip: Some("10.1.0.161"), host_ips: Some([HostIP { ip: "10.1.0.161" }]), init_container_statuses: None, message: Some("waiting for projected volume(s) to be materialized: serving-cert"), nominated_node_name: None, observed_generation: None, phase: Some("Pending"), pod_ip: None, pod_ips: None, qos_class: Some("Burstable"), reason: None, resize: None, resource_claim_statuses: None, start_time: None }) }
+Could not read logs for Pod nodeactivator-feeda28896aa83e2-tvnb8: ApiError: pod or container not found: Failed to parse error data (Status { status: Some(Failure), code: 404, message: "pod or container not found", metadata: None, reason: "Failed to parse error data", details: None }); nodeactivator logs:
+Error from server (NotFound): the server could not find the requested resource (get pods nodeactivator-feeda28896aa83e2-tvnb8)
+
+previous nodeactivator logs:
+Error from server (NotFound): the server could not find the requested resource (get pods nodeactivator-feeda28896aa83e2-tvnb8)
+
+nodeactivator Pod state:
+Name:             nodeactivator-feeda28896aa83e2-tvnb8
+Namespace:        kube-system
+Priority:         0
+Service Account:  nodeactivator
+Node:             runnervmr9t6g/10.1.0.161
+Labels:           app.kubernetes.io/name=nodeactivator
+                  pod-template-hash=feeda28896aa83e2
+Annotations:      <none>
+Status:           Pending
+Message:          waiting for projected volume(s) to be materialized: serving-cert
+SeccompProfile:   RuntimeDefault
+IP:               
+IPs:              <none>
+Controlled By:    ReplicaSet/nodeactivator-feeda28896aa83e2
+Containers:
+  nodeactivator:
+    Image:       nodeactivator-bootstrap-e2e:nk-e2e-4605-19bcba2a
+    Ports:       8080/TCP (http), 8443/TCP (metrics-https)
+    Host Ports:  0/TCP (http), 0/TCP (metrics-https)
+    Limits:
+      memory:  128Mi
+    Requests:
+      cpu:      25m
+      memory:   48Mi
+    Liveness:   http-get http://:http/healthz delay=0s timeout=1s period=10s successThreshold=1 failureThreshold=3
+    Readiness:  http-get http://:http/readyz delay=0s timeout=1s period=5s successThreshold=1 failureThreshold=3
+    Environment:
+      ACTIVATOR_TLS_BUNDLE:       /var/run/nodeactivator/tls/credential.pem
+      ACTIVATOR_PROXY_CLIENT_CA:  /var/run/nodeactivator/proxy-ca/ca.crt
+      ACTIVATOR_TIMEOUT_SECONDS:  180
+      ACTIVATOR_POD_IP:            (:status.podIP)
+    Mounts:
+      /var/run/nodeactivator/proxy-ca from proxy-client-ca (ro)
+      /var/run/nodeactivator/tls from serving-cert (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-409d3 (ro)
+Conditions:
+  Type                  Status
+  PodScheduled          True 
+  Initialized           False 
+  ContainersReady       False 
+  Ready                 False 
+  PodResizeInProgress   False 
+Volumes:
+  serving-cert:
+    Type:  Projected (a volume that contains injected data from multiple sources)
+  proxy-client-ca:
+    Type:      ConfigMap (a volume populated by a ConfigMap)
+    Name:      extension-apiserver-authentication
+    Optional:  false
+  kube-api-access-409d3:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   Burstable
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:                      <none>
+
+certificate signer logs:
+2026-10-24T21:23:02.957221422Z 2026-10-24T21:23:02.956552Z  INFO nodeactivator_cert_signer: starting nodeactivator PodCertificate signer
+2026-10-24T21:23:02.957240451Z 2026-10-24T21:23:02.956662Z  INFO nodeactivator_cert_signer: loading in-cluster Kubernetes client
+2026-10-24T21:23:02.957242774Z 2026-10-24T21:23:02.956892Z  INFO nodeactivator_cert_signer: loaded in-cluster Kubernetes client
+2026-10-24T21:23:02.957245549Z 2026-10-24T21:23:02.956896Z  INFO nodeactivator_cert_signer: discovering PodCertificateRequest API namespace="kube-system"
+2026-10-24T21:23:02.969393105Z 2026-10-24T21:23:02.969256Z  INFO nodeactivator_cert_signer: watching PodCertificateRequests api_version=certificates.k8s.io/v1alpha1
+2026-10-24T21:23:03.048629094Z 2026-10-24T21:23:03.048534Z  INFO nodeactivator_cert_signer: issued unique nodeactivator serving certificate namespace="kube-system" pod="nodeactivator-feeda28896aa83e2-tvnb8" pod_uid="8ad135af-8eb5-4ddb-9913-4c4b149cd4ec" request="pc-8ad135af8eb5-0-4764580cfdf4"
+2026-10-24T21:27:52.973685048Z 2026-10-24T21:27:52.973583Z  WARN nodeactivator_cert_signer: PodCertificateRequest watch failed error=WatchFailed(ReadEvents(Custom { kind: Other, error: Service(hyper::Error(Body, Custom { kind: UnexpectedEof, error: "peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof" })) }))
+
+PodCertificateRequests:
+apiVersion: v1
+items:
+- apiVersion: certificates.k8s.io/v1alpha1
+  kind: PodCertificateRequest
+  metadata:
+    creationTimestamp: "2026-10-24T21:23:02Z"
+    generation: 1
+    name: pc-8ad135af8eb5-0-4764580cfdf4
+    namespace: kube-system
+    ownerReferences:
+    - apiVersion: v1
+      blockOwnerDeletion: false
+      controller: false
+      kind: Pod
+      name: nodeactivator-feeda28896aa83e2-tvnb8
+      uid: 8ad135af-8eb5-4ddb-9913-4c4b149cd4ec
+    resourceVersion: "270"
+    uid: ebe7bd69-926d-4c2f-a4ce-6e61e3021e9f
+  spec:
+    maxExpirationSeconds: 86400
+    nodeName: runnervmr9t6g
+    nodeUID: 4aeb1a6f-6df9-4d63-8512-fd3c08da6e5b
+    pkixPublicKey: MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6WPO1x+BIz7fYx3pfeH5YSQHx2cpcXoDCGzVKwx/eLBW2rSw4SzjTACj5s6LDaBNXFtL2Z2nakpW7u+qXifPkw==
+    podName: nodeactivator-feeda28896aa83e2-tvnb8
+    podUID: 8ad135af-8eb5-4ddb-9913-4c4b149cd4ec
+    proofOfPossession: MEYCIQComHbDjQi0+rh9FKX+H1Fm7jFNt4ZvVN96o1APzViocQIhAOtn1uK3Q7JhKYfu0wpkLCBYITlKlv6ja/RXBUhrY+vj
+    serviceAccountName: nodeactivator
+    serviceAccountUID: dae808e1-b914-4921-98af-b68597d22914
+    signerName: nodeactivator.notk8s.io/serving
+  status:
+    beginRefreshAt: "2026-10-25T13:23:03Z"
+    certificateChain: |
+      -----BEGIN CERTIFICATE-----
+      MIICHzCCAcWgAwIBAgIUQuSVlfpcG53u27yQTOEedLV8uoYwCgYIKoZIzj0EAwIw
+      ITEfMB0GA1UEAwwWcmNnZW4gc2VsZiBzaWduZWQgY2VydDAeFw0yNjEwMjQyMTIz
+      MDNaFw0yNjEwMjUyMTIzMDNaMBgxFjAUBgNVBAMMDW5vZGVhY3RpdmF0b3IwWTAT
+      BgcqhkjOPQIBBggqhkjOPQMBBwNCAATpY87XH4EjPt9jHel94flhJAfHZylxegMI
+      bNUrDH94sFbatLDhLONMAKPmzosNoE1cW0vZnadqSlbu76peJ8+To4HjMIHgMAwG
+      A1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgWgMBMGA1UdJQQMMAoGCCsGAQUFBwMB
+      MGsGA1UdEQRkMGKCJW5vZGVhY3RpdmF0b3ItbWV0cmljcy5rdWJlLXN5c3RlbS5z
+      dmOCM25vZGVhY3RpdmF0b3ItbWV0cmljcy5rdWJlLXN5c3RlbS5zdmMuY2x1c3Rl
+      ci5sb2NhbIcECisAAjAdBgNVHQ4EFgQUVLRa0nIn2Cm3HhBFbc8WzJCE4TswHwYD
+      VR0jBBgwFoAUZX/srXdMekFhUPmmptbb6H+6eqYwCgYIKoZIzj0EAwIDSAAwRQIh
+      AO6kSZnIC+YaCBNwal0qLZNMj5Ni8mBkPCaDLy0x7YB1AiAXT8v8ZiHLuyQnEZlp
+      LEd0GMQjPPToUrek+A9t4YNklQ==
+      -----END CERTIFICATE-----
+    conditions:
+    - lastTransitionTime: "2026-10-24T21:23:03Z"
+      message: nodeactivator serving certificate issued
+      reason: Issued
+      status: "True"
+      type: Issued
+    notAfter: "2026-10-25T21:23:03Z"
+    notBefore: "2026-10-24T21:23:03Z"
+kind: List
+metadata:
+  resourceVersion: ""
+
+failure snapshot /api/v1/namespaces/nk-e2e-4605-19bcba2a/services: {"apiVersion":"v1","items":[],"kind":"ServiceList","metadata":{"resourceVersion":"631"}}
+failure snapshot /api/v1/namespaces/nk-e2e-4605-19bcba2a/events: {"apiVersion":"v1","items":[],"kind":"EventList","metadata":{"resourceVersion":"631"}}
+failure snapshot /api/v1/namespaces/nk-e2e-4605-19bcba2a/pods: {"apiVersion":"v1","items":[],"kind":"PodList","metadata":{"resourceVersion":"631"}}
+failure snapshot /apis/discovery.k8s.io/v1/namespaces/nk-e2e-4605-19bcba2a/endpointslices: {"apiVersion":"discovery.k8s.io/v1","items":[],"kind":"EndpointSliceList","metadata":{"resourceVersion":"636"}}
+Error: bootstrap e2e failed: 1 test(s): test_hpa_scale_to_zero_activator_full_flow
