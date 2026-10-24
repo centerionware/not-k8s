@@ -143,6 +143,7 @@ runs:
         KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
         ONLY: ${{ inputs.only }}
         NEEDS_DRIVERS: ${{ inputs.needs_drivers }}
+        METRICS_SERVER: ${{ inputs.metrics_server }}
         SHARD: ${{ inputs.shard }}
         NETWORK: ${{ inputs.network }}
         NODEBOOTSTRAP_E2E_REQUIRE_SCALE_TO_ZERO: 'true'

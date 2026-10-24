@@ -2804,6 +2804,9 @@ async fn run_test(name: &str, context: &E2eContext) -> Result<()> {
         "test_metrics_resource_returns_real_pod_usage" => {
             metrics::metrics_resource_returns_real_pod_usage(context).await
         }
+        "test_metrics_server_reports_real_pod_usage" => {
+            metrics::metrics_server_reports_real_pod_usage(context).await
+        }
         "test_metrics_cadvisor_returns_real_container_usage" => {
             metrics::metrics_cadvisor_returns_real_container_usage(context).await
         }
