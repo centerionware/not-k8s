@@ -631,8 +631,15 @@ fn stabilized_recommendation(
     now: Instant,
     history: &mut HashMap<String, Vec<(Instant, i32)>>,
 ) -> i32 {
+    let first_recommendation = !history.contains_key(key);
     let samples = history.entry(key.to_string()).or_default();
     samples.retain(|(recorded_at, _)| now.saturating_duration_since(*recorded_at) < window);
+    // Seed scale-down stabilization with the current replica count. This
+    // matches the HPA controller's initial recommendation and prevents the
+    // first low metric sample from immediately dropping a workload to zero.
+    if first_recommendation && recommendation < current {
+        samples.push((now, current));
+    }
     samples.push((now, recommendation));
     if recommendation < current {
         samples
@@ -1015,7 +1022,7 @@ async fn reconcile_hpa(
                 ..Default::default()
             }]
         });
-        let scaled_to_zero = hpa
+        let mut scaled_to_zero = hpa
             .status
             .as_ref()
             .and_then(|status| status.conditions.as_ref())
@@ -1023,7 +1030,23 @@ async fn reconcile_hpa(
         // Kubernetes 1.37 distinguishes a target the HPA scaled to zero from
         // one an operator paused manually. Object and External metrics make
         // scaling from an HPA-owned zero possible, but do not override a
-        // manual pause.
+        // manual pause. The Scale write and HPA status write are separate API
+        // operations, so a requeue can observe zero before the watch cache has
+        // delivered ScaledToZero. Read the latest HPA status on that edge
+        // before classifying the zero as manual.
+        if current_desired == 0 && !scaled_to_zero {
+            let hpas: Api<HorizontalPodAutoscaler> =
+                Api::namespaced(base_client.clone(), &namespace);
+            let latest_hpa = hpas
+                .get(&name)
+                .await
+                .context("checking the latest HPA zero-replica condition")?;
+            scaled_to_zero = latest_hpa
+                .status
+                .as_ref()
+                .and_then(|status| status.conditions.as_ref())
+                .is_some_and(|conditions| is_hpa_owned_zero_state(current_desired, conditions));
+        }
         if current_desired == 0 && !scaled_to_zero {
             anyhow::bail!("HPA target is manually scaled to zero; scaling is paused until it is scaled above zero");
         }
@@ -1471,6 +1494,45 @@ mod tests {
         assert_eq!(
             metric_recommendation(4, 36.0, 10.0, true, 0.1, 0.1).unwrap(),
             4
+        );
+    }
+
+    #[test]
+    fn scale_down_stabilization_starts_from_current_replicas() {
+        use super::stabilized_recommendation;
+        use std::collections::HashMap;
+        use std::time::Duration;
+        use tokio::time::Instant;
+
+        let start = Instant::now();
+        let mut history = HashMap::new();
+        let window = Duration::from_secs(15);
+
+        assert_eq!(
+            stabilized_recommendation("ns/hpa", 1, 0, window, start, &mut history),
+            1
+        );
+        assert_eq!(
+            stabilized_recommendation(
+                "ns/hpa",
+                1,
+                0,
+                window,
+                start + Duration::from_secs(14),
+                &mut history,
+            ),
+            1
+        );
+        assert_eq!(
+            stabilized_recommendation(
+                "ns/hpa",
+                1,
+                0,
+                window,
+                start + Duration::from_secs(16),
+                &mut history,
+            ),
+            0
         );
     }
 

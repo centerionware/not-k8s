@@ -2,6 +2,30 @@
 
 Last updated: 2026-10-24
 
+## HPA scale-down stabilization
+
+Focused e2e run [40080190436](https://github.com/centerionware/not-k8s/actions/runs/40080190436)
+at PR SHA `0a8f33856dfb4778e65f1f024725de596129a2be` failed before the
+activator wake-up assertion: the backend reached zero, but the HPA never
+published its `ScaledToZero=True` condition. The controller's downscale
+stabilization history started with the first low metric recommendation rather
+than the current replica count. That allowed an immediate scale to zero, while
+the Scale write and HPA status write could still be observed in different
+orders by the controller's watches. The controller now seeds its first
+downscale history with the current replicas, following Kubernetes HPA
+behavior, and checks live HPA status before treating a zero observed in that
+watch gap as a manual pause. It has a focused stabilization regression test.
+Quick-check and focused real-cluster e2e are still required for this fix. Full
+shard log:
+`/tmp/nodebootstrap-e2e-40080190436.log`.
+
+The Node Activator and signer already ship together in the multi-architecture
+`ghcr.io/centerionware/not-k8s/nodeactivator` image, published by the release
+workflow. `--enable-activator` uses its `:latest` tag by default; Metrics Server
+uses the upstream `registry.k8s.io` image. Thus deployment does not require a
+source checkout or Rust toolchain on cluster hosts. GHCR package visibility
+must be set to public once for unauthenticated cluster pulls.
+
 ## Add-on migration run 40071938966
 
 Run [40071938966](https://github.com/centerionware/not-k8s/actions/runs/40071938966)
