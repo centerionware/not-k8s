@@ -99,6 +99,23 @@ addon-enabled migration retest are pending. Logs:
 `/tmp/nodemigrate-40067706232-kubernetes.log`, and
 `/tmp/nodemigrate-40067706232-preflight.log`.
 
+Run [40069693594](https://github.com/centerionware/not-k8s/actions/runs/40069693594)
+at SHA `cb08018d8dfaf7631d877ac0a611f8943cb9ef34` passed the scoped quick-check
+and built the branch runtime and addon image. The K3s migration still failed
+waiting for `nodeactivator-cert-signer` to become Available. This run confirms
+the Cilium host-state reset completed before addon reconciliation, and Cilium
+logs show both signer and Activator container endpoints were created; the
+failure log did not capture the addon's Pod status or container logs, so the
+remaining startup cause is not yet identified. Nodebootstrap now includes
+Deployment status, matching Pod state, and Pod logs in addon readiness errors
+to make the next run diagnostic. HPA scale-to-zero ownership and buffered
+request wakeup remain unverified. The upstream lane failed before migration
+because its Kubernetes CNI package did not install bridge and loopback. Docker
+preflight again failed because kubeadm reported its new etcd member was not
+started. Logs: `/tmp/nodemigrate-40069693594-k3s.log`,
+`/tmp/nodemigrate-40069693594-kubernetes.log`, and
+`/tmp/nodemigrate-40069693594-preflight.log`.
+
 ## Branch-runtime matrix 36871609082
 
 Run [36871609082](https://github.com/centerionware/not-k8s/actions/runs/36871609082)

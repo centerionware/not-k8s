@@ -50,9 +50,12 @@ pub fn install(cfg: &Config) -> Result<()> {
 }
 
 async fn wait_for_deployment(client: &kube::Client, name: &str) -> Result<()> {
-    use k8s_openapi::api::apps::v1::Deployment;
-    use kube::api::Api;
+    use k8s_openapi::api::{apps::v1::Deployment, core::v1::Pod};
+    use kube::api::{Api, ListParams, LogParams};
     let deployments: Api<Deployment> = Api::namespaced(client.clone(), "kube-system");
+    let pods: Api<Pod> = Api::namespaced(client.clone(), "kube-system");
+    let selector = format!("app.kubernetes.io/name={name}");
+    let mut last_status = "Deployment has not been observed yet".to_string();
     for _ in 0..60 {
         if let Some(deployment) = deployments
             .get_opt(name)
@@ -73,10 +76,44 @@ async fn wait_for_deployment(client: &kube::Client, name: &str) -> Result<()> {
             if observed >= generation && available > 0 {
                 return Ok(());
             }
+            last_status = format!(
+                "observed_generation={observed}, generation={generation}, available_replicas={available}, status={:?}",
+                deployment.status
+            );
         }
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
-    anyhow::bail!("Deployment/kube-system/{name} did not become Available within 5 minutes")
+    let mut diagnostics = format!("Deployment status: {last_status}");
+    match pods.list(&ListParams::default().labels(&selector)).await {
+        Ok(list) => {
+            for pod in list.items {
+                let pod_name = pod.metadata.name.as_deref().unwrap_or("<unnamed>");
+                diagnostics.push_str(&format!("\nPod {pod_name}: {pod:?}"));
+                match pods
+                    .logs(
+                        pod_name,
+                        &LogParams {
+                            tail_lines: Some(100),
+                            timestamps: true,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                {
+                    Ok(logs) => {
+                        diagnostics.push_str(&format!("\nLogs for Pod {pod_name}:\n{logs}"))
+                    }
+                    Err(error) => diagnostics.push_str(&format!(
+                        "\nCould not read logs for Pod {pod_name}: {error:#}"
+                    )),
+                }
+            }
+        }
+        Err(error) => diagnostics.push_str(&format!("\nCould not list addon Pods: {error:#}")),
+    }
+    anyhow::bail!(
+        "Deployment/kube-system/{name} did not become Available within 5 minutes; {diagnostics}"
+    )
 }
 
 async fn wait_for_api_service(client: &kube::Client, name: &str) -> Result<()> {
