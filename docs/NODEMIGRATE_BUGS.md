@@ -59,13 +59,30 @@ and focused Cilium restart probe but failed before importing the protected API
 export. The first destination bootstrap installed the requested metrics-server
 and waited for it to become Available while the source metrics-server Pod was
 still using source-cluster credentials. That Pod received 401 responses from
-the new API server, so the wait timed out. The migration now defers addon
-flags during initial bootstrap for a fresh destination, imports the source API,
-then reconciles the explicitly requested addons. Joining an existing
-destination still installs them during bootstrap because there is no import
-phase. Focused unit coverage was added for both paths; this correction still
-needs CI and addon-enabled migration verification. K3s log:
-`/tmp/nodemigrate-40063386850-k3s.log`.
+the new API server, so the wait timed out. Fresh migrations now defer addon
+flags until after import, while joins to an existing destination still install
+them during bootstrap because there is no import phase. The scoped quick-check
+passed this change at `b2a605f9` in run
+[40065653846](https://github.com/centerionware/not-k8s/actions/runs/40065653846).
+
+The addon-enabled follow-up
+[40065653855](https://github.com/centerionware/not-k8s/actions/runs/40065653855)
+at SHA `b2a605f9ea59d342d1bb532c4300d36095fa073e` built nodemigrate, the branch
+runtime, and addon image successfully. The source HPA fixture passed scale-up
+to 3, scale-down to 1, and restore to 3; it did not exercise zero replicas. The
+K3s migration progressed past the earlier metrics-server bootstrap timeout but
+failed waiting for `nodeactivator-cert-signer` to become Available. Nodelet
+logs show repeated Cilium CNI sandbox setup failures because the local Cilium
+agent socket was unavailable. Cilium host-state reset was ordered after addon
+reconciliation, which waits for addon Pods; reset is now moved before that wait
+for fresh Cilium destinations. The destination HPA zero-replica ownership
+round-trip and Node Activator request buffering/wakeup remain unverified. The
+upstream lane again stopped before migration because its source kubelet could
+not load `/var/lib/kubelet/config.yaml`. Docker preflight reached kubeadm's
+etcd-join phase, but its new etcd member did not start. Logs:
+`/tmp/nodemigrate-40065653855-k3s.log`,
+`/tmp/nodemigrate-40065653855-kubernetes.log`, and
+`/tmp/nodemigrate-40065653855-preflight.log`.
 
 ## Branch-runtime matrix 36871609082
 

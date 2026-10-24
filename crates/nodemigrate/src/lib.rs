@@ -336,18 +336,6 @@ fn migrate_to_nodestore(
         }
         eprintln!("nodemigrate: protected Kubernetes API import completed");
     }
-    // Source API import can replace addon objects installed by the initial
-    // bootstrap. Reconcile explicitly selected destination addons afterward
-    // so the requested bootstrap configuration is the final cluster state.
-    if !joins_existing
-        && (request.metrics_server || request.nodeactivator || request.nodeactivator_image.is_some())
-    {
-        let mut reconcile = bootstrap_command(source, disable_nodeproxy)?;
-        append_optional_addon_flags(&mut reconcile, request);
-        prepare_migration_pki(&mut reconcile, source, &export)?;
-        run_bootstrap(reconcile)
-            .context("reconciling requested destination addons after API import")?;
-    }
     if !joins_existing
         && source
             .cluster
@@ -357,16 +345,33 @@ fn migrate_to_nodestore(
         eprintln!(
             "nodemigrate: rebuilding destination Cilium host datapath state for node {migrating_node_name}"
         );
+        // CNI must be ready before the optional-addon bootstrap waits for
+        // Pods to become Available. Otherwise Cilium's stale host state can
+        // prevent those Pods from starting while bootstrap waits on them.
         // Use the destination's CRI default/override. The detected source
         // endpoint may refer to a stopped, distribution-embedded runtime.
-        if let Err(error) = target_api
-            .reset_cilium_agent_state(&migrating_node_name, None)
-        {
-            return Err(rollback(error.context("rebuilding destination Cilium host datapath state")));
+        if let Err(error) = target_api.reset_cilium_agent_state(&migrating_node_name, None) {
+            return Err(rollback(
+                error.context("rebuilding destination Cilium host datapath state"),
+            ));
         }
         eprintln!(
             "nodemigrate: rebuilt destination Cilium host datapath state for node {migrating_node_name}"
         );
+    }
+    // Source API import can replace addon objects installed by the initial
+    // bootstrap. Reconcile explicitly selected destination addons afterward
+    // so the requested bootstrap configuration is the final cluster state.
+    if !joins_existing
+        && (request.metrics_server
+            || request.nodeactivator
+            || request.nodeactivator_image.is_some())
+    {
+        let mut reconcile = bootstrap_command(source, disable_nodeproxy)?;
+        append_optional_addon_flags(&mut reconcile, request);
+        prepare_migration_pki(&mut reconcile, source, &export)?;
+        run_bootstrap(reconcile)
+            .context("reconciling requested destination addons after API import")?;
     }
     let replacement_state = if destination_node_exists {
         match remove_replaced_node(&target_api, &migrating_node_name, replace_existing_node) {
@@ -2397,9 +2402,8 @@ mod tests {
         apply_cni_runtime_paths, confirm_migration, detect_csi_staging_root,
         migration_csi_staging_root, nodeproxy_should_be_disabled, preserve_pki_file,
         replacement_worker_args, reverse_node_replacement_state, rollback_reverse_migration_with,
-        source_api_pki_paths,
-        validate_destination_node_replacement, validate_reverse_control_plane_options,
-        validate_skip_api_import,
+        source_api_pki_paths, validate_destination_node_replacement,
+        validate_reverse_control_plane_options, validate_skip_api_import,
     };
 
     #[test]
