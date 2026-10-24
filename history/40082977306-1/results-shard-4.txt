@@ -1,0 +1,7 @@
+commit: 666de5e1642fd99bc3dd01c8a3c9468e5638d118
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/40082977306
+timestamp (UTC): 2026-10-24T09:53:58Z
+shard: 4/5
+exit code: unknown
+----------------------------------------
+(no results captured — the job failed before the Rust e2e runner started)
