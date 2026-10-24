@@ -19,13 +19,14 @@ preloaded CI image. The helper now passes its explicit image reference as
 
 The follow-up run [40074075359](https://github.com/centerionware/not-k8s/actions/runs/40074075359)
 confirmed that image handoff and local import worked. It exposed a second
-packaging problem: the CI job copied glibc-linked binaries into an Alpine
-image, so the signer exited with `exec ...: no such file or directory`. The
-CI image build now uses the production multi-stage Dockerfile, which builds
-and runs the binaries on Debian bookworm. Quick-check is unnecessary for
-these workflow/image changes; the next addon-enabled migration run will
-exercise the fix. Certificate issuance and HPA scale-to-zero wakeup remain
-unverified.
+packaging problem: the migration CI job copied glibc-linked binaries into an
+Alpine image, so the signer exited with `exec ...: no such file or directory`.
+The migration image build now uses the production multi-stage Dockerfile,
+which builds and runs the binaries on Debian bookworm. The separate Alpine
+fixture remains for the Rust e2e suite, which supplies musl-linked binaries.
+Quick-check is unnecessary for these workflow/image changes; the next
+addon-enabled migration run will exercise the fix. Certificate issuance and
+HPA scale-to-zero wakeup remain unverified.
 
 The upstream Kubernetes lane failed before migration because the installed
 `kubernetes-cni` package lacked bridge and loopback. The Docker preflight's
