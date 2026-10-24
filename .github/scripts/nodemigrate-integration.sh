@@ -3600,7 +3600,7 @@ verify_hpa_scaling() {
 }
 
 verify_nodeactivator_hpa_wakeup() {
-    local stage="$1" pod_logs
+    local stage="$1" deadline pod_logs probe
     kubectl delete hpa migration-activator -n migration-apps --ignore-not-found=true
     kubectl delete deployment migration-activator-backend -n migration-apps --ignore-not-found=true
     kubectl delete service migration-activator-front migration-activator-backend -n migration-apps --ignore-not-found=true
@@ -3707,11 +3707,33 @@ YAML
         return 1
     }
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
+    deadline=$((SECONDS + 300))
+    while (( SECONDS < deadline )); do
+        if probe="$(kubectl exec -n migration-apps migration-standalone -- sh -ec \
+            'wget -T 5 -qO- http://migration-activator-front.migration-apps.svc/healthz' \
+            2>/dev/null)" && [[ "$probe" == ok* ]]; then
+            break
+        fi
+        sleep 3
+    done
+    [[ "$probe" == ok* ]] || {
+        echo "activator front Service did not become reachable after migration at stage=$stage" >&2
+        kubectl get endpointslice -n migration-apps \
+            -l kubernetes.io/service-name=migration-activator-front -o yaml >&2 || true
+        kubectl get pods -n kube-system -l app.kubernetes.io/name=nodeactivator -o wide >&2 || true
+        kubectl logs -n kube-system -l app.kubernetes.io/name=nodeactivator \
+            --all-containers --prefix --tail=100 >&2 || true
+        return 1
+    }
     if ! pod_logs="$(kubectl exec -n migration-apps migration-standalone -- sh -ec \
         'wget -T 240 -qO- http://migration-activator-front.migration-apps.svc/; echo ACTIVATOR_REQUEST_FINISHED')"; then
         echo "buffered request did not complete through the activator at stage=$stage" >&2
         kubectl get hpa,deployment,pod,service -n migration-apps >&2 || true
-        kubectl logs deployment/nodeactivator -n kube-system --tail=100 >&2 || true
+        kubectl get endpointslice -n migration-apps \
+            -l kubernetes.io/service-name=migration-activator-front -o yaml >&2 || true
+        kubectl get --raw '/apis/external.metrics.k8s.io/v1beta1/namespaces/migration-apps/activator_requests_active?labelSelector=service%3Dmigration-activator-front' >&2 || true
+        kubectl logs -n kube-system -l app.kubernetes.io/name=nodeactivator \
+            --all-containers --prefix --tail=100 >&2 || true
         return 1
     fi
     grep -Fq migration-activator-response <<< "$pod_logs" || {

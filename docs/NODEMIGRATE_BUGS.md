@@ -47,10 +47,21 @@ then timed out waiting for its newly created caller Pod, which remained
 addon Pods were running. This did not exercise the buffered-request path. The
 integration check now sends the request from the already-running
 `migration-standalone` fixture Pod, removing an unrelated dependency on
-scheduling a new Pod after migration. That workflow change still needs a new
+scheduling a new Pod after migration. The follow-up
+[40128276914](https://github.com/centerionware/not-k8s/actions/runs/40128276914)
+at commit `081d67a7bba1a45e596da4e364f6f691e7a6e0a8` confirmed that the
+existing Pod could run the request, but its connection to the activator
+ClusterIP timed out. The audit log shows nodecontroller creating the front
+Service's EndpointSlice only near the end of that attempt. The helper now
+waits for a real `/healthz` response through that ClusterIP before sending the
+buffered request, and prints EndpointSlice, Pod, metric, and Activator logs if
+the route does not become ready. This workflow change still needs a new
 addon-enabled migration run. Full logs are saved at
 `/tmp/nodemigrate-40086015125-kubernetes.log` and
-`/tmp/nodemigrate-40086015125-k3s.log`.
+`/tmp/nodemigrate-40086015125-k3s.log`, and
+`/tmp/nodemigrate-40128276914-kubernetes.log`,
+`/tmp/nodemigrate-40128276914-k3s.log`, and
+`/tmp/nodemigrate-40128276914-preflight.log`.
 
 The earlier K3s run
 [40078358744](https://github.com/centerionware/not-k8s/actions/runs/40078358744)
