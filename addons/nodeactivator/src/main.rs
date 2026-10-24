@@ -196,7 +196,7 @@ impl State {
         );
         let slice = EndpointSlice {
             address_type: if ip.is_ipv4() { "IPv4" } else { "IPv6" }.to_string(),
-            endpoints: Some(vec![Endpoint {
+            endpoints: vec![Endpoint {
                 addresses: vec![ip.to_string()],
                 conditions: Some(EndpointConditions {
                     ready: Some(self.ready.load(Ordering::Acquire)),
@@ -204,7 +204,7 @@ impl State {
                     terminating: Some(false),
                 }),
                 ..Default::default()
-            }]),
+            }],
             metadata: ObjectMeta {
                 name: Some(slice_name.clone()),
                 namespace: Some(namespace.clone()),
