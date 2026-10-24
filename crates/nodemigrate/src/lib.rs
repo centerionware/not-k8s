@@ -185,7 +185,7 @@ fn migrate_to_nodestore(
         None
     };
     let mut bootstrap = bootstrap_command(source, disable_nodeproxy)?;
-    append_optional_addon_flags(&mut bootstrap, request);
+    append_initial_optional_addon_flags(&mut bootstrap, request, joins_existing);
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
     let destination_node_exists = if joins_existing {
         target_api.ready().context(
@@ -1919,6 +1919,21 @@ fn append_optional_addon_flags(command: &mut Command, request: &request::Migrati
     }
 }
 
+fn append_initial_optional_addon_flags(
+    command: &mut Command,
+    request: &request::MigrationRequest,
+    joins_existing: bool,
+) {
+    // A fresh destination must first import the source API export. In
+    // particular, an imported Metrics Server Pod still has source-cluster
+    // credentials and can block nodebootstrap's availability wait. Reconcile
+    // requested addons after import; an existing destination has no import
+    // phase, so install requested addons during its bootstrap.
+    if joins_existing {
+        append_optional_addon_flags(command, request);
+    }
+}
+
 fn prepare_migration_pki(
     command: &mut Command,
     source: &detect::Installation,
@@ -2378,28 +2393,65 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_nodeproxy_mode, append_optional_addon_flags, apply_cni_runtime_paths, confirm_migration, detect_csi_staging_root,
-        migration_csi_staging_root, nodeproxy_should_be_disabled, replacement_worker_args,
-        source_api_pki_paths, preserve_pki_file,
-        reverse_node_replacement_state, rollback_reverse_migration_with,
+        append_initial_optional_addon_flags, append_nodeproxy_mode, append_optional_addon_flags,
+        apply_cni_runtime_paths, confirm_migration, detect_csi_staging_root,
+        migration_csi_staging_root, nodeproxy_should_be_disabled, preserve_pki_file,
+        replacement_worker_args, reverse_node_replacement_state, rollback_reverse_migration_with,
+        source_api_pki_paths,
         validate_destination_node_replacement, validate_reverse_control_plane_options,
         validate_skip_api_import,
     };
 
     #[test]
-    fn migration_forwards_optional_addon_flags_to_bootstrap() {
+    fn fresh_migration_defers_optional_addon_flags_until_after_import() {
         let request = MigrationRequest::parse(&[
-            "to=nodestore".to_string(), "from=k3s".to_string(),
+            "to=nodestore".to_string(),
+            "from=k3s".to_string(),
             "metrics-server=true".to_string(),
             "nodeactivator=true".to_string(),
-        ]).unwrap();
+        ])
+        .unwrap();
+        let mut initial = Command::new("bootstrap");
+        append_initial_optional_addon_flags(&mut initial, &request, false);
+        assert!(initial.get_args().next().is_none());
+
+        let mut reconcile = Command::new("bootstrap");
+        append_optional_addon_flags(&mut reconcile, &request);
+        let args: Vec<_> = reconcile
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "--metrics-server".to_string(),
+                "--enable-activator".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn join_bootstrap_installs_requested_optional_addons() {
+        let request = MigrationRequest::parse(&[
+            "to=nodestore".to_string(),
+            "from=k3s".to_string(),
+            "metrics-server=true".to_string(),
+            "nodeactivator=true".to_string(),
+        ])
+        .unwrap();
         let mut command = Command::new("bootstrap");
-        append_optional_addon_flags(&mut command, &request);
-        let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
-        assert_eq!(args, vec![
-            "--metrics-server".to_string(),
-            "--enable-activator".to_string(),
-        ]);
+        append_initial_optional_addon_flags(&mut command, &request, true);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "--metrics-server".to_string(),
+                "--enable-activator".to_string(),
+            ]
+        );
     }
     use crate::transfer::NodeSchedulingState;
     use crate::{

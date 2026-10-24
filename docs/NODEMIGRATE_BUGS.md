@@ -53,6 +53,20 @@ Run 400512 job logs: `/tmp/nodemigrate-40051256195-k3s.log`,
 `/tmp/nodemigrate-40051256195-kubernetes.log`, and
 `/tmp/nodemigrate-40051256195-preflight.log`.
 
+Run [40063386850](https://github.com/centerionware/not-k8s/actions/runs/40063386850)
+at SHA `c247043a13dcd653b677437e07a77fd9aae834fb` passed the migration checks
+and focused Cilium restart probe but failed before importing the protected API
+export. The first destination bootstrap installed the requested metrics-server
+and waited for it to become Available while the source metrics-server Pod was
+still using source-cluster credentials. That Pod received 401 responses from
+the new API server, so the wait timed out. The migration now defers addon
+flags during initial bootstrap for a fresh destination, imports the source API,
+then reconciles the explicitly requested addons. Joining an existing
+destination still installs them during bootstrap because there is no import
+phase. Focused unit coverage was added for both paths; this correction still
+needs CI and addon-enabled migration verification. K3s log:
+`/tmp/nodemigrate-40063386850-k3s.log`.
+
 ## Branch-runtime matrix 36871609082
 
 Run [36871609082](https://github.com/centerionware/not-k8s/actions/runs/36871609082)
