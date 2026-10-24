@@ -55,13 +55,54 @@ ClusterIP timed out. The audit log shows nodecontroller creating the front
 Service's EndpointSlice only near the end of that attempt. The helper now
 waits for a real `/healthz` response through that ClusterIP before sending the
 buffered request, and prints EndpointSlice, Pod, metric, and Activator logs if
-the route does not become ready. This workflow change still needs a new
-addon-enabled migration run. Full logs are saved at
+the route does not become ready. The subsequent addon-enabled migration runs
+are summarized below. Full logs are saved at
 `/tmp/nodemigrate-40086015125-kubernetes.log` and
 `/tmp/nodemigrate-40086015125-k3s.log`, and
 `/tmp/nodemigrate-40128276914-kubernetes.log`,
 `/tmp/nodemigrate-40128276914-k3s.log`, and
 `/tmp/nodemigrate-40128276914-preflight.log`.
+
+The follow-up at SHA `d6a2706e8744a8c14751aff99c13d313f842e55e`, run
+[40130334614](https://github.com/centerionware/not-k8s/actions/runs/40130334614),
+installed all three addon Deployments and reached the Activator front-Service
+readiness gate. Its diagnostics showed the `nodeactivator` Pod Ready in
+`kube-system`, but the selector-based front Service was in `migration-apps`;
+Services cannot select Pods in another namespace, so its EndpointSlice had no
+endpoints. The Activator now requires a selectorless front Service and
+publishes a standard, Activator-managed EndpointSlice with its own Pod IP in
+the Service namespace. Its ClusterRole grants only EndpointSlice get/create/
+patch/delete alongside the existing Service watch. The focused bootstrap e2e
+asserts that the selectorless Service receives a ready EndpointSlice, while
+the migration fixture exercises the production `kube-system` deployment
+against a Service in `migration-apps`. Quick-check
+[40132784025](https://github.com/centerionware/not-k8s/actions/runs/40132784025)
+caught an EndpointSlice model compile error, fixed in `21a50b70`.
+The next focused e2e exposed Nodelet's missing `status.podIP` Downward API
+support while creating the Activator Pod. Nodelet now resolves that field from
+the CRI sandbox before Pod status has an IP. On SHA
+`7cdd7335e8e8c38852f14e9a77fba132d9b2fc80`, quick-check
+[40134685203](https://github.com/centerionware/not-k8s/actions/runs/40134685203)
+passed for `nodelet,nodeactivator,nodebootstrap`, and focused e2e
+[40134685233](https://github.com/centerionware/not-k8s/actions/runs/40134685233)
+passed `hpa_scale_to_zero_activator_full_flow` with 1 passed, 0 skipped, and
+0 failed.
+
+The addon-enabled migration run at that SHA,
+[40134685231](https://github.com/centerionware/not-k8s/actions/runs/40134685231),
+failed in K3s because the BusyBox backend fixture wrote to `/www/index.html`
+without first creating `/www`; the backend entered `CrashLoopBackOff`, so the
+Activator's buffered request timed out. The fixture now creates its web root
+before launching `httpd`. The rerun at SHA
+`bfb5c6fa976215659f07bd5e1c5d969d2d8245fb`,
+[40136961421](https://github.com/centerionware/not-k8s/actions/runs/40136961421),
+still failed in both migration lanes. GitHub API log retrieval failed with a
+network connection error after the jobs completed, so the latest failure
+details and any K3s buffered-request result remain unverified. Docker preflight
+also failed at its kubeadm probe. Local logs from the previous migration run
+are `/tmp/nodeactivator-40134685231-k3s.log`,
+`/tmp/nodeactivator-40134685231-kubernetes.log`, and
+`/tmp/nodeactivator-40134685231-preflight.log`.
 
 The earlier K3s run
 [40078358744](https://github.com/centerionware/not-k8s/actions/runs/40078358744)
@@ -147,8 +188,7 @@ The focused real-cluster test
 at the then-current PR head `3d2f85a3bb7a1ed8c06dbd6848c90880e9ac1049`
 passed `hpa_scale_to_zero_activator_full_flow` with 1 passed, 0 skipped, and
 0 failed. This verifies Kubernetes 1.37 HPA scale-to-zero, buffered Service
-traffic, and metric-triggered wakeup against nodeapiserver. The migration
-integration assertion fix still needs CI validation. Log:
+traffic, and metric-triggered wakeup against nodeapiserver. Log:
 `/tmp/nodebootstrap-e2e-40076146445.log`.
 
 Run [40078358744](https://github.com/centerionware/not-k8s/actions/runs/40078358744)
