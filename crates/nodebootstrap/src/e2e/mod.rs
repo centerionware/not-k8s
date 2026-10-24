@@ -1481,6 +1481,10 @@ const TESTS: &[TestCase] = &[
         group: TestGroup::General,
     },
     TestCase {
+        name: "test_metrics_server_reports_real_pod_usage",
+        group: TestGroup::General,
+    },
+    TestCase {
         name: "test_metrics_cadvisor_returns_real_container_usage",
         group: TestGroup::General,
     },
