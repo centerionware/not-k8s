@@ -18,9 +18,15 @@ watch gap as a manual pause. It has a focused stabilization regression test.
 Quick-check [40081632699](https://github.com/centerionware/not-k8s/actions/runs/40081632699)
 and the focused real-cluster test
 [40081632565](https://github.com/centerionware/not-k8s/actions/runs/40081632565)
-both passed at code SHA `7e6fa2e46d143559aec78e4ba63555fb96f2872a`. The e2e
-workflow ran only `hpa_scale_to_zero_activator_full_flow` against nodeapiserver;
-the full e2e suite remains unverified. Full shard log from the failure:
+both passed at code SHA `7e6fa2e46d143559aec78e4ba63555fb96f2872a`. That e2e
+workflow ran only `hpa_scale_to_zero_activator_full_flow` against nodeapiserver.
+The unfiltered suite at documentation-only descendant SHA
+`666de5e1642fd99bc3dd01c8a3c9468e5638d118` failed in shard 4 after 83 seconds;
+the other four shards passed. The result is recorded in run
+[40082977306](https://github.com/centerionware/not-k8s/actions/runs/40082977306).
+Its job log and full controller journal were published to `e2e-results`, but
+GitHub log access from the development host is currently failing, so the cause
+is unresolved. Full shard log from the earlier focused failure:
 `/tmp/nodebootstrap-e2e-40080190436.log`.
 
 The Node Activator and signer already ship together in the multi-architecture
