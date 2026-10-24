@@ -8,16 +8,24 @@ Run [40071938966](https://github.com/centerionware/not-k8s/actions/runs/40071938
 at SHA `8121976a9baa857e87e43a77d0ac8ae89cb4c97f` passed quick-check
 [40071939000](https://github.com/centerionware/not-k8s/actions/runs/40071939000)
 and built the addon image, but the K3s lane failed waiting for
-`nodeactivator-cert-signer`. The new timeout diagnostics show the Pod used
-`ghcr.io/centerionware/not-k8s/nodeactivator:latest` and entered
-`ImagePullBackOff` after GHCR returned HTTP 403. The integration helper set
-`NODEBOOTSTRAP_NODEACTIVATOR_IMAGE`, but nodemigrate intentionally clears
+`nodeactivator-cert-signer`. The new timeout diagnostics first showed the Pod
+used `ghcr.io/centerionware/not-k8s/nodeactivator:latest` and entered
+`ImagePullBackOff` after GHCR returned HTTP 403. The integration helper had
+set `NODEBOOTSTRAP_NODEACTIVATOR_IMAGE`, but nodemigrate intentionally clears
 inherited addon environment variables and received only `nodeactivator=true`;
 it therefore selected the published default image instead of the locally
 preloaded CI image. The helper now passes its explicit image reference as
-`nodeactivator-image=...` when available. This correction needs another
-addon-enabled migration run; Node Activator certificate issuance and HPA
-scale-to-zero wakeup remain unverified.
+`nodeactivator-image=...` when available.
+
+The follow-up run [40074075359](https://github.com/centerionware/not-k8s/actions/runs/40074075359)
+confirmed that image handoff and local import worked. It exposed a second
+packaging problem: the CI job copied glibc-linked binaries into an Alpine
+image, so the signer exited with `exec ...: no such file or directory`. The
+CI image build now uses the production multi-stage Dockerfile, which builds
+and runs the binaries on Debian bookworm. Quick-check is unnecessary for
+these workflow/image changes; the next addon-enabled migration run will
+exercise the fix. Certificate issuance and HPA scale-to-zero wakeup remain
+unverified.
 
 The upstream Kubernetes lane failed before migration because the installed
 `kubernetes-cni` package lacked bridge and loopback. The Docker preflight's

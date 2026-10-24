@@ -313,11 +313,7 @@ jobs:
           NODEMIGRATE_NODEACTIVATOR_IMAGE: ${{ inputs.nodeactivator_image != '' && inputs.nodeactivator_image || format('notk8s-nodeactivator:ci-{0}', github.sha) }}
         run: |
           set -euo pipefail
-          cargo build --release -p nodeactivator --bins
-          mkdir -p dist-bin
-          install -m0755 target/release/nodeactivator dist-bin/nodeactivator
-          install -m0755 target/release/nodeactivator-cert-signer dist-bin/nodeactivator-cert-signer
-          docker build --file addons/nodeactivator/e2e-addon.Dockerfile \
+          docker build --file addons/nodeactivator/Dockerfile \
             --tag "$NODEMIGRATE_NODEACTIVATOR_IMAGE" .
 
       - name: Fetch latest runtime
