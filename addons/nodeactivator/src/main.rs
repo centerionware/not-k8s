@@ -10,7 +10,7 @@ use hyper_util::server::conn::auto::Builder as ConnectionBuilder;
 use k8s_openapi::api::authorization::v1::{
     ResourceAttributes, SubjectAccessReview, SubjectAccessReviewSpec,
 };
-use k8s_openapi::api::core::v1::Service;
+use k8s_openapi::api::core::v1::{Service, ServicePort};
 use k8s_openapi::api::discovery::v1::{Endpoint, EndpointConditions, EndpointPort, EndpointSlice};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use kube::api::{Api, Patch, PatchParams, PostParams};
@@ -42,6 +42,14 @@ const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ACTIVE_REQUESTS: usize = 16;
 const MAX_CONNECTIONS: usize = 64;
 
+fn activator_port(service: &Service) -> Option<&ServicePort> {
+    let ports = service.spec.as_ref()?.ports.as_deref()?;
+    let [port] = ports else {
+        return None;
+    };
+    (port.protocol.as_deref().unwrap_or("TCP") == "TCP").then_some(port)
+}
+
 #[derive(Clone)]
 struct Route {
     service_key: String,
@@ -55,7 +63,7 @@ struct State {
     ready: AtomicBool,
     client: reqwest::Client,
     kube_client: Client,
-    pod_ip: Option<IpAddr>,
+    pod_ip: IpAddr,
     queue_slots: Arc<Semaphore>,
     activation_timeout: Duration,
 }
@@ -100,7 +108,7 @@ impl State {
         let hosts = service_host(&name, &namespace);
         let mut routes = self.routes.write().await;
         routes.retain(|_, route| route.service_key != service_key);
-        if let Some(route) = route.filter(|_| selectorless) {
+        if let Some(route) = route.filter(|_| selectorless && activator_port(service).is_some()) {
             self.counter(&service_key);
             for host in hosts {
                 routes.insert(host, route.clone());
@@ -170,21 +178,14 @@ impl State {
             .as_ref()
             .and_then(|annotations| annotations.get(BACKEND_ANNOTATION))
             .is_some_and(|backend| !backend.is_empty());
-        let Some(ip) = self
-            .pod_ip
-            .filter(|_| enabled && selectorless && backend_configured)
-        else {
+        if !enabled || !selectorless || !backend_configured {
+            return self.delete_endpoint_slice(&namespace, &name).await;
+        }
+        let Some(service_port) = activator_port(service) else {
+            warn!(namespace, service = %name, "Activator front Service must have exactly one TCP port");
             return self.delete_endpoint_slice(&namespace, &name).await;
         };
-        let service_spec = service.spec.as_ref().context("front Service has no spec")?;
-        let [service_port] = service_spec.ports.as_deref().unwrap_or_default() else {
-            anyhow::bail!("Activator front Service must have exactly one port");
-        };
-        let protocol = service_port.protocol.as_deref().unwrap_or("TCP");
-        anyhow::ensure!(
-            protocol == "TCP",
-            "Activator front Service port must use TCP"
-        );
+        let ip = self.pod_ip;
         let service_uid = service.uid().context("front Service has no UID")?;
         let slice_name = format!("nodeactivator-{name}");
         let mut labels = std::collections::BTreeMap::new();
@@ -790,9 +791,9 @@ async fn main() -> Result<()> {
     let client = Client::try_default()
         .await
         .context("loading in-cluster Kubernetes client")?;
-    let pod_ip = env::var("ACTIVATOR_POD_IP")
-        .ok()
-        .and_then(|value| value.parse::<IpAddr>().ok());
+    let pod_ip = required_env("ACTIVATOR_POD_IP")?
+        .parse::<IpAddr>()
+        .context("parsing ACTIVATOR_POD_IP")?;
     let state = Arc::new(State {
         routes: RwLock::new(HashMap::new()),
         services: RwLock::new(HashMap::new()),
