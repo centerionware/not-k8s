@@ -3600,7 +3600,7 @@ verify_hpa_scaling() {
 }
 
 verify_nodeactivator_hpa_wakeup() {
-    local stage="$1" deadline pod_logs probe activation_observed=false request_status
+    local stage="$1" deadline pod_logs probe activation_observed=false request_status zero_observed=false
     kubectl delete hpa migration-activator -n migration-apps --ignore-not-found=true
     kubectl delete deployment migration-activator-backend -n migration-apps --ignore-not-found=true
     kubectl delete service migration-activator-front migration-activator-backend -n migration-apps --ignore-not-found=true
@@ -3720,6 +3720,29 @@ YAML
         kubectl get hpa migration-activator -n migration-apps -o yaml >&2 || true
         kubectl get deployment migration-activator-backend -n migration-apps -o yaml >&2 || true
         kubectl get --raw '/apis/external.metrics.k8s.io/v1beta1/namespaces/migration-apps/activator_requests_active?labelSelector=service%3Dmigration-activator-front' >&2 || true
+        return 1
+    }
+    deadline=$((SECONDS + 300))
+    while (( SECONDS < deadline )); do
+        if kubectl get deployment migration-activator-backend -n migration-apps -o json \
+            | jq -e '.spec.replicas == 0 and (.status.readyReplicas // 0) == 0' >/dev/null \
+            && kubectl get pods -n migration-apps -l app=migration-activator-backend -o json \
+                | jq -e '[.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | length == 0' >/dev/null \
+            && kubectl get endpointslices -n migration-apps \
+                -l kubernetes.io/service-name=migration-activator-backend -o json \
+                | jq -e '[.items[].endpoints[]? | select(.conditions.ready != false)] | length == 0' >/dev/null; then
+            zero_observed=true
+            break
+        fi
+        sleep 2
+    done
+    [[ "$zero_observed" == true ]] || {
+        echo "HPA backend did not reach zero ready Pods and Service endpoints at stage=$stage" >&2
+        kubectl get hpa migration-activator -n migration-apps -o yaml >&2 || true
+        kubectl get deployment migration-activator-backend -n migration-apps -o yaml >&2 || true
+        kubectl get pods -n migration-apps -l app=migration-activator-backend -o wide >&2 || true
+        kubectl get endpointslice -n migration-apps \
+            -l kubernetes.io/service-name=migration-activator-backend -o yaml >&2 || true
         return 1
     }
     kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
