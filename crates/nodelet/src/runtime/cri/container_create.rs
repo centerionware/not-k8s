@@ -209,7 +209,9 @@ impl CriRuntime {
         if already_exists {
             return Ok(());
         }
-        let envs = self.resolve_container_env(pod, id, container, service_env).await?;
+        let envs = self
+            .resolve_container_env(pod, id, container, service_env, sandbox_id)
+            .await?;
         let qos = crate::eviction::qos_class(pod);
         self.create_and_start_container(
             sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Ephemeral, 0, qos, claim_devices, runtime_handler, privileged,
@@ -880,7 +882,9 @@ impl CriRuntime {
             if container.restart_policy.as_deref() == Some("Always") {
                 match sidecar_init_decision(existing_ctr.map(|c| c.state), running_v, exited_v) {
                     SidecarInitDecision::Create => {
-                        let envs = self.resolve_container_env(pod, id, container, service_env).await?;
+                        let envs = self
+                            .resolve_container_env(pod, id, container, service_env, sandbox_id)
+                            .await?;
                         let attempt = self.restart_count(sandbox_id, &container.name);
                         self.create_and_start_container(
                             sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Init, attempt, qos, claim_devices, runtime_handler, privileged,
@@ -913,7 +917,9 @@ impl CriRuntime {
 
             match init_container_decision(existing_ctr.map(|c| c.state), running_v, exited_v, exit_code, restart_policy) {
                 InitContainerDecision::Create => {
-                    let envs = self.resolve_container_env(pod, id, container, service_env).await?;
+                    let envs = self
+                        .resolve_container_env(pod, id, container, service_env, sandbox_id)
+                        .await?;
                     let attempt = self.restart_count(sandbox_id, &container.name);
                     self.create_and_start_container(
                         sandbox_id, id, container, pod_sc, volumes, pull_secrets, &envs, ContainerKind::Init, attempt, qos, claim_devices, runtime_handler, privileged,

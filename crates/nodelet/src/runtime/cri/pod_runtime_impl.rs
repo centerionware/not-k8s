@@ -328,7 +328,9 @@ impl PodRuntime for CriRuntime {
                     self.record_config_error(&sandbox_id, &c.name, "CreateContainerConfigError");
                     continue;
                 }
-                let envs = self.resolve_container_env(pod, &id, c, &service_env).await?;
+                let envs = self
+                    .resolve_container_env(pod, &id, c, &service_env, &sandbox_id)
+                    .await?;
                 self.ensure_container(&sandbox_id, &id, c, pod_sc, &restart_policy, &volumes, &pull_secrets, &envs, qos, &claim_devices, &runtime_handler_for_containers, privileged)
                     .await?;
             }
