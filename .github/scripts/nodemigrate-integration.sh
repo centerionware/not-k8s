@@ -3623,7 +3623,7 @@ spec:
       containers:
       - name: http
         image: busybox:1.36.1
-        command: ["sh", "-c", "echo migration-activator-response > /www/index.html; exec httpd -f -p 8080 -h /www"]
+        command: ["sh", "-c", "mkdir -p /www; echo migration-activator-response > /www/index.html; exec httpd -f -p 8080 -h /www"]
         resources:
           requests:
             cpu: 1m
