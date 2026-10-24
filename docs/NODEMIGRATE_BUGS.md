@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-24
 
-## Add-on migration attempt 40044732754
+## Add-on migration attempts 40044732754 and 40051256195
 
 Run [40044732754](https://github.com/centerionware/not-k8s/actions/runs/40044732754)
 at SHA `52b077a7` built the migration utility, branch runtime, and Node
@@ -12,15 +12,30 @@ target Nodelet had become Ready, but CoreDNS repeatedly failed `RunPodSandbox`
 because containerd reported the Pod sandbox name was still reserved. The CRI
 lookup already collected source and destination sandboxes for a Pod, but stale
 recreation removed only the single sandbox selected for status. The runtime
-now removes every sandbox matching that Pod namespace/name and verifies none
-remain before calling `RunPodSandbox`; a focused regression covers multiple
-source/target sandbox records. Quick-check and migration rerun are pending.
-The Kubernetes lane failed in source CNI package setup before migration. The
-K3s artifact also contains metrics-server unknown-CA scrape messages, but the
-captured logs do not establish that they came from the target addon before
-rollback; investigate with target-state capture after the sandbox fix.
+was changed to remove every sandbox matching that Pod namespace/name and
+verify none remain before calling `RunPodSandbox`; the focused nodelet
+quick-check passed at `944f11e0` in run
+[40050947434](https://github.com/centerionware/not-k8s/actions/runs/40050947434).
+However, branch-runtime run
+[40051256195](https://github.com/centerionware/not-k8s/actions/runs/40051256195)
+reproduced the reservation failure. Nodelet logged `RunPodSandbox` for the
+target CoreDNS Pod, then its 30-second reconcile timeout; the following request
+received a name reservation held by the preceding sandbox ID. This shows that
+removing the listed stale sandboxes is insufficient. Investigate whether the
+timed-out CRI create remains in flight and how to safely serialize or recover
+that operation; do not retry the migration until the failure path is fixed.
+Metrics-server was scheduled but CoreDNS stayed unavailable, so addon
+readiness, Node Activator certificate issuance, and HPA activation were not
+reached. The upstream lane again failed before migration because the source
+Kubernetes CNI package lacked bridge/loopback; the five-node preflight failed
+its etcd join probe. The addon image and branch runtime builds passed. The K3s
+artifact also contains metrics-server unknown-CA scrape messages, but they
+cannot yet be attributed to a live target scrape rather than source/rollback.
 Logs: `/tmp/nodemigrate-40044732754-artifacts/nodemigrate-k3s-40044732754/nodemigrate-k3s.log`
 and `/tmp/nodemigrate-40044732754-artifacts/nodemigrate-kubernetes-40044732754/nodemigrate-kubernetes.log`.
+Run 400512 job logs: `/tmp/nodemigrate-40051256195-k3s.log`,
+`/tmp/nodemigrate-40051256195-kubernetes.log`, and
+`/tmp/nodemigrate-40051256195-preflight.log`.
 
 ## Branch-runtime matrix 36871609082
 
