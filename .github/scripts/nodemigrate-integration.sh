@@ -3600,7 +3600,7 @@ verify_hpa_scaling() {
 }
 
 verify_nodeactivator_hpa_wakeup() {
-    local stage="$1" deadline pod_logs probe activation_observed=false request_status zero_observed=false
+    local stage="$1" deadline pod_logs probe activation_observed=false request_status zero_observed=false activator_client_pod
     kubectl delete hpa migration-activator -n migration-apps --ignore-not-found=true
     kubectl delete deployment migration-activator-backend -n migration-apps --ignore-not-found=true
     kubectl delete service migration-activator-front migration-activator-backend -n migration-apps --ignore-not-found=true
@@ -3745,10 +3745,15 @@ YAML
             -l kubernetes.io/service-name=migration-activator-backend -o yaml >&2 || true
         return 1
     }
-    kubectl wait -n migration-apps --for=condition=Ready pod/migration-standalone --timeout=5m
+    activator_client_pod="$(kubectl get pods -n migration-apps -l app=migration-daemon -o json \
+        | jq -er '[.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | first.metadata.name')" || {
+        echo "no Ready migration DaemonSet Pod is available as the Activator request caller at stage=$stage" >&2
+        kubectl get pods -n migration-apps -l app=migration-daemon -o wide >&2 || true
+        return 1
+    }
     deadline=$((SECONDS + 300))
     while (( SECONDS < deadline )); do
-        if probe="$(kubectl exec -n migration-apps migration-standalone -- sh -ec \
+        if probe="$(kubectl exec -n migration-apps "$activator_client_pod" -- sh -ec \
             'wget -T 5 -qO- http://migration-activator-front.migration-apps.svc/healthz' \
             2>/dev/null)" && [[ "$probe" == ok* ]]; then
             break
@@ -3764,7 +3769,7 @@ YAML
             --all-containers --prefix --tail=100 >&2 || true
         return 1
     }
-    kubectl exec -n migration-apps migration-standalone -- sh -ec '
+    kubectl exec -n migration-apps "$activator_client_pod" -- sh -ec '
       rm -f /tmp/activator-response /tmp/activator-status /tmp/activator-client.log
       (
         if wget -T 240 -qO- http://migration-activator-front.migration-apps.svc/ \
@@ -3778,7 +3783,7 @@ YAML
     '
     deadline=$((SECONDS + 180))
     while (( SECONDS < deadline )); do
-        if kubectl exec -n migration-apps migration-standalone -- \
+        if kubectl exec -n migration-apps "$activator_client_pod" -- \
             sh -c 'test -f /tmp/activator-status' >/dev/null 2>&1; then
             break
         fi
@@ -3798,7 +3803,7 @@ YAML
         kubectl get hpa migration-activator -n migration-apps -o yaml >&2 || true
         kubectl get deployment migration-activator-backend -n migration-apps -o yaml >&2 || true
         kubectl get --raw '/apis/external.metrics.k8s.io/v1beta1/namespaces/migration-apps/activator_requests_active?labelSelector=service%3Dmigration-activator-front' >&2 || true
-        kubectl exec -n migration-apps migration-standalone -- sh -c \
+        kubectl exec -n migration-apps "$activator_client_pod" -- sh -c \
             'cat /tmp/activator-client.log 2>/dev/null || true' >&2 || true
         kubectl logs -n kube-system -l app.kubernetes.io/name=nodeactivator \
             --all-containers --prefix --tail=100 >&2 || true
@@ -3806,7 +3811,7 @@ YAML
     }
     deadline=$((SECONDS + 300))
     while (( SECONDS < deadline )); do
-        if request_status="$(kubectl exec -n migration-apps migration-standalone -- \
+        if request_status="$(kubectl exec -n migration-apps "$activator_client_pod" -- \
             sh -c 'cat /tmp/activator-status 2>/dev/null' 2>/dev/null)"; then
             break
         fi
@@ -3815,13 +3820,13 @@ YAML
     [[ "$request_status" == 0 ]] || {
         echo "buffered request did not complete successfully at stage=$stage status=${request_status:-pending}" >&2
         kubectl get hpa,deployment,pod,service -n migration-apps >&2 || true
-        kubectl exec -n migration-apps migration-standalone -- sh -c \
+        kubectl exec -n migration-apps "$activator_client_pod" -- sh -c \
             'cat /tmp/activator-client.log 2>/dev/null || true' >&2 || true
         kubectl logs -n kube-system -l app.kubernetes.io/name=nodeactivator \
             --all-containers --prefix --tail=100 >&2 || true
         return 1
     }
-    pod_logs="$(kubectl exec -n migration-apps migration-standalone -- \
+    pod_logs="$(kubectl exec -n migration-apps "$activator_client_pod" -- \
         sh -c 'cat /tmp/activator-response')"
     grep -Fq migration-activator-response <<< "$pod_logs" || {
         echo "activator request completed without a backend response at stage=$stage: $pod_logs" >&2
