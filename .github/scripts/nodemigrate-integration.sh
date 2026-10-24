@@ -664,6 +664,19 @@ remove_cilium_socket_lb_links_for_probe() {
         ' || return 1
 }
 
+stop_cilium_trace_monitor() {
+    local monitor_pid="${1:?missing monitor process ID}"
+    # The monitor runs in a dedicated session, so terminate kubectl and its
+    # timeout wrapper together instead of orphaning a remote exec process.
+    kill -TERM -- "-$monitor_pid" 2>/dev/null || true
+    for _ in {1..20}; do
+        kill -0 -- "-$monitor_pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    kill -KILL -- "-$monitor_pid" 2>/dev/null || true
+    wait "$monitor_pid" 2>/dev/null || true
+}
+
 probe_api_clusterip_with_cilium_monitor() {
     local kubeconfig="${1:?missing probe kubeconfig}"
     local stage="${2:?missing probe stage}"
@@ -678,14 +691,17 @@ probe_api_clusterip_with_cilium_monitor() {
     mkdir -p "$(dirname "$log_file")"
     capture_cilium_socket_lb_attachment "$kubeconfig" "$stage" || return 1
     echo "Starting Cilium trace/drop monitor for Pod-origin API ClusterIP probe at stage=$stage"
-    timeout --signal=INT 110s env KUBECONFIG="$kubeconfig" kubectl -n kube-system \
+    # Run the timeout and kubectl exec in a private process group. Stopping
+    # only the timeout PID can leave kubectl exec waiting on the remote,
+    # long-running monitor indefinitely, which prevents the recovery probe
+    # below from running.
+    setsid timeout --signal=INT --kill-after=5s 110s env KUBECONFIG="$kubeconfig" kubectl -n kube-system \
         exec "$cilium_pod" -c cilium-agent -- cilium-dbg monitor \
         --type trace --type drop --numeric >"$log_file" 2>&1 &
     monitor_pid=$!
     sleep 2
     probe_api_clusterip_from_pod "$kubeconfig" "$stage" || probe_ok=false
-    kill -INT "$monitor_pid" 2>/dev/null || true
-    wait "$monitor_pid" 2>/dev/null || true
+    stop_cilium_trace_monitor "$monitor_pid"
     echo "Cilium trace/drop monitor output at stage=$stage:"
     cat "$log_file" >&2 || true
     [[ "$probe_ok" == true ]]
