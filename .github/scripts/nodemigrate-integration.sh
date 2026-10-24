@@ -3788,12 +3788,18 @@ verify_migration_optional_addons() {
             echo "activator external metrics APIService is unavailable after migration at stage=$stage" >&2
             return 1
         }
-        kubectl get podcertificaterequests.certificates.k8s.io --all-namespaces -o json | jq -e '
-          [.items[]? | select(.spec.signerName == "nodeactivator.notk8s.io/serving")
-            | select(any(.status.conditions[]?; .type == "Issued" and .status == "True"))]
-          | length >= 2
-        ' >/dev/null || {
-            echo "activator and signer Pods have not each received a Pod certificate at stage=$stage" >&2
+        local activator_pods certificate_requests
+        activator_pods="$(kubectl get pods -n kube-system -l app.kubernetes.io/name=nodeactivator -o json)"
+        certificate_requests="$(kubectl get podcertificaterequests.certificates.k8s.io --all-namespaces -o json)"
+        jq -e --argjson requests "$certificate_requests" '
+          [.items[]? | select(.status.phase == "Running") | .metadata.uid] as $pod_uids |
+          [$requests.items[]? | select(.spec.signerName == "nodeactivator.notk8s.io/serving")
+            | select(any(.status.conditions[]?; .type == "Issued" and .status == "True"))
+            | .spec.podUID] as $issued_pod_uids |
+          ($pod_uids | length > 0) and
+          all($pod_uids[]; . as $pod_uid | $issued_pod_uids | index($pod_uid) != null)
+        ' <<< "$activator_pods" >/dev/null || {
+            echo "running nodeactivator Pods have not each received a Pod certificate at stage=$stage" >&2
             kubectl get podcertificaterequests.certificates.k8s.io --all-namespaces -o yaml >&2 || true
             return 1
         }

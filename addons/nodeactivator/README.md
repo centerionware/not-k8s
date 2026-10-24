@@ -66,6 +66,13 @@ other component certificate for serving. Both the projected `podCertificate`
 volume and `certificates.k8s.io/v1` PodCertificateRequest API require
 Kubernetes 1.37 or newer.
 
+The projected certificate is the Activator's unique serving credential; it is
+not its Kubernetes API identity. The Activator and signer use their separate
+ServiceAccounts and projected ServiceAccount tokens for API calls, with RBAC
+granting each only its required access. The signer Pod does not serve TLS and
+does not mount the Activator's certificate. Metrics Server is a separate
+upstream image and manages its own serving certificate inside its Pod.
+
 The metrics server validates the APIService aggregator's mTLS client
 certificate and uses a `SubjectAccessReview` for every metric request. Its
 ServiceAccount is bound to `system:auth-delegator` for that check. The signer

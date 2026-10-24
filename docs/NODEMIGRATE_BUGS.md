@@ -36,6 +36,33 @@ are independent environment/setup failures. Logs:
 `/tmp/nodemigrate-40071938966-kubernetes.log`, and
 `/tmp/nodemigrate-40071938966-preflight.log`.
 
+Run [40076060158](https://github.com/centerionware/not-k8s/actions/runs/40076060158)
+at SHA `43993ef11996ed9d2f9e6734df3ba75d24460350` built the production addon
+image, imported it into the K3s node, and started both addon Deployments. The
+certificate signer issued a unique `PodCertificateRequest` to the running
+Node Activator Pod. Migration then stopped at an integration assertion that
+incorrectly required two issued certificates, counting the signer Pod as if it
+served TLS. The signer is a controller using its own ServiceAccount and RBAC;
+only Node Activator Pods request this serving certificate. The assertion now
+checks that every running Node Activator Pod UID has an issued request. The
+HPA zero-replica traffic-buffering check did not run in this migration attempt.
+The upstream Kubernetes lane again failed before migration because its CNI
+package lacked bridge and loopback, and Docker preflight failed at kubeadm's
+etcd-join probe. Logs:
+`/tmp/nodemigrate-40076060158-k3s.log`,
+`/tmp/nodemigrate-40076060158-kubernetes.log`,
+`/tmp/nodemigrate-40076060158-preflight.log`, and
+`/tmp/nodemigrate-40076060158-artifact/nodemigrate-k3s.log`.
+
+The focused real-cluster test
+[40076146445](https://github.com/centerionware/not-k8s/actions/runs/40076146445)
+at the then-current PR head `3d2f85a3bb7a1ed8c06dbd6848c90880e9ac1049`
+passed `hpa_scale_to_zero_activator_full_flow` with 1 passed, 0 skipped, and
+0 failed. This verifies Kubernetes 1.37 HPA scale-to-zero, buffered Service
+traffic, and metric-triggered wakeup against nodeapiserver. The migration
+integration assertion fix still needs CI validation. Log:
+`/tmp/nodebootstrap-e2e-40076146445.log`.
+
 ## Add-on migration attempts 40044732754 and 40051256195
 
 Run [40044732754](https://github.com/centerionware/not-k8s/actions/runs/40044732754)
