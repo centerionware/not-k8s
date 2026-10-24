@@ -161,6 +161,19 @@ export PATH="$TEST_DIR:/usr/bin:/bin"
 # shellcheck source=nodemigrate-integration.sh
 source "$ROOT/.github/scripts/nodemigrate-integration.sh"
 
+# A stuck kubectl exec must not keep the Cilium recovery diagnostic blocked
+# after its monitor is stopped. Exercise the process-group cleanup with a
+# child that ignores TERM, as an unresponsive exec can do.
+setsid bash -c 'trap "" TERM; while :; do sleep 1; done' &
+monitor_pid=$!
+sleep 0.1
+stop_cilium_trace_monitor "$monitor_pid"
+if kill -0 "$monitor_pid" 2>/dev/null; then
+    echo "Cilium trace monitor cleanup left its process running" >&2
+    exit 1
+fi
+echo "PASS Cilium trace monitor cleanup terminates a stuck process group"
+
 audit_policy="$(sed -n '/^apiVersion: audit.k8s.io\/v1$/,/^EOF$/p' \
     "$ROOT/.github/scripts/nodemigrate-integration.sh")"
 grep -Fq 'resources: [nodes, nodes/status]' <<< "$audit_policy" || {

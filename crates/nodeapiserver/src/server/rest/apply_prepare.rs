@@ -203,6 +203,15 @@ pub async fn apply_prepare(
             (None, None) => object,
         };
         let object = defaulting::apply_builtin_defaults(group, version, &resolved.kind, object);
+        // Service ClusterIPs are allocated by the ordinary REST create path
+        // after defaulting. Apply can also create resources, so use that same
+        // cluster-scoped allocator here; the server-assigned address remains
+        // outside the applying manager's managed fields.
+        let object = if group.is_empty() && resource == "services" {
+            allocate_cluster_ip(storage, object).await?
+        } else {
+            object
+        };
         if let Some(schema) = &open_api_schema {
             let rule_violations =
                 apiextensions::cel_evaluate::validate_object(schema, &object, None);

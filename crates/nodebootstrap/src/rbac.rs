@@ -166,13 +166,13 @@ const CONTROLLER_SA_NAMES: &[&str] = &[
     "ephemeral-volume-controller",
     "certificate-controller",
     "disruption-controller",
+    "horizontal-pod-autoscaler",
 ];
 
-/// `(sa_name, apiGroup, resource)` -- Finding #4's `patch` verb supplement.
-/// One entry per `.patch()`/`.patch_status()` call site found in
-/// `crates/nodecontroller/src/controllers/*.rs`, traced to the exact
-/// `Api<T>` (and, for `patch_status`, the `/status` subresource) each call
-/// targets. Controllers with no entry here (`service-account-controller`,
+/// `(sa_name, apiGroup, resource)` -- narrow controller write supplements.
+/// Entries cover `.patch()`/`.patch_status()` call sites and the HPA's Scale
+/// subresource reads, traced to the exact `Api<T>` each call targets.
+/// Controllers with no entry here (`service-account-controller`,
 /// `namespace-controller`, `generic-garbage-collector`, `ttl-after-
 /// finished-controller`, `attachdetach-controller`) have no `.patch()`
 /// call in their own file -- nothing to grant.
@@ -182,6 +182,11 @@ const CONTROLLER_PATCH_GRANTS: &[(&str, &str, &str)] = &[
     ("daemon-set-controller", "apps", "daemonsets/status"),
     ("endpointslice-controller", "discovery.k8s.io", "endpointslices"),
     ("disruption-controller", "policy", "poddisruptionbudgets/status"),
+    ("horizontal-pod-autoscaler", "autoscaling", "horizontalpodautoscalers/status"),
+    ("horizontal-pod-autoscaler", "apps", "deployments/scale"),
+    ("horizontal-pod-autoscaler", "apps", "replicasets/scale"),
+    ("horizontal-pod-autoscaler", "apps", "statefulsets/scale"),
+    ("horizontal-pod-autoscaler", "", "replicationcontrollers/scale"),
     ("node-controller", "", "nodes"),
     ("resource-claim-controller", "", "pods/status"),
     ("persistent-volume-binder", "", "persistentvolumes"),
@@ -250,6 +255,10 @@ const NODECONTROLLER_READ_GRANTS: &[(&str, &str)] = &[
     ("certificates.k8s.io", "certificatesigningrequests"),
     ("coordination.k8s.io", "leases"),
     ("policy", "poddisruptionbudgets"),
+    ("autoscaling", "horizontalpodautoscalers"),
+    ("metrics.k8s.io", "pods"),
+    ("custom.metrics.k8s.io", "*"),
+    ("external.metrics.k8s.io", "*"),
     ("storage.k8s.io", "storageclasses"),
     ("storage.k8s.io", "volumeattachments"),
     ("resource.k8s.io", "resourceclaimtemplates"),
@@ -322,9 +331,9 @@ subjects:
             )
         })
         .collect();
-    // Finding #4's actual fix: one ClusterRole+Binding per SA that appears
-    // in CONTROLLER_PATCH_GRANTS, one rule per (apiGroup, resource) entry
-    // for that SA.
+    // One ClusterRole+Binding per SA that appears in CONTROLLER_PATCH_GRANTS.
+    // Scale subresources need both get and patch for the HPA path; all other
+    // entries remain patch-only.
     let patch_grants: String = CONTROLLER_SA_NAMES
         .iter()
         .filter_map(|sa| {
@@ -332,8 +341,13 @@ subjects:
                 .iter()
                 .filter(|(entry_sa, _, _)| entry_sa == sa)
                 .map(|(_, group, resource)| {
+                    let verbs = if resource.ends_with("/scale") {
+                        "get, patch"
+                    } else {
+                        "patch"
+                    };
                     format!(
-                        "- apiGroups: [\"{group}\"]\n  resources: [\"{resource}\"]\n  verbs: [\"patch\"]\n"
+                        "- apiGroups: [\"{group}\"]\n  resources: [\"{resource}\"]\n  verbs: [{verbs}]\n"
                     )
                 })
                 .collect();
@@ -528,6 +542,24 @@ globalDefault: false
 description: " system-cluster-critical"
 ---
 "#;
+    // kube-apiserver's RBAC bootstrap policy creates this namespaced role so
+    // aggregated API servers can read only the delegated-auth configuration.
+    let extension_auth_reader_role = r#"
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: extension-apiserver-authentication-reader
+  namespace: kube-system
+  labels:
+    kubernetes.io/bootstrapping: rbac-defaults
+    rbac.authorization.k8s.io/autoupdate: "true"
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["extension-apiserver-authentication"]
+  verbs: ["get", "list", "watch"]
+---
+"#;
     let controller_roles: String = CONTROLLER_SA_NAMES
         .iter()
         .map(|name| {
@@ -548,7 +580,7 @@ rules:
         })
         .collect();
     format!(
-        r#"{system_priority_classes}
+        r#"{system_priority_classes}{extension_auth_reader_role}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -858,6 +890,8 @@ mod tests {
             "name: system:discovery",
             "name: \"system:controller:replicaset-controller\"",
             "name: system:public-info-viewer",
+            "name: extension-apiserver-authentication-reader",
+            "resourceNames: [\"extension-apiserver-authentication\"]",
             "name: system:monitoring",
             "name: nodebootstrap:public-info-viewer",
             "name: system:unauthenticated",

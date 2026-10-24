@@ -45,6 +45,41 @@ def migration_fixture_nodelet_root_mount:
   .mountPath == "/var/lib/nodelet" and
   .mountPropagation == "Bidirectional";
 
+def selected_metrics_server_addon($enabled):
+  $enabled == "true" and (
+    (.metadata.namespace == "kube-system" and
+     ((.kind == "ServiceAccount" or .kind == "Service" or .kind == "Deployment" or
+      .kind == "ConfigMap" or .kind == "Secret" or .kind == "Role" or
+      .kind == "RoleBinding") and
+     (.metadata.name == "metrics-server" or
+      .metadata.name == "metrics-server-kubelet-ca" or
+      .metadata.name == "metrics-server-auth-reader"))) or
+    ((.kind == "ClusterRole" or .kind == "ClusterRoleBinding") and
+     (.metadata.name == "system:metrics-server" or
+      .metadata.name == "metrics-server:system:auth-delegator")) or
+    (.kind == "APIService" and .metadata.name == "v1beta1.metrics.k8s.io")
+  );
+
+def selected_nodeactivator_addon($image):
+  ($image // "") != "" and (
+    (.metadata.namespace == "kube-system" and
+      ((.kind == "ServiceAccount" or .kind == "Service" or .kind == "Deployment" or
+        .kind == "Secret" or .kind == "Role" or .kind == "RoleBinding") and
+       (.metadata.name == "nodeactivator" or
+        .metadata.name == "nodeactivator-cert-signer" or
+        .metadata.name == "nodeactivator-signer-ca" or
+        .metadata.name == "nodeactivator-metrics"))) or
+    ((.kind == "ClusterRole" or .kind == "ClusterRoleBinding") and
+     (.metadata.name == "nodeactivator" or
+      .metadata.name == "nodeactivator-services" or
+      .metadata.name == "nodeactivator-auth-delegator" or
+      .metadata.name == "nodeactivator-cert-signer" or
+      .metadata.name == "nodeactivator-cert-signer-nodes")) or
+    (.kind == "APIService" and .metadata.name == "v1beta1.external.metrics.k8s.io") or
+    (.kind == "PodCertificateRequest" and
+     .spec.signerName == "nodeactivator.notk8s.io/serving")
+  );
+
 def normalize_fixture_csi_runtime_string:
   if type == "string" then
     gsub("/var/lib/nodelet"; "/var/lib/kubelet") | gsub("nodelet"; "kubelet")
@@ -65,6 +100,8 @@ select(
       "CiliumEndpoint", "CiliumIdentity"]
       | index($kind)) == null
 )
+| select((selected_metrics_server_addon(env.NODEMIGRATE_METRICS_SERVER // "false") | not) and
+         (selected_nodeactivator_addon(env.NODEMIGRATE_NODEACTIVATOR_IMAGE // "") | not))
 | select((.kind != "Endpoints") or (
     (default_kubernetes_service_endpoint | not) and
     ((.metadata.labels // {})["endpoints.kubernetes.io/managed-by"] != "endpoint-controller")

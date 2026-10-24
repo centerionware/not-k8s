@@ -173,6 +173,7 @@ fn upstream_controller_sa(name: &str) -> &'static str {
         "ephemeral-volume" => "ephemeral-volume-controller",
         "csr" => "certificate-controller",
         "disruption" => "disruption-controller",
+        "horizontal-pod-autoscaler" => "horizontal-pod-autoscaler",
         other => panic!("upstream_controller_sa: no mapping for controller {other:?} -- add one"),
     }
 }
@@ -238,7 +239,7 @@ pub async fn run() -> Result<()> {
     // Issue #528: `Arc` so each controller's own spawned task (see
     // run_as_leader's `work` closure below) can own a cheap clone of its
     // own, satisfying `tokio::task::JoinSet::spawn`'s `'static` bound
-    // without needing every one of the 21 `controllers::*::run()`
+    // without needing every one of the 22 `controllers::*::run()`
     // signatures to stop borrowing `&Config`.
     let cfg = std::sync::Arc::new(config::Config::from_env()?);
     watch::configure_startup_concurrency(cfg.watch_startup_concurrency);
@@ -301,6 +302,7 @@ pub async fn run() -> Result<()> {
     let ephemeral_volume_client = client_for!("ephemeral-volume");
     let csr_client = client_for!("csr");
     let disruption_client = client_for!("disruption");
+    let horizontal_pod_autoscaler_client = client_for!("horizontal-pod-autoscaler");
 
     let election_cfg = cfg.election();
     node_leaderelection::run_as_leader(election_client, &election_cfg, || async move {
@@ -310,7 +312,7 @@ pub async fn run() -> Result<()> {
         // futures into *one* generated state machine polled on a single
         // task -- unlike `tokio::spawn`, it never heap-boxes each future
         // separately, so the combined state machine's size is the *sum* of
-        // all 21 controllers' own state machine sizes. Confirmed live: an
+        // all 22 controllers' own state machine sizes. Confirmed live: an
         // unoptimized debug build reliably segfaulted on startup under the
         // system default stack limit (typically 8MB) on a memory-
         // constrained host, and ran cleanly with an unlimited one --
@@ -381,6 +383,7 @@ pub async fn run() -> Result<()> {
         );
         spawn_controller!("csr", csr_client, csr);
         spawn_controller!("disruption", disruption_client, disruption);
+        spawn_controller!("horizontal-pod-autoscaler", horizontal_pod_autoscaler_client, horizontal_pod_autoscaler);
 
         while let Some(outcome) = controllers.join_next().await {
             match outcome {

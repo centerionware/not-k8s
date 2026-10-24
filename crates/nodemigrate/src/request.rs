@@ -57,6 +57,15 @@ pub struct MigrationRequest {
     /// earlier staged control-plane cutover.
     #[serde(default)]
     pub import_export: Option<PathBuf>,
+    /// Install the standard resource metrics API in the destination cluster.
+    #[serde(default)]
+    pub metrics_server: bool,
+    /// Install the HTTP scale-from-zero activator using its published image.
+    #[serde(default)]
+    pub nodeactivator: bool,
+    /// Install the HTTP scale-from-zero activator using this image reference.
+    #[serde(default)]
+    pub nodeactivator_image: Option<String>,
 }
 
 impl MigrationRequest {
@@ -70,6 +79,9 @@ impl MigrationRequest {
         let mut stage_target = false;
         let mut skip_api_export = false;
         let mut import_export = None;
+        let mut metrics_server = false;
+        let mut nodeactivator = false;
+        let mut nodeactivator_image = None;
 
         for raw in args {
             let (key, value) = raw
@@ -92,7 +104,13 @@ impl MigrationRequest {
                     ensure!(!value.is_empty(), "import-export requires a directory path");
                     set_once(&mut import_export, PathBuf::from(value), "import-export")?;
                 }
-                other => bail!("unknown option '{other}' (expected to=, from=, uninstall-after-migrate=, plan-only=, skip-api-import=, source-export=, stage-target=, skip-api-export=, or import-export=)"),
+                "metrics-server" => metrics_server = parse_bool(value, key)?,
+                "nodeactivator" => nodeactivator = parse_bool(value, key)?,
+                "nodeactivator-image" => {
+                    ensure!(!value.trim().is_empty(), "nodeactivator-image requires an image reference");
+                    set_once(&mut nodeactivator_image, value.to_string(), "nodeactivator-image")?;
+                }
+                other => bail!("unknown option '{other}' (expected to=, from=, uninstall-after-migrate=, plan-only=, skip-api-import=, source-export=, stage-target=, skip-api-export=, import-export=, metrics-server=, nodeactivator=, or nodeactivator-image=)"),
             }
         }
 
@@ -156,6 +174,11 @@ impl MigrationRequest {
             "import-export is only valid when resuming a nodestore-to-K3s or nodestore-to-Kubernetes migration"
         );
         ensure!(
+            (!metrics_server && !nodeactivator && nodeactivator_image.is_none())
+                || matches!((from, to), (Distribution::K3s | Distribution::Kubernetes, Distribution::Nodestore)),
+            "metrics-server and nodeactivator options are only valid when migrating to nodestore"
+        );
+        ensure!(
             import_export.is_none()
                 || (!uninstall_after_migrate
                     && !skip_api_import
@@ -201,6 +224,9 @@ impl MigrationRequest {
             stage_target,
             skip_api_export,
             import_export,
+            metrics_server,
+            nodeactivator,
+            nodeactivator_image,
         })
     }
 
@@ -246,6 +272,33 @@ mod tests {
         assert_eq!(request.to, Distribution::Nodestore);
         assert_eq!(request.from, Distribution::K3s);
         assert!(!request.uninstall_after_migrate);
+    }
+
+    #[test]
+    fn accepts_optional_in_cluster_addons_for_forward_migration() {
+        let request = MigrationRequest::parse(&args(&[
+            "to=nodestore", "from=kubernetes", "metrics-server=true",
+            "nodeactivator=true",
+        ])).unwrap();
+        assert!(request.metrics_server);
+        assert!(request.nodeactivator);
+        assert!(request.nodeactivator_image.is_none());
+    }
+
+    #[test]
+    fn accepts_an_explicit_nodeactivator_image_override() {
+        let request = MigrationRequest::parse(&args(&[
+            "to=nodestore", "from=kubernetes",
+            "nodeactivator-image=registry.example/nodeactivator:v1",
+        ])).unwrap();
+        assert_eq!(request.nodeactivator_image.as_deref(), Some("registry.example/nodeactivator:v1"));
+    }
+
+    #[test]
+    fn rejects_optional_in_cluster_addons_for_reverse_migration() {
+        assert!(MigrationRequest::parse(&args(&[
+            "to=kubernetes", "from=nodestore", "metrics-server=true",
+        ])).is_err());
     }
 
     #[test]

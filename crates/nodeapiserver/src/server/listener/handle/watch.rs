@@ -114,6 +114,12 @@ macro_rules! handle_watch {
                 return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e.to_string())));
             }
             let start_revision = resource_version_query(&$query);
+            let key_prefix = crate::$storage::keys::list_prefix(
+                &$info.api_group,
+                &$info.resource,
+                Some(&$info.namespace),
+            )
+            .into_bytes();
             let watch_options = match watch_options_query(&$query) {
                 Ok(options) => options,
                 Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, error))),
@@ -184,6 +190,7 @@ macro_rules! handle_watch {
                         watch_response_body_with_initial_events(
                             replay,
                             rx,
+                            key_prefix,
                             kind,
                             group_version,
                             label_reqs,
@@ -203,6 +210,7 @@ macro_rules! handle_watch {
                         watch_response_body(
                             replay,
                             rx,
+                            key_prefix,
                             kind,
                             group_version,
                             label_reqs,

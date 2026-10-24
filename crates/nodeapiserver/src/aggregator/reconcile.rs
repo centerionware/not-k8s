@@ -114,11 +114,13 @@ async fn compute_condition(
     let version = api_service.pointer("/spec/version").and_then(Value::as_str).unwrap_or("");
     let target = match proxy_target::resolve(api_service, &service, &format!("/apis/{group}/{version}"), "") {
         Ok(t) => t,
-        Err(_) => {
+        Err(error) => {
             return availability::Condition {
                 status: availability::ConditionStatus::False,
                 reason: "FailedDiscoveryCheck",
-                message: "could not resolve a dial target for the backing service".to_string(),
+                message: format!(
+                    "could not resolve a dial target for the backing service: {error:?}"
+                ),
             };
         }
     };

@@ -126,6 +126,16 @@ fn watch_event_matches_selector(
     }
 }
 
+/// Keep replayed and live events inside the namespace selected by the
+/// request path. The initial `LIST` is already scoped, but the shared
+/// resource cache broadcasts events from every namespace.
+fn watch_event_matches_namespace(
+    event: &crate::cacher::store::WatchEvent,
+    key_prefix: &[u8],
+) -> bool {
+    event.kind == crate::cacher::store::EventKind::Bookmark || event.key.starts_with(key_prefix)
+}
+
 /// The real streaming `watch` response body: every already-retained
 /// history event past `start_revision` (`replay`), then every live event
 /// as it arrives on `rx`, each filtered by [`watch_event_matches_selector`]
@@ -152,6 +162,7 @@ fn watch_event_matches_selector(
 fn watch_response_body(
     replay: Vec<crate::cacher::store::WatchEvent>,
     rx: tokio::sync::broadcast::Receiver<crate::cacher::store::WatchEvent>,
+    key_prefix: Vec<u8>,
     kind: String,
     api_version: String,
     label_reqs: Vec<crate::cacher::selector::Requirement>,
@@ -169,6 +180,7 @@ fn watch_response_body(
     watch_response_body_with_initial_events(
         replay,
         rx,
+        key_prefix,
         kind,
         api_version,
         label_reqs,
@@ -189,6 +201,7 @@ fn watch_response_body(
 fn watch_response_body_with_initial_events(
     replay: Vec<crate::cacher::store::WatchEvent>,
     rx: tokio::sync::broadcast::Receiver<crate::cacher::store::WatchEvent>,
+    key_prefix: Vec<u8>,
     kind: String,
     api_version: String,
     label_reqs: Vec<crate::cacher::selector::Requirement>,
@@ -250,9 +263,10 @@ fn watch_response_body_with_initial_events(
         .chain(replay_stream)
         .chain(live_stream)
         .filter(move |(event, initial_events_end)| {
-            allow_watch_bookmarks
-                || *initial_events_end
-                || event.kind != crate::cacher::store::EventKind::Bookmark
+            watch_event_matches_namespace(event, &key_prefix)
+                && (allow_watch_bookmarks
+                    || *initial_events_end
+                    || event.kind != crate::cacher::store::EventKind::Bookmark)
         });
     // The `timeoutSeconds` bound. A bookmark-negotiated watch (which always
     // carries a connection-level watchdog, `idle`) gets the bound from the

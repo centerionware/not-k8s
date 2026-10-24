@@ -28,6 +28,9 @@ inputs:
   cidr6:
     description: 'cidr6'
     default: ''
+  metrics_server:
+    description: 'metrics_server'
+    default: 'false'
   results_branch:
     description: 'results_branch'
     default: 'e2e-results'
@@ -45,6 +48,7 @@ runs:
         CLUSTER_DOMAIN: ${{ inputs.cluster_domain }}
         CIDR: ${{ inputs.cidr }}
         CIDR6: ${{ inputs.cidr6 }}
+        METRICS_SERVER: ${{ inputs.metrics_server }}
         RUST_LOG: info,nk_watch_trace=debug,nk_controller_trace=debug,kube_runtime::watcher=debug
         # The idle watchdog's connection kill is left enabled (the
         # deployment default): it is the recovery for a stalled bookmark
@@ -68,6 +72,9 @@ runs:
         if [[ "$NETWORK" == external ]]; then
           args+=(--without-flannel --proxy=none)
         fi
+        if [[ "$METRICS_SERVER" == true ]]; then
+          args+=(--metrics-server)
+        fi
         # The bootstrapper must use its kube client directly. Put a
         # failing kubectl shim first on PATH so any install-time regression
         # fails this real bootstrap instead of silently reintroducing the
@@ -79,7 +86,8 @@ runs:
         chmod +x "$no_kubectl/kubectl"
         chmod +x dist-bin/notk8s
         ln -sfn notk8s dist-bin/nodebootstrap
-        PATH="$no_kubectl:$PATH" sudo -E env PATH="$no_kubectl:$PATH" \
+        PATH="$no_kubectl:$PATH" sudo env PATH="$no_kubectl:$PATH" \
+          RUST_LOG="$RUST_LOG" \
           NOTK8S_COMBINED_PREBUILT="$GITHUB_WORKSPACE/dist-bin/notk8s" \
           NOTK8S_BUILD_LAYOUT=combined \
           ./dist-bin/nodebootstrap "${args[@]:1}"
@@ -126,7 +134,8 @@ runs:
         git fetch --no-tags --depth=1 origin archive-shell-scripts-0.7.1
         git show FETCH_HEAD:deploy/lib/e2e-full-setup.sh > /tmp/nodebootstrap-e2e-full-setup.sh
         chmod +x /tmp/nodebootstrap-e2e-full-setup.sh
-        sudo -E timeout 600 bash /tmp/nodebootstrap-e2e-full-setup.sh
+        sudo env KUBECONFIG="$KUBECONFIG" \
+          timeout 600 bash /tmp/nodebootstrap-e2e-full-setup.sh
 
     - name: Run e2e tests
       id: e2e
@@ -134,8 +143,10 @@ runs:
         KUBECONFIG: /etc/nodebootstrap/admin.kubeconfig
         ONLY: ${{ inputs.only }}
         NEEDS_DRIVERS: ${{ inputs.needs_drivers }}
+        METRICS_SERVER: ${{ inputs.metrics_server }}
         SHARD: ${{ inputs.shard }}
         NETWORK: ${{ inputs.network }}
+        NODEBOOTSTRAP_E2E_REQUIRE_SCALE_TO_ZERO: 'true'
         NODEBOOTSTRAP_SERVICE_CIDR: ${{ inputs.cidr || '10.43.0.0/16' }}
         NODEBOOTSTRAP_SERVICE_CIDR6: ${{ inputs.cidr6 }}
       shell: bash

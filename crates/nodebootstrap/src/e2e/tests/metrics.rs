@@ -182,6 +182,49 @@ pub(super) async fn metrics_resource_returns_real_pod_usage(
     Ok(())
 }
 
+pub(super) async fn metrics_server_reports_real_pod_usage(
+    context: &E2eContext,
+) -> Result<()> {
+    if std::env::var("METRICS_SERVER").as_deref() != Ok("true") {
+        return Err(skip_test(
+            "the metrics-server addon is not enabled for this e2e run",
+        ));
+    }
+    let name = "metrics-server-usage-check";
+    create_usage_pod(context, name).await?;
+    let uri = format!(
+        "/apis/metrics.k8s.io/v1beta1/namespaces/{}/pods/{name}",
+        context.namespace
+    );
+    context
+        .wait_until(
+            "metrics-server to report CPU and memory for the test Pod",
+            Duration::from_secs(90),
+            || {
+                let client = context.client.clone();
+                let uri = uri.clone();
+                async move {
+                    let request = Request::builder().uri(uri).body(Vec::new())?;
+                    match client.request::<serde_json::Value>(request).await {
+                        Ok(metrics) => Ok(metrics
+                            .pointer("/containers/0/usage/cpu")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|value| !value.is_empty())
+                            && metrics
+                                .pointer("/containers/0/usage/memory")
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|value| !value.is_empty())),
+                        Err(kube::Error::Api(error)) if matches!(error.code, 404 | 503) => {
+                            Ok(false)
+                        }
+                        Err(error) => Err(error.into()),
+                    }
+                }
+            },
+        )
+        .await
+}
+
 pub(super) async fn metrics_cadvisor_returns_real_container_usage(
     context: &E2eContext,
 ) -> Result<()> {

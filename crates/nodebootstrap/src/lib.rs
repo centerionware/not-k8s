@@ -15,6 +15,7 @@ pub mod fetch;
 pub mod kubeconfig;
 pub mod kube_api;
 pub mod manifests;
+pub mod addons;
 pub mod pkg;
 pub mod pki;
 pub mod rbac;
@@ -167,6 +168,9 @@ pub fn run_all() -> Result<()> {
         services::wait_for_control_plane_readiness(&cfg)?;
     }
     services::ensure_nodeproxy(&cfg)?;
+    if cfg.install_metrics_server || cfg.nodeactivator_image.is_some() {
+        addons::install(&cfg)?;
+    }
     Ok(())
 }
 
@@ -468,6 +472,24 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs> {
             std::env::set_var("NODEBOOTSTRAP_DISABLE_DNS", "1");
             continue;
         }
+        if arg == "--metrics-server" {
+            std::env::set_var("NODEBOOTSTRAP_METRICS_SERVER", "1");
+            continue;
+        }
+        if arg == "--enable-activator" {
+            if std::env::var_os("NODEBOOTSTRAP_NODEACTIVATOR_IMAGE").is_none() {
+                std::env::set_var(
+                    "NODEBOOTSTRAP_NODEACTIVATOR_IMAGE",
+                    crate::config::DEFAULT_NODEACTIVATOR_IMAGE,
+                );
+            }
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--nodeactivator-image=") {
+            anyhow::ensure!(!value.trim().is_empty(), "--nodeactivator-image requires an image reference");
+            std::env::set_var("NODEBOOTSTRAP_NODEACTIVATOR_IMAGE", value);
+            continue;
+        }
         if arg == "--uninstall" {
             std::env::set_var("NODEBOOTSTRAP_UNINSTALL", "1");
             continue;
@@ -678,7 +700,21 @@ fn apply_root_reexec(args: &[String], embedded: bool) -> Result<()> {
 }
 
 fn reexec_env_key(key: &str) -> bool {
-    matches!(key, "HOME" | "PATH" | "PROTOC" | "RUSTFLAGS" | "RUSTUP_HOME" | "RUSTUP_TOOLCHAIN")
+    matches!(
+        key,
+        "HOME"
+            | "PATH"
+            | "PROTOC"
+            | "RUSTFLAGS"
+            | "RUSTUP_HOME"
+            | "RUSTUP_TOOLCHAIN"
+            | "NODEBOOTSTRAP_ARCH"
+            | "NODEBOOTSTRAP_REPO_ROOT"
+            | "NODEBOOTSTRAP_SOURCE"
+            | "NODEBOOTSTRAP_TOOLCHAIN_DIR"
+            | "NOTK8S_BUILD_LAYOUT"
+            | "NOTK8S_BUILD_PROFILE"
+    )
         || key == "CARGO_HOME"
         || key.starts_with("CARGO_")
         || key.starts_with("CC_")
@@ -747,6 +783,9 @@ fn print_help() {
     println!("  --without-flannel      skip flannel and remember external CNI for updates");
     println!("  --cni=none             use an externally-managed CNI for this run");
     println!("  --disable-dns          do not install or configure CoreDNS");
+    println!("  --metrics-server       install Kubernetes resource metrics server");
+    println!("  --enable-activator     install the HTTP activator from its published image");
+    println!("  --nodeactivator-image=REF override the activator and signer image");
     println!("  --cluster-domain=NAME  use NAME instead of cluster.local");
     println!("  --cidr=IP/PREFIX       service network (default 10.43.0.0/16)");
     println!("  --cidr6=IP/PREFIX      optional IPv6 service network");
@@ -861,6 +900,10 @@ mod tests {
         assert!(reexec_env_key("CC_aarch64_unknown_linux_musl"));
         assert!(reexec_env_key("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"));
         assert!(reexec_env_key("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS"));
+        assert!(reexec_env_key("NODEBOOTSTRAP_TOOLCHAIN_DIR"));
+        assert!(reexec_env_key("NODEBOOTSTRAP_REPO_ROOT"));
+        assert!(reexec_env_key("NOTK8S_BUILD_LAYOUT"));
+        assert!(reexec_env_key("NOTK8S_BUILD_PROFILE"));
         assert!(!reexec_env_key("GITHUB_TOKEN"));
     }
 }

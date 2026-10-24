@@ -106,6 +106,12 @@ fn migrate_to_nodestore(
         std::env::var("NODEBOOTSTRAP_JOIN_ENDPOINT").is_ok_and(|endpoint| !endpoint.is_empty());
     validate_skip_api_import(request, source, joins_existing)?;
     if source.role == detect::NodeRole::Worker {
+        ensure!(
+            !request.metrics_server
+                && !request.nodeactivator
+                && request.nodeactivator_image.is_none(),
+            "metrics-server and nodeactivator options require a control-plane migration"
+        );
         return migrate_worker_to_nodestore(request, source);
     }
     service::validate_disable_support(source)?;
@@ -179,6 +185,7 @@ fn migrate_to_nodestore(
         None
     };
     let mut bootstrap = bootstrap_command(source, disable_nodeproxy)?;
+    append_initial_optional_addon_flags(&mut bootstrap, request, joins_existing);
     let target_api = transfer::KubeApi::destination(request::Distribution::Nodestore)?;
     let destination_node_exists = if joins_existing {
         target_api.ready().context(
@@ -215,8 +222,21 @@ fn migrate_to_nodestore(
         } else {
             "nodeproxy enabled"
         };
+        let metrics_addon = if request.metrics_server {
+            "metrics-server"
+        } else {
+            "no metrics-server"
+        };
+        let activator_addon = if let Some(image) = request.nodeactivator_image.as_deref() {
+            format!("nodeactivator image={image}")
+        } else if request.nodeactivator {
+            "nodeactivator default image".to_string()
+        } else {
+            "no nodeactivator".to_string()
+        };
+        let addons = format!("{metrics_addon}; {activator_addon}");
         println!(
-            "Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}; proxy={proxy}{replacement}; replace-existing-node={replace_existing_node}; cluster-api-import={}; {}source service will be disabled; uninstall-after-migrate={}",
+            "Migration plan: {:?} -> nodestore; source nodes={source_nodes}; destination={}; source CNI={cni}; proxy={proxy}{replacement}; addons={addons}; replace-existing-node={replace_existing_node}; cluster-api-import={}; {}source service will be disabled; uninstall-after-migrate={}",
             request.from,
             if joins_existing {
                 "existing cluster"
@@ -325,16 +345,33 @@ fn migrate_to_nodestore(
         eprintln!(
             "nodemigrate: rebuilding destination Cilium host datapath state for node {migrating_node_name}"
         );
+        // CNI must be ready before the optional-addon bootstrap waits for
+        // Pods to become Available. Otherwise Cilium's stale host state can
+        // prevent those Pods from starting while bootstrap waits on them.
         // Use the destination's CRI default/override. The detected source
         // endpoint may refer to a stopped, distribution-embedded runtime.
-        if let Err(error) = target_api
-            .reset_cilium_agent_state(&migrating_node_name, None)
-        {
-            return Err(rollback(error.context("rebuilding destination Cilium host datapath state")));
+        if let Err(error) = target_api.reset_cilium_agent_state(&migrating_node_name, None) {
+            return Err(rollback(
+                error.context("rebuilding destination Cilium host datapath state"),
+            ));
         }
         eprintln!(
             "nodemigrate: rebuilt destination Cilium host datapath state for node {migrating_node_name}"
         );
+    }
+    // Source API import can replace addon objects installed by the initial
+    // bootstrap. Reconcile explicitly selected destination addons afterward
+    // so the requested bootstrap configuration is the final cluster state.
+    if !joins_existing
+        && (request.metrics_server
+            || request.nodeactivator
+            || request.nodeactivator_image.is_some())
+    {
+        let mut reconcile = bootstrap_command(source, disable_nodeproxy)?;
+        append_optional_addon_flags(&mut reconcile, request);
+        prepare_migration_pki(&mut reconcile, source, &export)?;
+        run_bootstrap(reconcile)
+            .context("reconciling requested destination addons after API import")?;
     }
     let replacement_state = if destination_node_exists {
         match remove_replaced_node(&target_api, &migrating_node_name, replace_existing_node) {
@@ -490,6 +527,7 @@ fn migrate_to_nodestore(
             export.dir.display()
         );
         let mut reconcile = bootstrap_command(source, disable_nodeproxy)?;
+        append_optional_addon_flags(&mut reconcile, request);
         prepare_migration_pki(&mut reconcile, source, &export)?;
         run_bootstrap(reconcile)
             .context("reconciling nodestore after source uninstall")?;
@@ -1875,6 +1913,38 @@ fn bootstrap_command(
     bootstrap_command_with_config(args, config, source_api_server_name)
 }
 
+fn append_optional_addon_flags(command: &mut Command, request: &request::MigrationRequest) {
+    if request.metrics_server {
+        command.arg("--metrics-server");
+    }
+    if let Some(image) = &request.nodeactivator_image {
+        command.arg(format!("--nodeactivator-image={image}"));
+    } else if request.nodeactivator {
+        command.arg("--enable-activator");
+    }
+}
+
+fn clear_optional_addon_environment(command: &mut Command) {
+    command
+        .env_remove("NODEBOOTSTRAP_METRICS_SERVER")
+        .env_remove("NODEBOOTSTRAP_NODEACTIVATOR_IMAGE");
+}
+
+fn append_initial_optional_addon_flags(
+    command: &mut Command,
+    request: &request::MigrationRequest,
+    joins_existing: bool,
+) {
+    // A fresh destination must first import the source API export. In
+    // particular, an imported Metrics Server Pod still has source-cluster
+    // credentials and can block nodebootstrap's availability wait. Reconcile
+    // requested addons after import; an existing destination has no import
+    // phase, so install requested addons during its bootstrap.
+    if joins_existing {
+        append_optional_addon_flags(command, request);
+    }
+}
+
 fn prepare_migration_pki(
     command: &mut Command,
     source: &detect::Installation,
@@ -2136,6 +2206,10 @@ fn bootstrap_command_with_config(
     if command.get_program().to_string_lossy().ends_with("notk8s") {
         command.arg("bootstrap");
     }
+    // The migration environment may carry addon image overrides for the
+    // requested post-import bootstrap. Do not let those environment variables
+    // install addons during the initial bootstrap when their flags are deferred.
+    clear_optional_addon_environment(&mut command);
     let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")
         .context("reading mount table to detect active kubelet CSI staging paths")?;
     let csi_staging_root = migration_csi_staging_root(
@@ -2301,6 +2375,7 @@ fn print_help() {
          Usage:\n\
          \x20 nodemigrate inspect\n\
          \x20 nodemigrate to=nodestore from=k3s [uninstall-after-migrate=true]\n\
+         \x20 nodemigrate to=nodestore from=k3s metrics-server=true nodeactivator=true\n\
          \x20 nodemigrate to=nodestore from=kubernetes\n\
          \x20 nodemigrate to=k3s from=nodestore\n\
          \x20 nodemigrate to=kubernetes from=nodestore\n\
@@ -2315,6 +2390,9 @@ fn print_help() {
          target quorum returns, run import-export=/path once to import cluster\n\
          state. Use skip-api-export=true for later nodes after target API\n\
          readiness.\n\
+         Optional destination addons are metrics-server=true and\n\
+         nodeactivator=true. Use nodeactivator-image=IMAGE to override the\n\
+         published activator image.\n\
          \n\
          `inspect` reports detected local Kubernetes installations. Migration\n\
          exports Kubernetes API objects into a protected recovery directory,\n\
@@ -2330,13 +2408,82 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_nodeproxy_mode, apply_cni_runtime_paths, confirm_migration, detect_csi_staging_root,
-        migration_csi_staging_root, nodeproxy_should_be_disabled, replacement_worker_args,
-        source_api_pki_paths, preserve_pki_file,
-        reverse_node_replacement_state, rollback_reverse_migration_with,
+        append_initial_optional_addon_flags, append_nodeproxy_mode, append_optional_addon_flags,
+        apply_cni_runtime_paths, clear_optional_addon_environment, confirm_migration,
+        detect_csi_staging_root, migration_csi_staging_root, nodeproxy_should_be_disabled,
+        preserve_pki_file, replacement_worker_args, reverse_node_replacement_state,
+        rollback_reverse_migration_with, source_api_pki_paths,
         validate_destination_node_replacement, validate_reverse_control_plane_options,
         validate_skip_api_import,
     };
+
+    #[test]
+    fn bootstrap_command_clears_inherited_optional_addon_environment() {
+        let mut command = Command::new("bootstrap");
+        command
+            .env("NODEBOOTSTRAP_METRICS_SERVER", "1")
+            .env("NODEBOOTSTRAP_NODEACTIVATOR_IMAGE", "image:override");
+        clear_optional_addon_environment(&mut command);
+
+        let environment: Vec<_> = command
+            .get_envs()
+            .map(|(key, value)| (key.to_string_lossy().into_owned(), value.is_some()))
+            .collect();
+        assert!(environment.contains(&("NODEBOOTSTRAP_METRICS_SERVER".to_string(), false)));
+        assert!(environment.contains(&("NODEBOOTSTRAP_NODEACTIVATOR_IMAGE".to_string(), false)));
+    }
+
+    #[test]
+    fn fresh_migration_defers_optional_addon_flags_until_after_import() {
+        let request = MigrationRequest::parse(&[
+            "to=nodestore".to_string(),
+            "from=k3s".to_string(),
+            "metrics-server=true".to_string(),
+            "nodeactivator=true".to_string(),
+        ])
+        .unwrap();
+        let mut initial = Command::new("bootstrap");
+        append_initial_optional_addon_flags(&mut initial, &request, false);
+        assert!(initial.get_args().next().is_none());
+
+        let mut reconcile = Command::new("bootstrap");
+        append_optional_addon_flags(&mut reconcile, &request);
+        let args: Vec<_> = reconcile
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "--metrics-server".to_string(),
+                "--enable-activator".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn join_bootstrap_installs_requested_optional_addons() {
+        let request = MigrationRequest::parse(&[
+            "to=nodestore".to_string(),
+            "from=k3s".to_string(),
+            "metrics-server=true".to_string(),
+            "nodeactivator=true".to_string(),
+        ])
+        .unwrap();
+        let mut command = Command::new("bootstrap");
+        append_initial_optional_addon_flags(&mut command, &request, true);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "--metrics-server".to_string(),
+                "--enable-activator".to_string(),
+            ]
+        );
+    }
     use crate::transfer::NodeSchedulingState;
     use crate::{
         detect::{ClusterConfig, Installation, K3sDatastore, NodeRole},

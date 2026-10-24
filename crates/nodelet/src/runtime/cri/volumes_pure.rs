@@ -897,11 +897,9 @@ pub(crate) fn write_downward_api_volume(
 
 
 /// Write one projected-volume source's contribution into `dir`. Mirrors
-/// `write_volume_dir()`'s "every key becomes a file" default, but a
-/// projected source additionally supports `items` (`KeyToPath`): select
-/// specific keys and rename them to a specific path within the volume —
-/// real Kubernetes semantics that plain top-level configMap/secret volumes
-/// also have but nodelet doesn't apply there yet (see docs/GAP_CLOSURE.md).
+/// `write_volume_dir()`'s "every key becomes a file" default, and supports
+/// `items` (`KeyToPath`) for both projected and ordinary ConfigMap/Secret
+/// volumes: select specific keys and map them to a path within the volume.
 pub(crate) fn write_projected_keys(
     dir: &std::path::Path,
     text: Option<std::collections::BTreeMap<String, String>>,
@@ -937,7 +935,6 @@ pub(crate) fn write_projected_keys(
     }
     Ok(())
 }
-
 
 /// Build a pod's `/etc/hosts` contents from `hostAliases` — kubelet's own
 /// approach: it doesn't tell the container runtime about extra hosts
