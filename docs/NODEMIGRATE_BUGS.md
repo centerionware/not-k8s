@@ -15,8 +15,12 @@ orders by the controller's watches. The controller now seeds its first
 downscale history with the current replicas, following Kubernetes HPA
 behavior, and checks live HPA status before treating a zero observed in that
 watch gap as a manual pause. It has a focused stabilization regression test.
-Quick-check and focused real-cluster e2e are still required for this fix. Full
-shard log:
+Quick-check [40081632699](https://github.com/centerionware/not-k8s/actions/runs/40081632699)
+and the focused real-cluster test
+[40081632565](https://github.com/centerionware/not-k8s/actions/runs/40081632565)
+both passed at code SHA `7e6fa2e46d143559aec78e4ba63555fb96f2872a`. The e2e
+workflow ran only `hpa_scale_to_zero_activator_full_flow` against nodeapiserver;
+the full e2e suite remains unverified. Full shard log from the failure:
 `/tmp/nodebootstrap-e2e-40080190436.log`.
 
 The Node Activator and signer already ship together in the multi-architecture
