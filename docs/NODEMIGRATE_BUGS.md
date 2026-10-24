@@ -2,6 +2,31 @@
 
 Last updated: 2026-10-24
 
+## Add-on migration run 40071938966
+
+Run [40071938966](https://github.com/centerionware/not-k8s/actions/runs/40071938966)
+at SHA `8121976a9baa857e87e43a77d0ac8ae89cb4c97f` passed quick-check
+[40071939000](https://github.com/centerionware/not-k8s/actions/runs/40071939000)
+and built the addon image, but the K3s lane failed waiting for
+`nodeactivator-cert-signer`. The new timeout diagnostics show the Pod used
+`ghcr.io/centerionware/not-k8s/nodeactivator:latest` and entered
+`ImagePullBackOff` after GHCR returned HTTP 403. The integration helper set
+`NODEBOOTSTRAP_NODEACTIVATOR_IMAGE`, but nodemigrate intentionally clears
+inherited addon environment variables and received only `nodeactivator=true`;
+it therefore selected the published default image instead of the locally
+preloaded CI image. The helper now passes its explicit image reference as
+`nodeactivator-image=...` when available. This correction needs another
+addon-enabled migration run; Node Activator certificate issuance and HPA
+scale-to-zero wakeup remain unverified.
+
+The upstream Kubernetes lane failed before migration because the installed
+`kubernetes-cni` package lacked bridge and loopback. The Docker preflight's
+kubeadm join probe failed because the joining etcd member did not start. These
+are independent environment/setup failures. Logs:
+`/tmp/nodemigrate-40071938966-k3s.log`,
+`/tmp/nodemigrate-40071938966-kubernetes.log`, and
+`/tmp/nodemigrate-40071938966-preflight.log`.
+
 ## Add-on migration attempts 40044732754 and 40051256195
 
 Run [40044732754](https://github.com/centerionware/not-k8s/actions/runs/40044732754)

@@ -5440,10 +5440,10 @@ main() {
     if [[ "${NODEMIGRATE_METRICS_SERVER:-false}" == true ]]; then
         migration_args+=(metrics-server=true)
     fi
-    if [[ "${NODEMIGRATE_NODEACTIVATOR:-false}" == true ]]; then
-        migration_args+=(nodeactivator=true)
-    elif [[ -n "${NODEMIGRATE_NODEACTIVATOR_IMAGE:-}" ]]; then
+    if [[ -n "${NODEMIGRATE_NODEACTIVATOR_IMAGE:-}" ]]; then
         migration_args+=("nodeactivator-image=$NODEMIGRATE_NODEACTIVATOR_IMAGE")
+    elif [[ "${NODEMIGRATE_NODEACTIVATOR:-false}" == true ]]; then
+        migration_args+=(nodeactivator=true)
     fi
     (
         export NODEMIGRATE_SOURCE_KUBECONFIG="$SOURCE_KUBECONFIG"
