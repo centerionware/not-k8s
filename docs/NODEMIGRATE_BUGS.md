@@ -84,6 +84,21 @@ etcd-join phase, but its new etcd member did not start. Logs:
 `/tmp/nodemigrate-40065653855-kubernetes.log`, and
 `/tmp/nodemigrate-40065653855-preflight.log`.
 
+Run [40067706232](https://github.com/centerionware/not-k8s/actions/runs/40067706232)
+at SHA `81e2f6fc2ca5cbd57ec88be8ce1a9bb2dc4364f2` repeated the signer
+availability timeout and Cilium CNI socket failures. Although Cilium reset had
+been moved ahead of addon reconciliation, the migration test still supplied
+`NODEBOOTSTRAP_NODEACTIVATOR_IMAGE` to the parent process. Generated bootstrap
+commands inherited it and enabled the signer during the initial bootstrap,
+before the reset phase. The upstream and Docker preflight failures also
+recurred. The current fix strips bootstrap-only addon environment variables
+from child commands so addon installation follows the explicit nodemigrate
+request flags. A focused unit test covers that environment boundary; CI and an
+addon-enabled migration retest are pending. Logs:
+`/tmp/nodemigrate-40067706232-k3s.log`,
+`/tmp/nodemigrate-40067706232-kubernetes.log`, and
+`/tmp/nodemigrate-40067706232-preflight.log`.
+
 ## Branch-runtime matrix 36871609082
 
 Run [36871609082](https://github.com/centerionware/not-k8s/actions/runs/36871609082)

@@ -1924,6 +1924,12 @@ fn append_optional_addon_flags(command: &mut Command, request: &request::Migrati
     }
 }
 
+fn clear_optional_addon_environment(command: &mut Command) {
+    command
+        .env_remove("NODEBOOTSTRAP_METRICS_SERVER")
+        .env_remove("NODEBOOTSTRAP_NODEACTIVATOR_IMAGE");
+}
+
 fn append_initial_optional_addon_flags(
     command: &mut Command,
     request: &request::MigrationRequest,
@@ -2200,6 +2206,10 @@ fn bootstrap_command_with_config(
     if command.get_program().to_string_lossy().ends_with("notk8s") {
         command.arg("bootstrap");
     }
+    // The migration environment may carry addon image overrides for the
+    // requested post-import bootstrap. Do not let those environment variables
+    // install addons during the initial bootstrap when their flags are deferred.
+    clear_optional_addon_environment(&mut command);
     let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")
         .context("reading mount table to detect active kubelet CSI staging paths")?;
     let csi_staging_root = migration_csi_staging_root(
@@ -2399,12 +2409,29 @@ fn print_help() {
 mod tests {
     use super::{
         append_initial_optional_addon_flags, append_nodeproxy_mode, append_optional_addon_flags,
-        apply_cni_runtime_paths, confirm_migration, detect_csi_staging_root,
-        migration_csi_staging_root, nodeproxy_should_be_disabled, preserve_pki_file,
-        replacement_worker_args, reverse_node_replacement_state, rollback_reverse_migration_with,
-        source_api_pki_paths, validate_destination_node_replacement,
-        validate_reverse_control_plane_options, validate_skip_api_import,
+        apply_cni_runtime_paths, clear_optional_addon_environment, confirm_migration,
+        detect_csi_staging_root, migration_csi_staging_root, nodeproxy_should_be_disabled,
+        preserve_pki_file, replacement_worker_args, reverse_node_replacement_state,
+        rollback_reverse_migration_with, source_api_pki_paths,
+        validate_destination_node_replacement, validate_reverse_control_plane_options,
+        validate_skip_api_import,
     };
+
+    #[test]
+    fn bootstrap_command_clears_inherited_optional_addon_environment() {
+        let mut command = Command::new("bootstrap");
+        command
+            .env("NODEBOOTSTRAP_METRICS_SERVER", "1")
+            .env("NODEBOOTSTRAP_NODEACTIVATOR_IMAGE", "image:override");
+        clear_optional_addon_environment(&mut command);
+
+        let environment: Vec<_> = command
+            .get_envs()
+            .map(|(key, value)| (key.to_string_lossy().into_owned(), value.is_some()))
+            .collect();
+        assert!(environment.contains(&("NODEBOOTSTRAP_METRICS_SERVER".to_string(), false)));
+        assert!(environment.contains(&("NODEBOOTSTRAP_NODEACTIVATOR_IMAGE".to_string(), false)));
+    }
 
     #[test]
     fn fresh_migration_defers_optional_addon_flags_until_after_import() {
