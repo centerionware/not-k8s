@@ -3851,6 +3851,9 @@ verify_migration_optional_addons() {
             return 1
         }
         kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes >/dev/null
+        # Verify the source HPA survived import and is functional before the
+        # activator-specific check can fail this migration stage.
+        verify_hpa_scaling "$stage"
     fi
     if [[ -n "${NODEMIGRATE_NODEACTIVATOR_IMAGE:-}" ]]; then
         kubectl rollout status deployment/nodeactivator-cert-signer -n kube-system --timeout=5m
@@ -4201,7 +4204,9 @@ verify_stage() {
     }
     kubectl get customresourcedefinitions.apiextensions.k8s.io ciliumendpoints.cilium.io
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
-    verify_hpa_scaling "$stage"
+    if [[ "${NODEMIGRATE_METRICS_SERVER:-false}" != true ]]; then
+        verify_hpa_scaling "$stage"
+    fi
     kubectl scale -n migration-apps deployment/migration-nginx --replicas=2
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
     kubectl get deployment migration-nginx -n migration-apps -o json | jq -e '
