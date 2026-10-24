@@ -16,11 +16,13 @@ returns to zero.
 ## Build and install
 
 The bootstrapper can install both optional addons after the control plane is
-ready. The activator and its certificate signer are in one published image.
-Enable it without building source on the cluster:
+ready. Install the prebuilt `nodebootstrap` binary from a not-k8s release (or
+use the combined `notk8s bootstrap` binary); the release workflow also builds
+and publishes the activator image. The activator and its certificate signer
+are in that one image. Enable the addon without building source on the cluster:
 
 ```sh
-./target/release/nodebootstrap --metrics-server --enable-activator
+nodebootstrap --metrics-server --enable-activator
 ```
 
 For migration to nodestore, use the corresponding migration options:
@@ -30,13 +32,13 @@ notk8s migrate from=k3s to=nodestore metrics-server=true nodeactivator=true
 ```
 
 The default activator image is
-`ghcr.io/centerionware/not-k8s/nodeactivator:latest`. Override it with
+`ghcr.io/centerionware/not-k8s/nodeactivator:latest`. The release action pushes
+versioned and `latest` tags for `linux/amd64` and `linux/arm64`. Override it with
 `--nodeactivator-image=IMAGE` in nodebootstrap or
 `nodeactivator-image=IMAGE` in nodemigrate. Metrics Server uses its published
 upstream image from `registry.k8s.io`; neither Pod requires building source on
-the deployment host. The release workflow publishes the activator image for
-`linux/amd64` and `linux/arm64`. Set the GHCR package visibility to public once
-in the package settings so clusters can pull it without registry credentials.
+the deployment host. Set the GHCR package visibility to public once in the
+package settings so clusters can pull it without registry credentials.
 
 Metrics Server supplies resource metrics such as CPU and memory. Kubernetes
 1.37 HPA scale-to-zero uses object or external metrics; the Node Activator
