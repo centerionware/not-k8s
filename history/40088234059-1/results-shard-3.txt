@@ -1,0 +1,9 @@
+commit: 62703c173af6450852d16e2087428c88a131caeb
+workflow run: https://github.com/centerionware/not-k8s/actions/runs/40088234059
+timestamp (UTC): 2026-10-24T11:14:16Z
+shard: 3/5
+exit code: 0
+----------------------------------------
+bootstrap e2e: 1 test(s), shard 3/5
+▶ 2026-10-24T11:13:22.931Z test_metrics_server_reports_real_pod_usage ... PASS (53222ms)
+Results: 1 passed, 0 skipped, 0 failed
