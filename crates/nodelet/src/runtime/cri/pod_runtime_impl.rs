@@ -12,7 +12,7 @@ impl PodRuntime for CriRuntime {
         let lock = self.pod_ensure_lock(&format!("{}/{}", id.namespace, id.name));
         tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
             operation = "ensure", stage = "wait for lifecycle lock", "pod runtime operation");
-        let _ensure_guard = lock.lock().await;
+        let ensure_guard = lock.lock_owned().await;
         tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
             operation = "ensure", stage = "find sandbox", "pod runtime operation");
         let found = self.find_sandbox_with_uid(&id.namespace, &id.name, &id.uid).await?;
@@ -51,13 +51,13 @@ impl PodRuntime for CriRuntime {
             spec.map(|s| s.containers.as_slice()).unwrap_or(&[]),
             spec.and_then(|s| s.init_containers.as_deref()).unwrap_or(&[]),
         );
-        let sandbox_id = match sandbox_reuse_decision(found.as_ref().map(|(_, s, _)| *s), ready_state, uid_matches) {
+        let (sandbox_id, _ensure_guard) = match sandbox_reuse_decision(found.as_ref().map(|(_, s, _)| *s), ready_state, uid_matches) {
             SandboxDecision::Reuse => {
                 let sandbox_id = found.unwrap().0;
                 self.remove_orphaned_pod_uid_containers(&id.uid, Some(&sandbox_id))
                     .await
                     .context("cleaning abandoned containers before reusing a Pod sandbox")?;
-                sandbox_id
+                (sandbox_id, ensure_guard)
             }
             SandboxDecision::RecreateStale => {
                 // The sandbox record exists but either its task/pause
@@ -133,13 +133,13 @@ impl PodRuntime for CriRuntime {
                 self.remove_orphaned_pod_uid_containers(&id.uid, None)
                     .await
                     .context("cleaning abandoned containers before recreating a Pod sandbox")?;
-                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone(), privileged).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone(), privileged, ensure_guard).await.context("RunPodSandbox")?
             }
             SandboxDecision::CreateFresh => {
                 self.remove_orphaned_pod_uid_containers(&id.uid, None)
                     .await
                     .context("cleaning abandoned containers before creating a Pod sandbox")?;
-                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone(), privileged).await.context("RunPodSandbox")?
+                self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone(), privileged, ensure_guard).await.context("RunPodSandbox")?
             }
         };
 

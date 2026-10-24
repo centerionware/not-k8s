@@ -20,10 +20,14 @@ However, branch-runtime run
 [40051256195](https://github.com/centerionware/not-k8s/actions/runs/40051256195)
 reproduced the reservation failure. Nodelet logged `RunPodSandbox` for the
 target CoreDNS Pod, then its 30-second reconcile timeout; the following request
-received a name reservation held by the preceding sandbox ID. This shows that
-removing the listed stale sandboxes is insufficient. Investigate whether the
-timed-out CRI create remains in flight and how to safely serialize or recover
-that operation; do not retry the migration until the failure path is fixed.
+received a name reservation held by the preceding sandbox ID. This disconfirms
+the listed-stale-sandboxes fix as a complete resolution. The timing matches
+upstream Kubernetes issue [139097](https://github.com/kubernetes/kubernetes/issues/139097),
+which documents a canceled `RunPodSandbox` leaving containerd's name reserved.
+Nodelet now moves the Pod lifecycle lock into a detached CRI request task so
+the outer reconcile timeout cannot cancel that request or permit an overlapping
+same-name create. A focused cancellation regression was added; quick-check and
+migration validation are pending.
 Metrics-server was scheduled but CoreDNS stayed unavailable, so addon
 readiness, Node Activator certificate issuance, and HPA activation were not
 reached. The upstream lane again failed before migration because the source
