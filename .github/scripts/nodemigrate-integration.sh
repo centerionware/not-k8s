@@ -3585,8 +3585,24 @@ wait_for_hpa_replicas() {
 }
 
 verify_hpa_scaling() {
-    local stage="$1"
-    kubectl wait --for=condition=Available deployment/metrics-server -n kube-system --timeout=5m
+    local stage="$1" deadline=$((SECONDS + 300)) metrics_server_available=false
+    while (( SECONDS < deadline )); do
+        if kubectl get deployment metrics-server -n kube-system -o json | jq -e '
+          .status.observedGeneration >= .metadata.generation and
+          any(.status.conditions[]?; .type == "Available" and .status == "True") and
+          (.status.availableReplicas // 0) >= (.spec.replicas // 1)
+        ' >/dev/null 2>&1; then
+            metrics_server_available=true
+            break
+        fi
+        sleep 2
+    done
+    [[ "$metrics_server_available" == true ]] || {
+        echo "Metrics Server Deployment did not report observed available replicas at stage=$stage" >&2
+        kubectl get deployment metrics-server -n kube-system -o yaml >&2 || true
+        kubectl get pods -n kube-system -l k8s-app=metrics-server -o wide >&2 || true
+        return 1
+    }
     kubectl get --raw /apis/metrics.k8s.io/v1beta1/namespaces/migration-apps/pods >/dev/null
     kubectl patch hpa migration-cpu -n migration-apps --type=merge \
         -p '{"spec":{"metrics":[{"type":"Resource","resource":{"name":"cpu","target":{"type":"Utilization","averageUtilization":50}}}]}}'
