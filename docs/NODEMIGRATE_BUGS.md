@@ -26,15 +26,27 @@ upstream Kubernetes issue [139097](https://github.com/kubernetes/kubernetes/issu
 which documents a canceled `RunPodSandbox` leaving containerd's name reserved.
 Nodelet now moves the Pod lifecycle lock into a detached CRI request task so
 the outer reconcile timeout cannot cancel that request or permit an overlapping
-same-name create. A focused cancellation regression was added; quick-check and
-migration validation are pending.
-Metrics-server was scheduled but CoreDNS stayed unavailable, so addon
-readiness, Node Activator certificate issuance, and HPA activation were not
-reached. The upstream lane again failed before migration because the source
-Kubernetes CNI package lacked bridge/loopback; the five-node preflight failed
-its etcd join probe. The addon image and branch runtime builds passed. The K3s
-artifact also contains metrics-server unknown-CA scrape messages, but they
-cannot yet be attributed to a live target scrape rather than source/rollback.
+same-name create. The focused cancellation regression and nodelet quick-check
+passed at `83f2ad03` in run
+[40053617600](https://github.com/centerionware/not-k8s/actions/runs/40053617600).
+The follow-up migration run
+[40053924313](https://github.com/centerionware/not-k8s/actions/runs/40053924313)
+at that SHA contains no `sandbox name reserved` errors. It exposed a later K3s
+blocker: CoreDNS `RunPodSandbox` repeatedly failed because Cilium's local agent
+socket refused connections, leaving DNS and Metrics Server without ready
+endpoints. As a result, addon readiness, Node Activator certificate issuance,
+and HPA activation remain unverified. The upstream lane again failed before
+migration because its source kubelet could not load `/var/lib/kubelet/config.yaml`;
+the five-node preflight's kubeadm probe also failed. Logs are saved at
+`/tmp/nodemigrate-40053924313-k3s.log`,
+`/tmp/nodemigrate-40053924313-kubernetes.log`, and
+`/tmp/nodemigrate-40053924313-preflight.log`.
+In the earlier runs, the upstream lane failed before migration because the
+source Kubernetes CNI package lacked bridge/loopback, and the five-node
+preflight failed its etcd join probe. The addon image and branch runtime builds
+passed. The K3s artifacts also contain metrics-server unknown-CA scrape
+messages, but they cannot yet be attributed to a live target scrape rather than
+source/rollback.
 Logs: `/tmp/nodemigrate-40044732754-artifacts/nodemigrate-k3s-40044732754/nodemigrate-k3s.log`
 and `/tmp/nodemigrate-40044732754-artifacts/nodemigrate-kubernetes-40044732754/nodemigrate-kubernetes.log`.
 Run 400512 job logs: `/tmp/nodemigrate-40051256195-k3s.log`,
