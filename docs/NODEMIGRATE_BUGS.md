@@ -29,6 +29,49 @@ GitHub log access from the development host is currently failing, so the cause
 is unresolved. Full shard log from the earlier focused failure:
 `/tmp/nodebootstrap-e2e-40080190436.log`.
 
+## Add-on migration verification 40086015125
+
+At PR SHA `62703c173af6450852d16e2087428c88a131caeb`, the targeted
+`nodemigrate` quick-check passed in run
+[40086015069](https://github.com/centerionware/not-k8s/actions/runs/40086015069).
+The workflow-dispatch migration run
+[40086015125](https://github.com/centerionware/not-k8s/actions/runs/40086015125)
+used `runtime_source=branch`, `metrics_server=true`, and `nodeactivator=true`.
+Both addon image builds completed. The upstream Kubernetes migration lane
+failed before migration because the installed `kubernetes-cni` package lacked
+bridge and loopback, and the unrelated Docker preflight failed at its kubeadm
+node probe. In the K3s lane migration completed, both addons rolled out, the
+HPA reached `ScaledToZero=True`, and the backend had zero replicas. The test
+then timed out waiting for its newly created caller Pod, which remained
+`Unknown` with no node assignment or Pod IP; existing migrated workloads and
+addon Pods were running. This did not exercise the buffered-request path. The
+integration check now sends the request from the already-running
+`migration-standalone` fixture Pod, removing an unrelated dependency on
+scheduling a new Pod after migration. That workflow change still needs a new
+addon-enabled migration run. Full logs are saved at
+`/tmp/nodemigrate-40086015125-kubernetes.log` and
+`/tmp/nodemigrate-40086015125-k3s.log`.
+
+The earlier K3s run
+[40078358744](https://github.com/centerionware/not-k8s/actions/runs/40078358744)
+at SHA `ad6c7574d8ce3fd68c1dea40c92783cda0c3187d` did run with both addon
+options set to `true`. Its saved job log confirms migration completed, one
+`autoscaling/v2` HPA was selected for import, and the bootstrap reconciliation
+rolled out `metrics-server`, `nodeactivator-cert-signer`, and `nodeactivator`.
+It then stopped at the HPA wake-up fixture because that NodeApiserver revision
+did not advertise the standard `hpa` short name. That discovery fix is present
+on the current branch, and the current focused bootstrap e2e passes the HPA
+wake-up flow. This older migration run proves addon installation and HPA object
+transfer, but not the post-migration buffered-request wake-up on current code.
+
+A separate focused bootstrap e2e run
+[40088234059](https://github.com/centerionware/not-k8s/actions/runs/40088234059)
+passed at the same SHA with `metrics_server=true` and the requested cases
+`metrics_server_reports_real_pod_usage` and
+`hpa_scale_to_zero_activator_full_flow`. This verifies the bootstrap-installed
+Metrics Server against real Pod usage and the Activator scale-to-zero flow in
+the e2e cluster, but does not replace the failed migration workflow check.
+
 The Node Activator and signer already ship together in the multi-architecture
 `ghcr.io/centerionware/not-k8s/nodeactivator` image, published by the release
 workflow. `--enable-activator` uses its `:latest` tag by default; Metrics Server
