@@ -73,6 +73,7 @@ fn short_names_for(group: &str, resource: &str) -> &'static [&'static str] {
         ("apps", "deployments") => &["deploy"],
         ("apps", "replicasets") => &["rs"],
         ("apps", "statefulsets") => &["sts"],
+        ("autoscaling", "horizontalpodautoscalers") => &["hpa"],
         ("batch", "cronjobs") => &["cj"],
         ("batch", "jobs") => &["job"],
         ("certificates.k8s.io", "certificatesigningrequests") => &["csr"],
@@ -751,6 +752,16 @@ mod tests {
             .find(|resource| resource["name"] == "persistentvolumeclaims")
             .expect("persistentvolumeclaims should be listed");
         assert_eq!(pvc["shortNames"], json!(["pvc"]));
+
+        let autoscaling = api_resource_list("autoscaling", "v2")
+            .expect("autoscaling/v2 should be served");
+        let hpa = autoscaling["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource| resource["name"] == "horizontalpodautoscalers")
+            .expect("horizontalpodautoscalers should be listed");
+        assert_eq!(hpa["shortNames"], json!(["hpa"]));
     }
 
     #[test]

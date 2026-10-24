@@ -63,6 +63,23 @@ traffic, and metric-triggered wakeup against nodeapiserver. The migration
 integration assertion fix still needs CI validation. Log:
 `/tmp/nodebootstrap-e2e-40076146445.log`.
 
+Run [40078358744](https://github.com/centerionware/not-k8s/actions/runs/40078358744)
+at SHA `ad6c7574d8ce3fd68c1dea40c92783cda0c3187d` passed workflow validation
+and built the branch runtime and production addon image. In the K3s lane,
+migration completed, both optional addon Deployments rolled out, and the new
+per-running-Activator-Pod certificate check passed. The HPA traffic wake-up
+fixture then stopped immediately because NodeApiserver discovery omitted the
+standard `hpa` short name for `horizontalpodautoscalers`; the API itself had
+the `autoscaling/v2` resource, but `kubectl delete hpa` could not resolve that
+alias. NodeApiserver discovery now advertises the standard alias and has a
+focused regression assertion. The 1.37 scale-to-zero buffering path in the
+migration environment needs a rerun. The upstream Kubernetes lane failed
+before migration because its CNI package lacked bridge and loopback; Docker
+preflight again failed at kubeadm's etcd-join probe. Logs:
+`/tmp/nodemigrate-40078358744-k3s.log`,
+`/tmp/nodemigrate-40078358744-kubernetes.log`, and
+`/tmp/nodemigrate-40078358744-preflight.log`.
+
 ## Add-on migration attempts 40044732754 and 40051256195
 
 Run [40044732754](https://github.com/centerionware/not-k8s/actions/runs/40044732754)
