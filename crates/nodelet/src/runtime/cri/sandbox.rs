@@ -526,6 +526,20 @@ pub(crate) fn select_pod_sandbox(
         .map(|(sandbox, uid)| (sandbox.id, sandbox.state, uid))
 }
 
+/// Return all sandboxes for a Pod that must be removed before a stale Pod is
+/// recreated. The selected sandbox triggers the recreation decision, but all
+/// candidates can reserve the CRI-generated name.
+pub(crate) fn stale_sandboxes_to_remove(
+    sandboxes: Vec<v1::PodSandbox>,
+    selected_id: &str,
+) -> Result<Vec<v1::PodSandbox>> {
+    anyhow::ensure!(
+        sandboxes.iter().any(|sandbox| sandbox.id == selected_id),
+        "selected stale Pod sandbox {selected_id} disappeared before cleanup"
+    );
+    Ok(sandboxes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,5 +559,23 @@ mod tests {
         assert!(sandbox_matches_pod(&sandbox, "kube-system", "coredns-abc"));
         assert!(!sandbox_matches_pod(&sandbox, "default", "coredns-abc"));
         assert!(!sandbox_matches_pod(&sandbox, "kube-system", "coredns-other"));
+    }
+
+    #[test]
+    fn stale_recreation_cleans_every_source_and_target_sandbox() {
+        let sandbox = |id: &str| v1::PodSandbox {
+            id: id.to_string(),
+            ..Default::default()
+        };
+        let stale = stale_sandboxes_to_remove(
+            vec![sandbox("source-runtime"), sandbox("target-runtime")],
+            "target-runtime",
+        )
+        .unwrap();
+
+        assert_eq!(
+            stale.iter().map(|sandbox| sandbox.id.as_str()).collect::<Vec<_>>(),
+            ["source-runtime", "target-runtime"]
+        );
     }
 }

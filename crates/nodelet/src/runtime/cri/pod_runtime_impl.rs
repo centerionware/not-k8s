@@ -72,47 +72,64 @@ impl PodRuntime for CriRuntime {
                 // keep its name reserved until every old container is gone.
                 let (stale_id, _, _) = found.unwrap();
                 let mut rt = self.rt.clone();
-                for container in self.list_pod_containers(&stale_id).await? {
+                // A runtime handoff may leave several source and target
+                // sandboxes for the same Pod name. Removing only the one
+                // selected for status is insufficient: containerd reserves
+                // the generated sandbox name while *any* of those records
+                // remain, so the following RunPodSandbox can fail forever.
+                let stale_sandboxes = super::sandbox::stale_sandboxes_to_remove(
+                    self.list_sandboxes_for_pod(&id.namespace, &id.name)
+                        .await?,
+                    &stale_id,
+                )?;
+                let removed_ids: Vec<String> = stale_sandboxes
+                    .iter()
+                    .map(|sandbox| sandbox.id.clone())
+                    .collect();
+                for stale in stale_sandboxes {
+                    for container in self.list_pod_containers(&stale.id).await? {
+                        let _ = rt
+                            .stop_container(StopContainerRequest {
+                                container_id: container.id.clone(),
+                                timeout: 0,
+                            })
+                            .await;
+                        rt.remove_container(RemoveContainerRequest {
+                            container_id: container.id,
+                        })
+                        .await
+                        .context("removing a container from a stale Pod sandbox")?;
+                    }
                     let _ = rt
-                        .stop_container(StopContainerRequest {
-                            container_id: container.id.clone(),
-                            timeout: 0,
+                        .stop_pod_sandbox(StopPodSandboxRequest {
+                            pod_sandbox_id: stale.id.clone(),
                         })
                         .await;
-                    rt.remove_container(RemoveContainerRequest {
-                        container_id: container.id,
+                    rt.remove_pod_sandbox(RemovePodSandboxRequest {
+                        pod_sandbox_id: stale.id.clone(),
                     })
                     .await
-                    .context("removing a container from a stale Pod sandbox")?;
+                    .context("removing a stale Pod sandbox")?;
+                    self.restart_policies.lock().unwrap().remove(&stale.id);
+                    self.pod_uids.lock().unwrap().remove(&stale.id);
+                    self.sidecar_names.lock().unwrap().remove(&stale.id);
+                    self.clear_restart_counts(&stale.id);
+                    self.clear_restart_backoff(&stale.id);
+                    self.clear_pull_backoff(&stale.id);
+                    self.clear_config_errors(&stale.id);
+                    self.clear_last_terminated(&stale.id);
+                    self.release_sandbox_devices(&stale.id).await;
                 }
-                let _ = rt
-                    .stop_pod_sandbox(StopPodSandboxRequest {
-                        pod_sandbox_id: stale_id.clone(),
-                    })
-                    .await;
-                rt.remove_pod_sandbox(RemovePodSandboxRequest {
-                    pod_sandbox_id: stale_id.clone(),
-                })
-                .await
-                .context("removing a stale Pod sandbox")?;
                 let remaining = self
-                    .find_sandbox_with_uid(&id.namespace, &id.name, &id.uid)
+                    .list_sandboxes_for_pod(&id.namespace, &id.name)
                     .await?;
                 anyhow::ensure!(
-                    remaining.as_ref().is_none_or(|(sandbox_id, _, _)| sandbox_id != &stale_id),
-                    "stale Pod sandbox {stale_id} still reserves {}/{} after removal",
+                    remaining.is_empty(),
+                    "stale Pod sandboxes {removed_ids:?} still reserve {}/{} after removal: {:?}",
                     id.namespace,
-                    id.name
+                    id.name,
+                    remaining.iter().map(|sandbox| &sandbox.id).collect::<Vec<_>>()
                 );
-                self.restart_policies.lock().unwrap().remove(&stale_id);
-                self.pod_uids.lock().unwrap().remove(&stale_id);
-                self.sidecar_names.lock().unwrap().remove(&stale_id);
-                self.clear_restart_counts(&stale_id);
-                self.clear_restart_backoff(&stale_id);
-                self.clear_pull_backoff(&stale_id);
-                self.clear_config_errors(&stale_id);
-                self.clear_last_terminated(&stale_id);
-                self.release_sandbox_devices(&stale_id).await;
                 self.remove_orphaned_pod_uid_containers(&id.uid, None)
                     .await
                     .context("cleaning abandoned containers before recreating a Pod sandbox")?;

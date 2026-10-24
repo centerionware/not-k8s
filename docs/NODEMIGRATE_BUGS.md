@@ -1,6 +1,26 @@
 # nodemigrate bug and fix tracker
 
-Last updated: 2026-10-01
+Last updated: 2026-10-24
+
+## Add-on migration attempt 40044732754
+
+Run [40044732754](https://github.com/centerionware/not-k8s/actions/runs/40044732754)
+at SHA `52b077a7` built the migration utility, branch runtime, and Node
+Activator image. The K3s lane reached destination bootstrap with both optional
+addons enabled, then timed out waiting for the metrics-server Deployment. Its
+target Nodelet had become Ready, but CoreDNS repeatedly failed `RunPodSandbox`
+because containerd reported the Pod sandbox name was still reserved. The CRI
+lookup already collected source and destination sandboxes for a Pod, but stale
+recreation removed only the single sandbox selected for status. The runtime
+now removes every sandbox matching that Pod namespace/name and verifies none
+remain before calling `RunPodSandbox`; a focused regression covers multiple
+source/target sandbox records. Quick-check and migration rerun are pending.
+The Kubernetes lane failed in source CNI package setup before migration. The
+K3s artifact also contains metrics-server unknown-CA scrape messages, but the
+captured logs do not establish that they came from the target addon before
+rollback; investigate with target-state capture after the sandbox fix.
+Logs: `/tmp/nodemigrate-40044732754-artifacts/nodemigrate-k3s-40044732754/nodemigrate-k3s.log`
+and `/tmp/nodemigrate-40044732754-artifacts/nodemigrate-kubernetes-40044732754/nodemigrate-kubernetes.log`.
 
 ## Branch-runtime matrix 36871609082
 
