@@ -204,9 +204,14 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/nodebootstrap-stage" dist
           mkdir -p dist
           bins=(nodelet nodeproxy nodestore nodescheduler nodecontroller nodeapiserver nodebootstrap notk8s)
+          cargo_home="$RUNNER_TEMP/nodebootstrap-release-cargo"
+          mkdir -p "$cargo_home"
           for profile in debug release; do
             stage="$GITHUB_WORKSPACE/nodebootstrap-stage/$profile"
             mkdir -p "$stage"
+            CARGO_HOME="$cargo_home" \
+            RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+            RUSTUP_TOOLCHAIN=stable \
             NODEBOOTSTRAP_ARCH="${{ matrix.arch }}" \
             NODEBOOTSTRAP_REPO_ROOT="$GITHUB_WORKSPACE" \
             NODEBOOTSTRAP_TOOLCHAIN_DIR="$stage" \
@@ -214,6 +219,10 @@ jobs:
             NOTK8S_BUILD_LAYOUT=both \
             NOTK8S_BUILD_PROFILE="$profile" \
               ./target/debug/nodebootstrap fetch
+            # fetch re-execs through sudo and builds into the workspace target
+            # tree. Restore runner ownership before the direct nodemigrate Cargo build.
+            sudo chown -R "$(id -u):$(id -g)" \
+              "$GITHUB_WORKSPACE/target/${{ matrix.target }}"
             for bin in "${bins[@]}"; do
               cp "$stage/bin/$bin" "dist/$bin-linux-${{ matrix.arch }}-$profile"
             done
