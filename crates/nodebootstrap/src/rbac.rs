@@ -702,7 +702,7 @@ kind: ClusterRole
 metadata:
   name: system:monitoring
 rules:
-- nonResourceURLs: ["/metrics", "/metrics/slis", "/livez", "/readyz", "/healthz", "/livez/*", "/readyz/*", "/healthz/*"]
+- nonResourceURLs: ["/metrics", "/metrics/slis", "/livez", "/readyz", "/healthz", "/livez/*", "/readyz/*", "/healthz/*", "/flagz", "/statusz"]
   verbs: ["get"]
 - apiGroups: [""]
   resources: ["nodes/metrics"]

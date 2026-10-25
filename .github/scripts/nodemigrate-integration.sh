@@ -1995,6 +1995,24 @@ install_workloads() {
     rm -f "$gateway_api_manifest"
     kubectl wait --for=condition=Established crd/gatewayclasses.gateway.networking.k8s.io --timeout=2m
     kubectl wait --for=condition=Established crd/httproutes.gateway.networking.k8s.io --timeout=2m
+    local cert_manager_crds
+    cert_manager_crds="$(mktemp)"
+    if ! curl --fail --location --retry 5 --retry-delay 2 --retry-max-time 60 \
+        --output "$cert_manager_crds" \
+        "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION:-v1.21.2}/cert-manager.crds.yaml"; then
+        rm -f "$cert_manager_crds"
+        return 1
+    fi
+    if ! kubectl apply -f "$cert_manager_crds"; then
+        rm -f "$cert_manager_crds"
+        return 1
+    fi
+    rm -f "$cert_manager_crds"
+    for crd in certificates.cert-manager.io certificaterequests.cert-manager.io \
+        issuers.cert-manager.io clusterissuers.cert-manager.io \
+        challenges.acme.cert-manager.io orders.acme.cert-manager.io; do
+        kubectl wait --for=condition=Established "crd/$crd" --timeout=2m
+    done
     helm upgrade --install cert-manager jetstack/cert-manager \
         --version "${CERT_MANAGER_VERSION:-v1.21.2}" \
         --namespace cert-manager --create-namespace --set crds.enabled=true \

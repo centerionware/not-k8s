@@ -92,6 +92,10 @@ awk '$1 == "nameserver" { print "  " $2 }' "$UPSTREAM_RESOLV_CONF"
 echo "Loading kernel modules on the Docker host for privileged node containers"
 sudo modprobe overlay
 sudo modprobe br_netfilter
+echo "Raising the Docker host inotify instance limit for five nested kubelets"
+sudo sysctl --write fs.inotify.max_user_instances=1024
+[[ "$(< /proc/sys/fs/inotify/max_user_instances)" -ge 1024 ]] \
+    || fail "Docker host inotify instance limit is below 1024"
 docker network create --driver bridge "$NETWORK" >/dev/null
 
 echo "Creating five privileged systemd node containers on Docker network $NETWORK"
