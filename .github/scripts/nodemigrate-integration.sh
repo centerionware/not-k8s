@@ -3880,6 +3880,12 @@ YAML
     # Background deletion can leave an ownerless ReplicaSet in the snapshot.
     kubectl delete deployment migration-activator-backend -n migration-apps \
         --cascade=foreground --wait=true --timeout=2m
+    # Some Kubernetes-compatible control planes can leave the generated
+    # ReplicaSet behind after the Deployment is gone. Remove this fixture's
+    # controller-owned object explicitly, then verify it is absent.
+    kubectl delete replicaset -n migration-apps \
+        -l app=migration-activator-backend --cascade=foreground \
+        --wait=true --timeout=2m --ignore-not-found=true
     local cleanup_deadline=$((SECONDS + 120))
     local remaining_replicasets
     while true; do
