@@ -219,10 +219,10 @@ jobs:
             NOTK8S_BUILD_LAYOUT=both \
             NOTK8S_BUILD_PROFILE="$profile" \
               ./target/debug/nodebootstrap fetch
-            # fetch re-execs through sudo and builds into the workspace target
-            # tree. Restore runner ownership before the direct nodemigrate Cargo build.
-            sudo chown -R "$(id -u):$(id -g)" \
-              "$GITHUB_WORKSPACE/target/${{ matrix.target }}"
+            # fetch re-execs through sudo and Cargo writes both host build-script
+            # artifacts and cross-target outputs into the workspace target tree.
+            # Restore the entire tree before the runner builds nodemigrate.
+            sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE/target"
             for bin in "${bins[@]}"; do
               cp "$stage/bin/$bin" "dist/$bin-linux-${{ matrix.arch }}-$profile"
             done
