@@ -24,9 +24,16 @@ The comparator now treats these narrow Kubernetes-owned changes according to
 their contracts: it requires all source rules in a default RBAC ClusterRole
 to remain present, checks system-addon rollout and the existing runtime
 probes for CoreDNS, and continues comparing PriorityClass scheduling fields.
-That comparator change is pending another migration run. The upstream lane
-failed before migration because `kubernetes-cni` did not install bridge and
-loopback, and Docker preflight failed its kubeadm etcd-member probe. Job logs:
+The comparator update was exercised in the follow-up
+[run 40149940860](https://github.com/centerionware/not-k8s/actions/runs/40149940860)
+at SHA `c8bdce2d0630dad9a520e94030eccfce41b329be`; both migration jobs and
+Docker preflight failed. The upstream lane was not diagnosed, and Docker
+preflight again failed its kubeadm node probe. The PR validation job passed
+all shell syntax, snapshot jq, Helm state, API inventory, and diagnostic JSON
+checks. GitHub's job-log and artifact endpoints returned connection errors
+from this host, so the K3s failure detail and whether the new comparator passed
+remain unverified. Do not treat the change as validated until that log can be
+retrieved and the failure diagnosed. The previous run's job logs are:
 `/tmp/nodeactivator-40147764846-kubernetes.log`,
 `/tmp/nodeactivator-40147764846-k3s.log`, and
 `/tmp/nodeactivator-40147764846-preflight.log`; K3s artifact log:
