@@ -91,6 +91,7 @@ mod tests {
         assert!(rendered.contains("ipFamilyPolicy: SingleStack"));
         assert!(rendered.contains("ipFamilies: [IPv4]"));
         assert!(rendered.contains("kubernetes cluster.local in-addr.arpa ip6.arpa"));
+        assert!(rendered.contains("  NodeHosts: |\n    127.0.0.1 localhost"));
     }
 
     #[test]
