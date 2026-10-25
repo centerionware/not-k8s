@@ -460,13 +460,26 @@ read -r -a join_args <<<"$join_command"
     || fail "kubeadm returned an unexpected join command: $join_command"
 
 echo "Joining cp-2 and cp-3 to the stacked-etcd control plane"
+control_plane_version="$(docker exec "$cp1" kubeadm version -o short)"
+etcd_image="$(docker exec "$cp1" kubeadm config images list \
+    --kubernetes-version "$control_plane_version" | awk '/\/etcd:/ { print; exit }')"
+[[ -n "$etcd_image" ]] || fail "kubeadm did not report the etcd image for $control_plane_version"
+echo "Pre-pulling kubeadm etcd image $etcd_image on joining control-plane nodes"
+for node in cp-2 cp-3; do
+    docker exec "$(node_container "$node")" ctr -n k8s.io images pull "$etcd_image"
+done
+
 for node in cp-2 cp-3; do
     node_ip="$(node_ip "$node")"
-    docker exec "$(node_container "$node")" "${join_args[@]}" \
+    if ! docker exec "$(node_container "$node")" "${join_args[@]}" \
         --control-plane \
         --certificate-key "$certificate_key" \
         --apiserver-advertise-address="$node_ip" \
-        --cri-socket=unix:///run/containerd/containerd.sock
+        --cri-socket=unix:///run/containerd/containerd.sock; then
+        echo "$node kubeadm control-plane join failed; collecting cluster diagnostics"
+        collect_cluster_diagnostics
+        exit 1
+    fi
     if [[ "$node" == cp-2 ]]; then
         echo "Waiting for cp-2 etcd and API server static Pods to become Ready before joining cp-3"
         if ! docker exec "$cp1" bash -ec '

@@ -4950,6 +4950,15 @@ elif (
     # manifest. Runtime DNS and HTTP health probes cover this regenerated
     # platform addon; its exact Pod template is not durable user state.
     lifecycle_class = "nodebootstrap-regenerated-coredns"
+elif (
+    kind == "ConfigMap"
+    and metadata.get("namespace") == "kube-system"
+    and name == "coredns"
+):
+    # The CoreDNS ConfigMap is installed with the destination Kubernetes
+    # version-matched platform addon. DNS and HTTP health probes verify the
+    # regenerated addon after migration.
+    lifecycle_class = "nodebootstrap-regenerated-coredns"
 elif kind in {"ReplicaSet", "ControllerRevision"} and any(
     owner.get("controller") is True
     and owner.get("kind") in {"Deployment", "StatefulSet", "DaemonSet"}
@@ -4969,7 +4978,13 @@ row = {
 }
 if (
     group == "rbac.authorization.k8s.io"
-    and kind == "ClusterRole"
+    and kind in {"Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding"}
+    and labels.get("kubernetes.io/bootstrapping") == "rbac-defaults"
+):
+    row["defaultRbacObject"] = True
+if (
+    group == "rbac.authorization.k8s.io"
+    and kind in {"Role", "ClusterRole"}
     and labels.get("kubernetes.io/bootstrapping") == "rbac-defaults"
 ):
     # Kubernetes API servers reconcile these version-owned default roles at
@@ -4977,6 +4992,17 @@ if (
     # reconciliation preserved every source permission while allowing the
     # destination version to add rules.
     row["defaultRbacRules"] = obj.get("rules") or []
+if kind == "HorizontalPodAutoscaler":
+    scale_target = (obj.get("spec") or {}).get("scaleTargetRef") or {}
+    api_version = scale_target.get("apiVersion", "")
+    target_group = api_version.split("/", 1)[0] if "/" in api_version else ""
+    if scale_target.get("kind") and scale_target.get("name"):
+        row["hpaScaleTarget"] = {
+            "apiGroup": target_group,
+            "kind": scale_target["kind"],
+            "namespace": metadata.get("namespace", ""),
+            "name": scale_target["name"],
+        }
 if kind == "CustomResourceDefinition":
     row["crdSpec"] = obj.get("spec")
 if (
@@ -5033,10 +5059,11 @@ assert_migratable_api_objects_unchanged() {
     local after="$2"
     local source_stage="$3"
     local target_stage="$4"
-    if ! python3 - "$before" "$after" "${5:-}" <<'PY'
+    if ! python3 - "$before" "$after" "${5:-}" "$ROOT/.github/scripts" <<'PY'
 import json
 import sys
 import difflib
+sys.path.insert(0, sys.argv[4])
 
 def records(path):
     with open(path, encoding="utf-8") as source:
@@ -5051,12 +5078,33 @@ def records(path):
 before = records(sys.argv[1])
 after = records(sys.argv[2])
 replaced_node_name = sys.argv[3] or None
+source_hpa_targets = {
+    json.dumps(row["hpaScaleTarget"], sort_keys=True)
+    for row in before.values()
+    if row.get("hpaScaleTarget") is not None
+}
+target_hpa_targets = {
+    json.dumps(row["hpaScaleTarget"], sort_keys=True)
+    for row in after.values()
+    if row.get("hpaScaleTarget") is not None
+}
+hpa_targets = source_hpa_targets & target_hpa_targets
+default_rbac_identities = {
+    identity for records_by_identity in (before, after)
+    for identity, row in records_by_identity.items()
+    if row.get("defaultRbacObject") is True
+}
 
 def comparable_fields(row, identity):
     fields = dict(row.get("fields", {}))
     value = json.loads(identity)
     if row.get("defaultRbacRules") is not None:
         fields = {path: digest for path, digest in fields.items() if not path.startswith("/rules/")}
+    if identity in default_rbac_identities:
+        fields.pop("/metadata/labels", None)
+        fields.pop("/metadata/annotations", None)
+    if identity in hpa_targets:
+        fields.pop("/spec/replicas", None)
     if value == {
         "apiGroup": "rbac.authorization.k8s.io",
         "kind": "Role",
