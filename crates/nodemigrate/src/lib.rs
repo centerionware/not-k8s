@@ -369,7 +369,10 @@ fn migrate_to_nodestore(
     {
         let mut reconcile = bootstrap_command(source, disable_nodeproxy)?;
         append_optional_addon_flags(&mut reconcile, request);
-        prepare_migration_pki(&mut reconcile, source, &export)?;
+        // The full bootstrap already ran before import. Replaying it here
+        // reapplies imported core objects (for example CoreDNS) with a
+        // competing SSA field manager; only reconcile the requested addons.
+        reconcile.arg("addons");
         run_bootstrap(reconcile)
             .context("reconciling requested destination addons after API import")?;
     }

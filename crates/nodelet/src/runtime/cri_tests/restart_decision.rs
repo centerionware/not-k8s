@@ -12,7 +12,7 @@ const CREATED: i32 = 0;
 fn no_existing_container_needs_restart() {
     // Same code path as a genuine restart: nothing to remove, just create.
     for policy in ["Always", "OnFailure", "Never"] {
-        assert_eq!(restart_decision(None, RUNNING, policy), RestartDecision::NeedsRestart);
+        assert_eq!(restart_decision(None, CREATED, RUNNING, policy), RestartDecision::NeedsRestart);
     }
 }
 
@@ -20,7 +20,7 @@ fn no_existing_container_needs_restart() {
 fn running_container_is_left_alone_regardless_of_policy() {
     for policy in ["Always", "OnFailure", "Never"] {
         assert_eq!(
-            restart_decision(Some(RUNNING), RUNNING, policy),
+            restart_decision(Some(RUNNING), CREATED, RUNNING, policy),
             RestartDecision::AlreadyRunning
         );
     }
@@ -29,7 +29,7 @@ fn running_container_is_left_alone_regardless_of_policy() {
 #[test]
 fn exited_container_with_always_needs_restart() {
     assert_eq!(
-        restart_decision(Some(EXITED), RUNNING, "Always"),
+        restart_decision(Some(EXITED), CREATED, RUNNING, "Always"),
         RestartDecision::NeedsRestart
     );
 }
@@ -37,7 +37,7 @@ fn exited_container_with_always_needs_restart() {
 #[test]
 fn exited_container_with_onfailure_needs_restart() {
     assert_eq!(
-        restart_decision(Some(EXITED), RUNNING, "OnFailure"),
+        restart_decision(Some(EXITED), CREATED, RUNNING, "OnFailure"),
         RestartDecision::NeedsRestart
     );
 }
@@ -46,20 +46,19 @@ fn exited_container_with_onfailure_needs_restart() {
 fn exited_container_with_never_is_left_terminated() {
     // Job-style one-shot semantics: it ran, it's done, don't restart it.
     assert_eq!(
-        restart_decision(Some(EXITED), RUNNING, "Never"),
+        restart_decision(Some(EXITED), CREATED, RUNNING, "Never"),
         RestartDecision::LeaveTerminated
     );
 }
 
 #[test]
-fn created_but_not_yet_running_needs_restart_unless_never() {
-    // Not the "running" state, so treated the same as exited: get it
-    // moving (remove + recreate is safe/idempotent either way).
-    assert_eq!(restart_decision(Some(CREATED), RUNNING, "Always"), RestartDecision::NeedsRestart);
-    assert_eq!(
-        restart_decision(Some(CREATED), RUNNING, "Never"),
-        RestartDecision::LeaveTerminated
-    );
+fn created_but_not_yet_started_container_starts_in_place_for_every_policy() {
+    for policy in ["Always", "OnFailure", "Never"] {
+        assert_eq!(
+            restart_decision(Some(CREATED), CREATED, RUNNING, policy),
+            RestartDecision::StartCreated
+        );
+    }
 }
 
 #[test]
@@ -68,5 +67,5 @@ fn decision_is_never_running_for_a_state_that_isnt_literally_running_value() {
     // real "running" state constant, not a truthiness/nonzero check —
     // CREATED (0) must not accidentally compare equal to some other
     // "zero means running" assumption.
-    assert_ne!(restart_decision(Some(CREATED), RUNNING, "Always"), RestartDecision::AlreadyRunning);
+    assert_ne!(restart_decision(Some(CREATED), CREATED, RUNNING, "Always"), RestartDecision::AlreadyRunning);
 }

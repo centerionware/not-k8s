@@ -10,6 +10,10 @@ use super::*;
 pub(crate) enum RestartDecision {
     /// Already running — leave it alone.
     AlreadyRunning,
+    /// The container was created but never started (for example, nodelet
+    /// restarted between CreateContainer and StartContainer). Start this same
+    /// container; restartPolicy applies only after a container has run.
+    StartCreated,
     /// Not running, but restartPolicy: Never means it's done for good —
     /// leave it alone (Job-style one-shot semantics).
     LeaveTerminated,
@@ -149,9 +153,15 @@ pub(crate) fn sidecar_init_decision(existing_state: Option<i32>, running_state: 
 }
 
 
-pub(crate) fn restart_decision(existing_state: Option<i32>, running_state: i32, restart_policy: &str) -> RestartDecision {
+pub(crate) fn restart_decision(
+    existing_state: Option<i32>,
+    created_state: i32,
+    running_state: i32,
+    restart_policy: &str,
+) -> RestartDecision {
     match existing_state {
         None => RestartDecision::NeedsRestart, // no existing container at all — same code path as a genuine restart
+        Some(s) if s == created_state => RestartDecision::StartCreated,
         Some(s) if s == running_state => RestartDecision::AlreadyRunning,
         Some(_) if restart_policy == "Never" => RestartDecision::LeaveTerminated,
         Some(_) => RestartDecision::NeedsRestart,

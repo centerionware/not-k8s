@@ -735,6 +735,7 @@ fn dispatch(subcommand: Option<&str>) -> Result<()> {
         Some("toolchain") => toolchain::run_with(&cfg),
         Some("containerd") => containerd::run_with(&cfg),
         Some("cni") => cni::run_with(&cfg),
+        Some("addons") => addons::install(&cfg),
         Some("flanneld") => cni::run_flanneld(),
         Some("fetch") => {
             if matches!(cfg.source, config::Source::Compile) && !fetch::has_prebuilt() {
@@ -816,7 +817,7 @@ fn print_help() {
     println!();
     println!("Subcommands: all, toolchain, containerd, cni, flanneld, fetch, pki, kubeconfig,");
     println!("targets, rbac, service-reconciler, manifests, services, nodestore,");
-    println!("nodelet, nodeproxy, nodescheduler, nodecontroller, nodeapiserver");
+    println!("nodelet, nodeproxy, nodescheduler, nodecontroller, nodeapiserver, addons");
 }
 
 #[cfg(test)]
@@ -828,6 +829,12 @@ mod tests {
         let parsed = parse_args(&[]).expect("default arguments should parse");
         assert!(!parsed.e2e);
         assert!(parsed.only.is_none());
+    }
+
+    #[test]
+    fn addons_subcommand_selects_addon_only_reconciliation() {
+        let parsed = parse_args(&["addons".to_string()]).expect("addons subcommand should parse");
+        assert_eq!(parsed.subcommand.as_deref(), Some("addons"));
     }
 
     #[test]

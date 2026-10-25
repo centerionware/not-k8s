@@ -42,6 +42,7 @@ impl CriRuntime {
         );
 
         let running_v = ContainerState::ContainerRunning as i32;
+        let created_v = ContainerState::ContainerCreated as i32;
         let existing = self.list_pod_containers(sandbox_id).await?;
         let existing_ctr = select_container_for_name(&existing, &container.name);
 
@@ -52,7 +53,27 @@ impl CriRuntime {
         // otherwise-healthy running container is a completely different,
         // operator-driven event and must never be throttled by it.
         let mut is_crash_restart = false;
-        match restart_decision(existing_ctr.map(|c| c.state), running_v, restart_policy) {
+        match restart_decision(
+            existing_ctr.map(|c| c.state),
+            created_v,
+            running_v,
+            restart_policy,
+        ) {
+            RestartDecision::StartCreated => {
+                let existing_ctr = existing_ctr.context("created container disappeared before StartContainer")?;
+                let mut rt = self.rt.clone();
+                rt.start_container(StartContainerRequest { container_id: existing_ctr.id.clone() })
+                    .await
+                    .with_context(|| format!("starting previously created container {}", container.name))?;
+                info!(
+                    namespace = %id.namespace,
+                    pod = %id.name,
+                    container = %container.name,
+                    container_id = %existing_ctr.id,
+                    "StartContainer succeeded for previously created container"
+                );
+                return Ok(());
+            }
             RestartDecision::LeaveTerminated => return Ok(()),
             RestartDecision::AlreadyRunning => {
                 // In-place pod vertical scaling (round 42; found in round 39's
