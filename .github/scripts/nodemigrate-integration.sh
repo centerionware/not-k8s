@@ -3875,7 +3875,24 @@ YAML
         return 1
     }
     kubectl delete hpa migration-activator -n migration-apps
-    kubectl delete deployment migration-activator-backend -n migration-apps
+    # Wait for Kubernetes garbage collection to remove the generated
+    # ReplicaSet and Pod before the migration state inventory is captured.
+    # Background deletion can leave an ownerless ReplicaSet in the snapshot.
+    kubectl delete deployment migration-activator-backend -n migration-apps \
+        --cascade=foreground --wait=true --timeout=2m
+    local cleanup_deadline=$((SECONDS + 120))
+    local remaining_replicasets
+    while true; do
+        remaining_replicasets="$(kubectl get replicaset -n migration-apps \
+            -l app=migration-activator-backend -o name)" || return 1
+        [[ -n "$remaining_replicasets" ]] || break
+        if (( SECONDS >= cleanup_deadline )); then
+            echo "activation test ReplicaSet remained after foreground Deployment deletion at stage=$stage" >&2
+            printf '%s\n' "$remaining_replicasets" >&2
+            return 1
+        fi
+        sleep 2
+    done
     kubectl delete service migration-activator-front migration-activator-backend -n migration-apps
     echo "PASS migrated cluster buffered a request and activated its HPA-scaled-to-zero backend at stage=$stage"
 }
