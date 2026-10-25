@@ -886,9 +886,18 @@ fn is_scale_subresource(caps: &ApiCapabilities) -> bool {
 
 async fn discover_scale_resources(
     client: &Client,
+    target_api_version: &str,
 ) -> Result<HashMap<(String, String), ScaleResource>> {
+    // The HPA only needs the target API group's discovery document. Querying
+    // aggregated discovery for every group makes one unavailable extension
+    // API block scaling for otherwise healthy built-in targets, and requires
+    // a response shape that older compatible apiservers may not advertise.
+    // Keep discovery scoped to this HPA's target group, including the core
+    // API group for v1 targets.
+    let target_group = target_api_group(target_api_version);
     let discovery = Discovery::new(client.clone())
-        .run_aggregated()
+        .filter(&[target_group])
+        .run()
         .await
         .context("discovering resources with Scale subresources for HPA")?;
     let mut resources = HashMap::new();
@@ -921,6 +930,12 @@ fn target_api_version(hpa: &HorizontalPodAutoscaler) -> Result<(String, String)>
         format!("{group}/{version}")
     };
     Ok((api_version, target.kind.clone()))
+}
+
+fn target_api_group(api_version: &str) -> &str {
+    api_version
+        .split_once('/')
+        .map_or("", |(group, _)| group)
 }
 
 fn set_hpa_condition(
@@ -989,7 +1004,7 @@ async fn reconcile_hpa(
             .ok_or_else(|| anyhow!("HPA has no spec"))?;
         let target_key = target_api_version(hpa)?;
         if !scale_resources.contains_key(&target_key) {
-            *scale_resources = discover_scale_resources(base_client).await?;
+            scale_resources.extend(discover_scale_resources(base_client, &target_key.0).await?);
         }
         let target = scale_resources
             .get(&target_key)
@@ -1313,7 +1328,12 @@ async fn reconcile_hpa(
             }
         }
         Err(error) => {
-            tracing::warn!(namespace = %namespace, hpa = %name, error = ?error, "HPA reconciliation failed; will retry");
+            tracing::warn!(
+                namespace = %namespace,
+                hpa = %name,
+                error = %format!("{error:#}"),
+                "HPA reconciliation failed; will retry"
+            );
             let mut status = hpa.status.clone().unwrap_or_default();
             let mut conditions = status.conditions.take().unwrap_or_default();
             let now = k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
@@ -1425,10 +1445,17 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{desired_replicas, stabilized_recommendation};
+    use super::{desired_replicas, stabilized_recommendation, target_api_group};
     use std::collections::HashMap;
     use std::time::Duration;
     use tokio::time::Instant;
+
+    #[test]
+    fn scale_discovery_is_scoped_to_the_hpa_target_group() {
+        assert_eq!(target_api_group("apps/v1"), "apps");
+        assert_eq!(target_api_group("example.com/v1"), "example.com");
+        assert_eq!(target_api_group("v1"), "");
+    }
 
     #[test]
     fn recommendation_scales_up_down_and_respects_default_tolerance() {
