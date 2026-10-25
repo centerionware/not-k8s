@@ -3616,7 +3616,7 @@ verify_hpa_scaling() {
 }
 
 verify_nodeactivator_hpa_wakeup() {
-    local stage="$1" deadline pod_logs probe activation_observed=false request_status zero_observed=false activator_client_pod
+    local stage="$1" deadline pod_logs probe activation_observed=false request_status zero_observed=false activator_client_pod activator_test_dir request_pid
     kubectl delete hpa migration-activator -n migration-apps --ignore-not-found=true
     kubectl delete deployment migration-activator-backend -n migration-apps --ignore-not-found=true
     kubectl delete service migration-activator-front migration-activator-backend -n migration-apps --ignore-not-found=true
@@ -3785,22 +3785,14 @@ YAML
             --all-containers --prefix --tail=100 >&2 || true
         return 1
     }
-    kubectl exec -n migration-apps "$activator_client_pod" -- sh -ec '
-      rm -f /tmp/activator-response /tmp/activator-status /tmp/activator-client.log
-      (
-        if wget -T 240 -qO- http://migration-activator-front.migration-apps.svc/ \
-          > /tmp/activator-response; then
-          result=0
-        else
-          result=$?
-        fi
-        printf "%s\n" "$result" > /tmp/activator-status
-      ) </dev/null >/tmp/activator-client.log 2>&1 &
-    '
+    activator_test_dir="$(mktemp -d)"
+    kubectl exec -n migration-apps "$activator_client_pod" -- \
+        wget -T 240 -qO- http://migration-activator-front.migration-apps.svc/ \
+        > "$activator_test_dir/response" 2> "$activator_test_dir/client.log" &
+    request_pid=$!
     deadline=$((SECONDS + 180))
     while (( SECONDS < deadline )); do
-        if kubectl exec -n migration-apps "$activator_client_pod" -- \
-            sh -c 'test -f /tmp/activator-status' >/dev/null 2>&1; then
+        if ! kill -0 "$request_pid" 2>/dev/null; then
             break
         fi
         if kubectl get deployment migration-activator-backend -n migration-apps -o json \
@@ -3819,31 +3811,30 @@ YAML
         kubectl get hpa migration-activator -n migration-apps -o yaml >&2 || true
         kubectl get deployment migration-activator-backend -n migration-apps -o yaml >&2 || true
         kubectl get --raw '/apis/external.metrics.k8s.io/v1beta1/namespaces/migration-apps/activator_requests_active?labelSelector=service%3Dmigration-activator-front' >&2 || true
-        kubectl exec -n migration-apps "$activator_client_pod" -- sh -c \
-            'cat /tmp/activator-client.log 2>/dev/null || true' >&2 || true
+        cat "$activator_test_dir/client.log" >&2 || true
         kubectl logs -n kube-system -l app.kubernetes.io/name=nodeactivator \
             --all-containers --prefix --tail=100 >&2 || true
+        kill "$request_pid" 2>/dev/null || true
+        wait "$request_pid" 2>/dev/null || true
+        rm -rf "$activator_test_dir"
         return 1
     }
-    deadline=$((SECONDS + 300))
-    while (( SECONDS < deadline )); do
-        if request_status="$(kubectl exec -n migration-apps "$activator_client_pod" -- \
-            sh -c 'cat /tmp/activator-status 2>/dev/null' 2>/dev/null)"; then
-            break
-        fi
-        sleep 2
-    done
+    if wait "$request_pid"; then
+        request_status=0
+    else
+        request_status=$?
+    fi
     [[ "$request_status" == 0 ]] || {
-        echo "buffered request did not complete successfully at stage=$stage status=${request_status:-pending}" >&2
+        echo "buffered request did not complete successfully at stage=$stage status=$request_status" >&2
         kubectl get hpa,deployment,pod,service -n migration-apps >&2 || true
-        kubectl exec -n migration-apps "$activator_client_pod" -- sh -c \
-            'cat /tmp/activator-client.log 2>/dev/null || true' >&2 || true
+        cat "$activator_test_dir/client.log" >&2 || true
         kubectl logs -n kube-system -l app.kubernetes.io/name=nodeactivator \
             --all-containers --prefix --tail=100 >&2 || true
+        rm -rf "$activator_test_dir"
         return 1
     }
-    pod_logs="$(kubectl exec -n migration-apps "$activator_client_pod" -- \
-        sh -c 'cat /tmp/activator-response')"
+    pod_logs="$(<"$activator_test_dir/response")"
+    rm -rf "$activator_test_dir"
     grep -Fq migration-activator-response <<< "$pod_logs" || {
         echo "activator request completed without a backend response at stage=$stage: $pod_logs" >&2
         return 1
