@@ -168,6 +168,13 @@ jobs:
               echo "$zig_target"
               exit 0
           fi
+          # nodebootstrap may re-exec this compiler as root. Keep each UID's
+          # Zig caches separate so root-created entries cannot block runner
+          # compiler invocations later in the same build.
+          zig_cache_root="$RUNNER_TEMP/not-k8s-zig-cache-\$(id -u)"
+          export ZIG_GLOBAL_CACHE_DIR="\$zig_cache_root/global"
+          export ZIG_LOCAL_CACHE_DIR="\$zig_cache_root/local"
+          mkdir -p "\$ZIG_GLOBAL_CACHE_DIR" "\$ZIG_LOCAL_CACHE_DIR"
           args=()
           for arg in "\$@"; do
               case "\$arg" in
