@@ -1476,9 +1476,22 @@ EOF
         local stable minor
         stable="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
         minor="$(sed -E 's/^(v[0-9]+\.[0-9]+)\..*/\1/' <<<"$stable")"
-        apt-get install -y -qq kubelet kubeadm
+        apt-get install -y -qq kubelet kubeadm containernetworking-plugins
+        local cni_bridge cni_plugin_dir
+        cni_bridge="$(dpkg -L containernetworking-plugins | awk '/\/bridge$/ { print }' | tail -n 1)"
+        [[ -n "$cni_bridge" && -x "$cni_bridge" ]] \
+            || { echo "containernetworking-plugins did not install its bridge binary" >&2; return 1; }
+        cni_plugin_dir="${cni_bridge%/*}"
+        [[ -x "$cni_plugin_dir/loopback" ]] \
+            || { echo "containernetworking-plugins did not install loopback binary" >&2; return 1; }
+        if [[ "$cni_plugin_dir" != /opt/cni/bin ]]; then
+            install -d /opt/cni/bin
+            for plugin in "$cni_plugin_dir"/*; do
+                ln -sfn "$plugin" "/opt/cni/bin/${plugin##*/}"
+            done
+        fi
         [[ -x /opt/cni/bin/bridge && -x /opt/cni/bin/loopback ]] || {
-            echo "kubelet's kubernetes-cni dependency did not install bridge and loopback" >&2
+            echo "CNI bridge and loopback binaries are unavailable to kubelet" >&2
             return 1
         }
         local cri_tools_version="${CRI_TOOLS_VERSION:-${minor}.0}"
@@ -5070,14 +5083,8 @@ def default_rbac_source_rules_preserved(source, target, identity):
         return True
     if target.get("defaultRbacRules") is None:
         return False
-    target_rules = {
-        json.dumps(rule, sort_keys=True, separators=(",", ":"))
-        for rule in target["defaultRbacRules"]
-    }
-    missing_rules = [
-        rule for rule in source["defaultRbacRules"]
-        if json.dumps(rule, sort_keys=True, separators=(",", ":")) not in target_rules
-    ]
+    from nodemigrate_rbac_rules import missing_source_rules
+    missing_rules = missing_source_rules(source["defaultRbacRules"], target["defaultRbacRules"])
     if missing_rules:
         print(f"Kubernetes default RBAC role lost source rules {identity}:", file=sys.stderr)
         json.dump(missing_rules, sys.stderr, indent=2)

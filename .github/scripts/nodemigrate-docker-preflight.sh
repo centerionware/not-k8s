@@ -467,6 +467,19 @@ for node in cp-2 cp-3; do
         --certificate-key "$certificate_key" \
         --apiserver-advertise-address="$node_ip" \
         --cri-socket=unix:///run/containerd/containerd.sock
+    if [[ "$node" == cp-2 ]]; then
+        echo "Waiting for cp-2 etcd and API server static Pods to become Ready before joining cp-3"
+        if ! docker exec "$cp1" bash -ec '
+            export KUBECONFIG=/etc/kubernetes/admin.conf
+            kubectl wait --for=condition=Ready pod/etcd-cp-2 -n kube-system --timeout=5m
+            kubectl wait --for=condition=Ready pod/kube-apiserver-cp-2 -n kube-system --timeout=5m
+            kubectl get --raw="/readyz?verbose" | grep -F "[+]etcd ok"
+        '; then
+            echo "cp-2 did not join a healthy stacked-etcd control plane; collecting diagnostics"
+            collect_cluster_diagnostics
+            exit 1
+        fi
+    fi
 done
 
 echo "Joining worker-1 and worker-2 to the upstream cluster"

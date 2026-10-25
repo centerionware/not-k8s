@@ -116,6 +116,9 @@ jobs:
       - name: Check snapshot jq
         run: bash .github/scripts/check_nodemigrate_snapshot_filter.sh
 
+      - name: Check RBAC coverage
+        run: python3 .github/scripts/nodemigrate_rbac_rules.py
+
       - name: Check Helm state
         run: bash .github/scripts/check_nodemigrate_helm_snapshot.sh
 
