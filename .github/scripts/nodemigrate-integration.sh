@@ -3589,7 +3589,7 @@ verify_hpa_scaling() {
     while (( SECONDS < deadline )); do
         if kubectl get deployment metrics-server -n kube-system -o json | jq -e '
           .status.observedGeneration >= .metadata.generation and
-          any(.status.conditions[]?; .type == "Available" and .status == "True") and
+          (.status.updatedReplicas // 0) >= (.spec.replicas // 1) and
           (.status.availableReplicas // 0) >= (.spec.replicas // 1)
         ' >/dev/null 2>&1; then
             metrics_server_available=true
@@ -3598,7 +3598,7 @@ verify_hpa_scaling() {
         sleep 2
     done
     [[ "$metrics_server_available" == true ]] || {
-        echo "Metrics Server Deployment did not report observed available replicas at stage=$stage" >&2
+        echo "Metrics Server Deployment did not report observed updated and available replicas at stage=$stage" >&2
         kubectl get deployment metrics-server -n kube-system -o yaml >&2 || true
         kubectl get pods -n kube-system -l k8s-app=metrics-server -o wide >&2 || true
         return 1
