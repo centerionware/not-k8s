@@ -4729,7 +4729,7 @@ print(f"CRD precision checkpoint stage={stage} crd={expected_name} maximum={valu
       }] | sort_by(.name)
     ' > "$stage_dir/nodes.json"
 
-    kubectl get configmap,secret,serviceaccount,role,rolebinding,deployment,statefulset,daemonset,cronjob,poddisruptionbudget,service,ingress,pvc -n migration-apps -o json \
+    kubectl get configmap,secret,serviceaccount,role,rolebinding,deployment,statefulset,daemonset,cronjob,horizontalpodautoscaler,poddisruptionbudget,service,ingress,pvc -n migration-apps -o json \
       | jq -S -f "$ROOT/.github/scripts/nodemigrate-application-snapshot.jq" > "$stage_dir/application.json"
     kubectl get pv -o json \
       | jq -S '[.items[] | select(.spec.claimRef.namespace == "migration-apps") | {

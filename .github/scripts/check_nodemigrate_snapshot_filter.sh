@@ -40,6 +40,32 @@ target_application="$(jq -cn '{items:[
 jq -e 'all(.[]; .kind != "ConfigMap" or .name != "kube-root-ca.crt") and .[0].spec.volumeClaimTemplates[0].spec.resources.requests.storage == "1Gi"' \
     <<< "$(jq -cS -f "$APPLICATION_FILTER" <<< "$target_application")" >/dev/null
 
+source_hpa_application='{"items":[
+  {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"autoscaled","namespace":"migration-apps"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"autoscaled"}}}},
+  {"apiVersion":"autoscaling/v2","kind":"HorizontalPodAutoscaler","metadata":{"name":"autoscaled","namespace":"migration-apps"},"spec":{"scaleTargetRef":{"apiVersion":"apps/v1","kind":"Deployment","name":"autoscaled"},"minReplicas":0,"maxReplicas":3,"metrics":[{"type":"Resource","resource":{"name":"cpu","target":{"type":"Utilization","averageUtilization":50}}}]}}
+]} '
+target_hpa_application="${source_hpa_application/\"replicas\":1/\"replicas\":3}"
+[[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$source_hpa_application")" == "$(jq -cS -f "$APPLICATION_FILTER" <<< "$target_hpa_application")" ]] || {
+    echo "HPA-controlled Deployment replica changes altered the semantic fixture snapshot" >&2
+    exit 1
+}
+jq -e 'any(.[]; .kind == "HorizontalPodAutoscaler" and .spec.minReplicas == 0 and .spec.maxReplicas == 3)' \
+    <<< "$(jq -cS -f "$APPLICATION_FILTER" <<< "$target_hpa_application")" >/dev/null || {
+    echo "semantic fixture snapshot omitted the HPA policy" >&2
+    exit 1
+}
+changed_hpa_application="${target_hpa_application/\"maxReplicas\":3/\"maxReplicas\":4}"
+[[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$source_hpa_application")" != "$(jq -cS -f "$APPLICATION_FILTER" <<< "$changed_hpa_application")" ]] || {
+    echo "semantic fixture snapshot normalized away an HPA policy change" >&2
+    exit 1
+}
+without_hpa_application='{"items":[{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"autoscaled","namespace":"migration-apps"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"autoscaled"}}}}]}'
+changed_without_hpa_application="${without_hpa_application/\"replicas\":1/\"replicas\":3}"
+[[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$without_hpa_application")" != "$(jq -cS -f "$APPLICATION_FILTER" <<< "$changed_without_hpa_application")" ]] || {
+    echo "standalone Deployment desired replica changes were normalized away" >&2
+    exit 1
+}
+
 source_rc='{"items":[{"apiVersion":"v1","kind":"ReplicationController","metadata":{"name":"rc","namespace":"apps"},"spec":{"replicas":1,"selector":{"app":"rc"},"template":{"metadata":{"labels":{"app":"rc"}},"spec":{"containers":[{"name":"check","image":"busybox"}]}}}}]}'
 target_rc='{"items":[{"apiVersion":"v1","kind":"ReplicationController","metadata":{"name":"rc","namespace":"apps"},"spec":{"replicas":1,"selector":{"app":"rc"},"minReadySeconds":0,"template":{"metadata":{"labels":{"app":"rc"}},"spec":{"containers":[{"name":"check","image":"busybox"}]}}}}]}'
 [[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$source_rc")" == "$(jq -cS -f "$APPLICATION_FILTER" <<< "$target_rc")" ]] || {
