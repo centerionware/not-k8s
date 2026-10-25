@@ -108,6 +108,7 @@ for node in "${NODES[@]}"; do
         --network-alias "$node" \
         --privileged \
         --cgroupns=private \
+        --ulimit nofile=1048576:1048576 \
         --tmpfs /run:rw,nosuid,nodev,mode=0755 \
         --tmpfs /run/lock:rw,nosuid,nodev,mode=0755 \
         --volume /boot:/boot:ro \
@@ -460,6 +461,19 @@ read -r -a join_args <<<"$join_command"
     || fail "kubeadm returned an unexpected join command: $join_command"
 
 echo "Joining cp-2 and cp-3 to the stacked-etcd control plane"
+for node in cp-1 cp-2 cp-3; do
+    container="$(node_container "$node")"
+    echo "Node resource limits for $node:"
+    docker exec "$container" bash -ec '
+        printf "open-file soft/hard: "
+        ulimit -Sn; ulimit -Hn
+        printf "inotify instances/watches: "
+        cat /proc/sys/fs/inotify/max_user_instances /proc/sys/fs/inotify/max_user_watches | paste -sd / -
+        printf "system file handles (allocated/free/max): "
+        cat /proc/sys/fs/file-nr | tr "\\n" " "
+        printf "\\n"
+    '
+done
 control_plane_version="$(docker exec "$cp1" kubeadm version -o short)"
 etcd_image="$(docker exec "$cp1" kubeadm config images list \
     --kubernetes-version "$control_plane_version" | awk '/\/etcd:/ { print; exit }')"

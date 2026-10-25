@@ -4993,6 +4993,9 @@ if group == "rbac.authorization.k8s.io" and kind in {"Role", "ClusterRole"}:
     # startup. Capture target rules even when nodebootstrap owns the target
     # role and therefore does not carry the Kubernetes bootstrapping label.
     row["rbacRules"] = obj.get("rules") or []
+if group == "rbac.authorization.k8s.io" and kind in {"RoleBinding", "ClusterRoleBinding"}:
+    row["rbacRoleRef"] = obj.get("roleRef") or {}
+    row["rbacSubjects"] = obj.get("subjects") or []
 if kind == "HorizontalPodAutoscaler":
     scale_target = (obj.get("spec") or {}).get("scaleTargetRef") or {}
     api_version = scale_target.get("apiVersion", "")
@@ -5096,12 +5099,34 @@ default_rbac_identities = {
     if row.get("defaultRbacObject") is True
 }
 
+def source_role_is_bound(identity):
+    role = json.loads(identity)
+    for binding in before.values():
+        if not binding.get("rbacSubjects"):
+            continue
+        ref = binding.get("rbacRoleRef") or {}
+        if ref.get("name") != role["name"]:
+            continue
+        if role["kind"] == "ClusterRole":
+            if ref.get("kind") == "ClusterRole":
+                return True
+        elif role["kind"] == "Role":
+            if (
+                ref.get("kind") == "Role"
+                and binding["identity"].get("namespace") == role["namespace"]
+            ):
+                return True
+    return False
+
 def comparable_fields(row, identity):
     fields = dict(row.get("fields", {}))
     value = json.loads(identity)
     if identity in default_rbac_identities:
         fields = {path: digest for path, digest in fields.items() if not path.startswith("/rules/")}
     if identity in default_rbac_identities:
+        fields.pop("/metadata/labels", None)
+        fields.pop("/metadata/annotations", None)
+    if value.get("apiGroup") == "rbac.authorization.k8s.io" and value.get("name") == "system:coredns" and value.get("kind") in {"ClusterRole", "ClusterRoleBinding"}:
         fields.pop("/metadata/labels", None)
         fields.pop("/metadata/annotations", None)
     if identity in hpa_targets:
@@ -5129,6 +5154,8 @@ def comparable_fields(row, identity):
 
 def default_rbac_source_rules_preserved(source, target, identity):
     if source.get("defaultRbacRules") is None:
+        return True
+    if not source_role_is_bound(identity):
         return True
     target_rules = target.get("rbacRules")
     if target_rules is None:
