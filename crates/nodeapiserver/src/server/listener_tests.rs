@@ -46,6 +46,24 @@ mod tests {
     }
 
     #[test]
+    fn delete_options_accept_the_resource_version_protobuf_envelope() {
+        let schema = "io.k8s.apimachinery.pkg.apis.meta.v1.DeleteOptions";
+        let value = serde_json::json!({"preconditions":{"uid":"node-uid"}});
+        let raw = crate::codec::protobuf::encode_message(schema, &value).unwrap();
+        let wire = crate::codec::protobuf::wrap_unknown("storage.k8s.io/v1", "DeleteOptions", &raw);
+        let decoded = decode_virtual_request(
+            &wire,
+            Some("application/vnd.kubernetes.protobuf"),
+            "storage.k8s.io",
+            "v1",
+            "DeleteOptions",
+        )
+        .unwrap();
+        assert_eq!(decoded["preconditions"]["uid"], "node-uid");
+        assert_eq!(decoded["apiVersion"], "storage.k8s.io/v1");
+    }
+
+    #[test]
     fn api_root_serves_api_versions() {
         let route = route_discovery(&parts("/api"), None, &[], &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {

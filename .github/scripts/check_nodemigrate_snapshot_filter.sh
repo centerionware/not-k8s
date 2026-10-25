@@ -66,6 +66,14 @@ changed_without_hpa_application="${without_hpa_application/\"replicas\":1/\"repl
     exit 1
 }
 
+hpa_replicaset_source='{"items":[{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"autoscaled","namespace":"migration-apps"},"spec":{"replicas":1}},{"apiVersion":"autoscaling/v2","kind":"HorizontalPodAutoscaler","metadata":{"name":"autoscaled","namespace":"migration-apps"},"spec":{"scaleTargetRef":{"apiVersion":"apps/v1","kind":"Deployment","name":"autoscaled"},"minReplicas":0,"maxReplicas":3}},{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"autoscaled-abc","namespace":"migration-apps","ownerReferences":[{"apiVersion":"apps/v1","kind":"Deployment","name":"autoscaled","controller":true}],"annotations":{"deployment.kubernetes.io/desired-replicas":"1","deployment.kubernetes.io/max-replicas":"3"}},"spec":{"replicas":1}}]}'
+hpa_replicaset_target="${hpa_replicaset_source/\"desired-replicas\":\"1\"/\"desired-replicas\":\"3\"}"
+hpa_replicaset_target="${hpa_replicaset_target/\"max-replicas\":\"3\"/\"max-replicas\":\"4\"}"
+[[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$hpa_replicaset_source")" == "$(jq -cS -f "$APPLICATION_FILTER" <<< "$hpa_replicaset_target")" ]] || {
+    echo "HPA-managed ReplicaSet annotations altered the semantic fixture snapshot" >&2
+    exit 1
+}
+
 source_rc='{"items":[{"apiVersion":"v1","kind":"ReplicationController","metadata":{"name":"rc","namespace":"apps"},"spec":{"replicas":1,"selector":{"app":"rc"},"template":{"metadata":{"labels":{"app":"rc"}},"spec":{"containers":[{"name":"check","image":"busybox"}]}}}}]}'
 target_rc='{"items":[{"apiVersion":"v1","kind":"ReplicationController","metadata":{"name":"rc","namespace":"apps"},"spec":{"replicas":1,"selector":{"app":"rc"},"minReadySeconds":0,"template":{"metadata":{"labels":{"app":"rc"}},"spec":{"containers":[{"name":"check","image":"busybox"}]}}}}]}'
 [[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$source_rc")" == "$(jq -cS -f "$APPLICATION_FILTER" <<< "$target_rc")" ]] || {

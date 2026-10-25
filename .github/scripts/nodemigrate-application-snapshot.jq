@@ -15,6 +15,13 @@
       labels: ($item.metadata.labels // {}),
       annotations: (if $item.kind == "Secret" and $item.type == "kubernetes.io/service-account-token" then
         (($item.metadata.annotations // {}) | del(."kubernetes.io/service-account.uid"))
+      elif $item.kind == "ReplicaSet" and any($items[];
+          .kind == "HorizontalPodAutoscaler" and
+          .metadata.namespace == $item.metadata.namespace and
+          .spec.scaleTargetRef.kind == "Deployment" and
+          (.spec.scaleTargetRef.name as $target_name | any($item.metadata.ownerReferences[]?;
+            .kind == "Deployment" and .name == $target_name))) then
+        (($item.metadata.annotations // {}) | del(."deployment.kubernetes.io/desired-replicas", ."deployment.kubernetes.io/max-replicas"))
       else ($item.metadata.annotations // {}) end),
       ownerReferences: [($item.metadata.ownerReferences // [])[] | {apiVersion, kind, name, controller}],
       spec: (($item.spec // {})
