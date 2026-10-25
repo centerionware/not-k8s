@@ -5180,6 +5180,11 @@ def comparable_fields(row, identity):
         fields.pop("/metadata/annotations", None)
     if identity in hpa_targets:
         fields.pop("/spec/replicas", None)
+    if value.get("apiGroup") == "apps" and value.get("kind") == "ReplicaSet":
+        # The Deployment controller updates these bookkeeping annotations as
+        # HPA changes the target's scale. They are not durable workload data.
+        fields.pop("/metadata/annotations/deployment.kubernetes.io~1desired-replicas", None)
+        fields.pop("/metadata/annotations/deployment.kubernetes.io~1max-replicas", None)
     if value == {
         "apiGroup": "rbac.authorization.k8s.io",
         "kind": "Role",
