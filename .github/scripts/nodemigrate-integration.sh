@@ -2012,6 +2012,10 @@ install_workloads() {
         issuers.cert-manager.io clusterissuers.cert-manager.io \
         challenges.acme.cert-manager.io orders.acme.cert-manager.io; do
         kubectl wait --for=condition=Established "crd/$crd" --timeout=2m
+        kubectl label "crd/$crd" app.kubernetes.io/managed-by=Helm --overwrite
+        kubectl annotate "crd/$crd" \
+            meta.helm.sh/release-name=cert-manager \
+            meta.helm.sh/release-namespace=cert-manager --overwrite
     done
     helm upgrade --install cert-manager jetstack/cert-manager \
         --version "${CERT_MANAGER_VERSION:-v1.21.2}" \
