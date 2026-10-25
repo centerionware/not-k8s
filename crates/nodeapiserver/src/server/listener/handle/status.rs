@@ -45,6 +45,31 @@ macro_rules! handle_status {
     }
 
     if $info.is_resource_request
+        && $info.verb == "get"
+        && $info.subresource == "status"
+        && !$info.name.is_empty()
+    {
+        let Some(mut client) = $storage else {
+            return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
+        };
+        return match rest::get_status(
+            &mut client,
+            &$info.api_group,
+            &$info.api_version,
+            &$info.resource,
+            storage_namespace(&$info),
+            &$info.name,
+        ).await {
+            Ok(rest::GetOutcome::Found(object)) => Ok(json_response(StatusCode::OK, &object)),
+            Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&$path_str))),
+            Err(error) => {
+                warn!(path = %$path_str, error = ?error, "rest::get_status failed");
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)))
+            }
+        };
+    }
+
+    if $info.is_resource_request
         && $info.verb == "update"
         && !$info.name.is_empty()
         && ($info.subresource == "status" || $is_certificate_status_subresource)

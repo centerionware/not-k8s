@@ -28,12 +28,13 @@
 //! all. That's real, separate work, not a small extension of this file;
 //! deferred rather than attempted half-correct. `pods`/`services` were
 //! chosen as the two most commonly set object-count quotas in practice.
-//! Every unsupported key in `spec.hard` is simply left absent from
-//! `status.used` — never guessed at — so `kubectl describe quota` shows
-//! exactly what this controller does and doesn't track, not a wrong number.
+//! Unsupported keys in `spec.hard` are never calculated here. Existing
+//! `status.used` entries for those keys are preserved because API-server
+//! admission or another quota implementation may own them. This controller
+//! only compares and patches the `pods` and `services` entries it computes.
 
-use anyhow::Result;
 use crate::workqueue::KeyedWorkQueue;
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Pod, ResourceQuota};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
@@ -43,7 +44,6 @@ use kube::{Client, ResourceExt};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
-#[cfg(test)]
 const SUPPORTED_KEYS: &[&str] = &["pods", "services"];
 
 fn counts_toward_pod_quota(pod: &Pod) -> bool {
@@ -94,11 +94,17 @@ async fn reconcile_quota(
     let service_count = services.get(&namespace).map(|s| s.len()).unwrap_or(0);
     let used = compute_used(&hard_keys, pod_count, service_count);
 
-    if quota.status.as_ref().and_then(|s| s.used.as_ref()) == Some(&used) {
+    let current_used = quota.status.as_ref().and_then(|s| s.used.as_ref());
+    if managed_used_matches(current_used, &used) {
         return true; // already correct
     }
 
-    let patch = serde_json::json!({ "status": { "used": used, "hard": hard } });
+    let patch = serde_json::json!({
+        "status": {
+            "used": managed_used_patch(&used),
+            "hard": hard
+        }
+    });
     match api
         .patch_status(&name, &PatchParams::default(), &Patch::Merge(&patch))
         .await
@@ -109,6 +115,35 @@ async fn reconcile_quota(
             false
         }
     }
+}
+
+/// Compare only the `status.used` entries this controller owns. Other
+/// quota keys (for example `requests.storage`) are maintained by API-server
+/// admission and must not cause this partial controller to rewrite status on
+/// every watch event. The status PATCH uses merge semantics, so those other
+/// entries remain untouched.
+fn managed_used_matches(
+    current: Option<&BTreeMap<String, Quantity>>,
+    desired: &BTreeMap<String, Quantity>,
+) -> bool {
+    SUPPORTED_KEYS
+        .iter()
+        .all(|key| current.and_then(|used| used.get(*key)) == desired.get(*key))
+}
+
+/// Build merge-patch entries for all fields owned by this controller. Null
+/// removes a stale managed key when it is no longer present in `spec.hard`;
+/// unowned fields are deliberately omitted and preserved.
+fn managed_used_patch(desired: &BTreeMap<String, Quantity>) -> serde_json::Value {
+    let mut patch = serde_json::Map::new();
+    for key in SUPPORTED_KEYS {
+        let value = desired
+            .get(*key)
+            .map(|quantity| serde_json::Value::String(quantity.0.clone()))
+            .unwrap_or(serde_json::Value::Null);
+        patch.insert((*key).to_string(), value);
+    }
+    serde_json::Value::Object(patch)
 }
 
 fn ns_of<K: ResourceExt>(obj: &K) -> String {
@@ -263,10 +298,40 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_quota_usage_does_not_retrigger_status_writes() {
+        let desired = compute_used(&["pods".to_string()], 3, 0);
+        let current = BTreeMap::from([
+            ("pods".to_string(), Quantity("3".to_string())),
+            ("requests.storage".to_string(), Quantity("2Gi".to_string())),
+        ]);
+
+        assert!(managed_used_matches(Some(&current), &desired));
+        assert_eq!(
+            managed_used_patch(&desired),
+            serde_json::json!({"pods": "3", "services": null})
+        );
+    }
+
+    #[test]
+    fn managed_status_patch_removes_only_stale_supported_keys() {
+        let desired = compute_used(&["pods".to_string()], 0, 0);
+        let current = BTreeMap::from([
+            ("pods".to_string(), Quantity("4".to_string())),
+            ("services".to_string(), Quantity("1".to_string())),
+            ("requests.storage".to_string(), Quantity("2Gi".to_string())),
+        ]);
+
+        assert!(!managed_used_matches(Some(&current), &desired));
+        assert_eq!(
+            managed_used_patch(&desired),
+            serde_json::json!({"pods": "0", "services": null})
+        );
+    }
+
+    #[test]
     fn supported_keys_list_matches_what_compute_used_actually_handles() {
-        // Guards against the two ever drifting apart — SUPPORTED_KEYS is
-        // documentation-facing (the module doc references it), compute_used
-        // is the real behavior.
+        // Guards against the supported-key list and computation drifting
+        // apart; the list also defines the fields this controller owns.
         for key in SUPPORTED_KEYS {
             let used = compute_used(&[key.to_string()], 1, 1);
             assert!(

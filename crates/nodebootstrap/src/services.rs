@@ -30,6 +30,7 @@
 //! follow-up, not a gap introduced here.
 
 use anyhow::{Context, Result};
+use base64::Engine as _;
 
 use crate::config::Config;
 use crate::pkg::{PkgNames, command_exists, pkg_install};
@@ -37,6 +38,95 @@ use crate::service_mgr::{self, SupervisedService};
 
 fn binary_path(cfg: &Config, name: &str) -> std::path::PathBuf {
     cfg.toolchain_dir().join("bin").join(name)
+}
+
+/// Resolve the active cluster's public CA from a worker kubeconfig and save
+/// it where the Nodelet service can read it after the bootstrap process exits.
+fn worker_nodelet_client_ca(kubeconfig_path: &std::path::Path) -> Result<std::path::PathBuf> {
+    use std::io::Write as _;
+
+    let raw = std::fs::read_to_string(kubeconfig_path)
+        .with_context(|| format!("reading worker kubeconfig {}", kubeconfig_path.display()))?;
+    let config: serde_yaml::Value = serde_yaml::from_str(&raw)
+        .with_context(|| format!("parsing worker kubeconfig {}", kubeconfig_path.display()))?;
+    let current_context = config
+        .get("current-context")
+        .and_then(serde_yaml::Value::as_str)
+        .context("worker kubeconfig has no current-context")?;
+    let contexts = config
+        .get("contexts")
+        .and_then(serde_yaml::Value::as_sequence)
+        .context("worker kubeconfig has no contexts list")?;
+    let context = contexts
+        .iter()
+        .find(|entry| entry.get("name").and_then(serde_yaml::Value::as_str) == Some(current_context))
+        .and_then(|entry| entry.get("context"))
+        .with_context(|| format!("worker kubeconfig current-context {current_context:?} is missing"))?;
+    let cluster_name = context
+        .get("cluster")
+        .and_then(serde_yaml::Value::as_str)
+        .context("active worker kubeconfig context has no cluster")?;
+    let clusters = config
+        .get("clusters")
+        .and_then(serde_yaml::Value::as_sequence)
+        .context("worker kubeconfig has no clusters list")?;
+    let cluster = clusters
+        .iter()
+        .find(|entry| entry.get("name").and_then(serde_yaml::Value::as_str) == Some(cluster_name))
+        .and_then(|entry| entry.get("cluster"))
+        .with_context(|| format!("active worker kubeconfig cluster {cluster_name:?} is missing"))?;
+    let ca = if let Some(encoded) = cluster
+        .get("certificate-authority-data")
+        .and_then(serde_yaml::Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded.trim())
+            .context("decoding active worker kubeconfig certificate-authority-data")?
+    } else {
+        let path = cluster
+            .get("certificate-authority")
+            .and_then(serde_yaml::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .context("active worker kubeconfig has no certificate authority")?;
+        let path = std::path::Path::new(path);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            kubeconfig_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join(path)
+        };
+        std::fs::read(&path)
+            .with_context(|| format!("reading worker cluster CA {}", path.display()))?
+    };
+    anyhow::ensure!(!ca.is_empty(), "active worker cluster CA is empty");
+
+    let ca_path = kubeconfig_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("nodelet-client-ca.crt");
+    let temporary = ca_path.with_extension(format!("crt.{}.tmp", std::process::id()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&temporary)
+        .with_context(|| format!("creating Nodelet client CA {}", temporary.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
+    }
+    file.write_all(&ca)
+        .with_context(|| format!("writing Nodelet client CA {}", temporary.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing Nodelet client CA {}", temporary.display()))?;
+    std::fs::rename(&temporary, &ca_path).with_context(|| {
+        format!("installing Nodelet client CA at {}", ca_path.display())
+    })?;
+    Ok(ca_path)
 }
 
 /// Forwards every `<prefix>_*` env var already set in nodebootstrap's own
@@ -149,9 +239,15 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
     let kubeconfig = kubeconfig.to_string_lossy().to_string();
     let runtime = cfg.nodelet_runtime();
     let server_cert_dir = cfg.nodelet_server_cert_dir().to_string_lossy().to_string();
-    let client_ca_file = std::env::var("NODELET_CLIENT_CA_FILE").ok().or_else(|| {
-        (!cfg.worker).then(|| cfg.pki_dir().join("ca.crt").to_string_lossy().to_string())
-    });
+    let client_ca_file = match std::env::var("NODELET_CLIENT_CA_FILE") {
+        Ok(path) => Some(path),
+        Err(_) if cfg.worker => Some(
+            worker_nodelet_client_ca(std::path::Path::new(&kubeconfig))?
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        Err(_) => Some(cfg.pki_dir().join("ca.crt").to_string_lossy().to_string()),
+    };
     let nodelet_kubeconfig = cfg.worker_nodelet_kubeconfig().to_string_lossy().to_string();
     let bootstrap_kubeconfig = cfg
         .worker_bootstrap_kubeconfig
@@ -161,6 +257,7 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
     let cluster_dns = cfg.cluster_dns_ips().join(",");
     let cluster_domain = cfg.cluster_domain();
     let binary = bin.to_string_lossy().to_string();
+    let csi_staging_root = std::env::var("NODELET_CSI_STAGING_ROOT").ok();
     let mut env = vec![
         ("KUBECONFIG", kubeconfig.as_str()),
         ("NODELET_RUNTIME", runtime.as_str()),
@@ -175,6 +272,9 @@ pub fn ensure_nodelet(cfg: &Config) -> Result<()> {
     }
     if let Some(client_ca_file) = client_ca_file.as_deref() {
         env.push(("NODELET_CLIENT_CA_FILE", client_ca_file));
+    }
+    if let Some(csi_staging_root) = csi_staging_root.as_deref() {
+        env.push(("NODELET_CSI_STAGING_ROOT", csi_staging_root));
     }
     if let Some(bootstrap) = bootstrap_kubeconfig.as_deref() {
         env.push(("NODELET_BOOTSTRAP_KUBECONFIG", bootstrap));
@@ -262,7 +362,54 @@ async fn control_plane_ready(client: kube::Client, ca: String) -> Result<()> {
 #[cfg(test)]
 mod readiness_tests {
     use super::*;
+    use base64::Engine as _;
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
+    #[test]
+    fn worker_nodelet_ca_uses_the_current_context_cluster() {
+        let directory = std::env::temp_dir().join(format!(
+            "nodebootstrap-worker-ca-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let config = directory.join("worker.conf");
+        let ca = b"-----BEGIN CERTIFICATE-----\nworker-cluster-ca\n";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(ca);
+        std::fs::write(
+            &config,
+            format!(
+                "current-context: active\ncontexts:\n- name: active\n  context:\n    cluster: target\n- name: stale\n  context:\n    cluster: source\nclusters:\n- name: source\n  cluster:\n    certificate-authority-data: {}\n- name: target\n  cluster:\n    certificate-authority-data: {}\n",
+                base64::engine::general_purpose::STANDARD.encode(b"wrong-ca"),
+                encoded,
+            ),
+        )
+        .unwrap();
+
+        let ca_path = worker_nodelet_client_ca(&config).unwrap();
+        assert_eq!(std::fs::read(&ca_path).unwrap(), ca);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn worker_nodelet_ca_resolves_relative_authority_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "nodebootstrap-worker-ca-file-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let config = directory.join("worker.conf");
+        let ca = b"-----BEGIN CERTIFICATE-----\nrelative-ca\n";
+        std::fs::write(directory.join("ca.crt"), ca).unwrap();
+        std::fs::write(
+            &config,
+            "current-context: active\ncontexts:\n- name: active\n  context:\n    cluster: target\nclusters:\n- name: target\n  cluster:\n    certificate-authority: ca.crt\n",
+        )
+        .unwrap();
+
+        let ca_path = worker_nodelet_client_ca(&config).unwrap();
+        assert_eq!(std::fs::read(&ca_path).unwrap(), ca);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[tokio::test(start_paused = true)]
     async fn readiness_waits_for_new_controller_output_and_cleans_up() {

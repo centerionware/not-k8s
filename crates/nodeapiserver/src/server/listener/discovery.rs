@@ -99,6 +99,7 @@ fn route_discovery(
     accept_header: Option<&str>,
     crds: &[crate::apiextensions::registry::DiscoverableResource],
     aggregated: &[(String, String)],
+    aggregated_resource_lists: &[(String, String, serde_json::Value)],
 ) -> DiscoveryRoute {
     let seg = |i: usize| parts.get(i).map(String::as_str);
     match (seg(0), seg(1), parts.len()) {
@@ -111,7 +112,11 @@ fn route_discovery(
             None => DiscoveryRoute::NotFound,
         },
         (Some("apis"), _, 1) if wants_aggregated_discovery(accept_header) => DiscoveryRoute::Found(
-            discovery::api_group_discovery_list_with_crds(crds, aggregated),
+            discovery::api_group_discovery_list_with_aggregated_resources(
+                crds,
+                aggregated,
+                aggregated_resource_lists,
+            ),
         ),
         (Some("apis"), _, 1) => {
             DiscoveryRoute::Found(discovery::api_group_list_with_crds(crds, aggregated))
@@ -358,6 +363,21 @@ fn precondition_failed_status(path_str: &str) -> serde_json::Value {
         "message": format!("{path_str}: delete precondition failed"),
         "reason": "Conflict",
         "details": {},
+        "code": 409,
+    })
+}
+
+fn binding_conflict_status(path_str: &str, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status",
+        "apiVersion": "v1",
+        "metadata": {},
+        "status": "Failure",
+        "message": format!("{path_str}: {message}"),
+        "reason": "Conflict",
+        "details": {
+            "causes": [{"reason": "Conflict", "message": message}]
+        },
         "code": 409,
     })
 }

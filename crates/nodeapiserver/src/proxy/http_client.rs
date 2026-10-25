@@ -57,9 +57,25 @@ pub enum Error {
 /// transparent proxy, matching real upstream's own `pods/log` handler,
 /// which is also just a transparent reverse proxy to kubelet).
 pub async fn fetch(target: &Target, client_config: Arc<ClientConfig>) -> Result<Response<BoxedBody>, Error> {
+    fetch_with_headers(target, client_config, &[]).await
+}
+
+/// GET an aggregated API discovery endpoint with the trusted identity
+/// headers supplied by its caller. The APIService availability controller
+/// uses the same front-proxy client certificate and `system:kube-aggregator`
+/// identity as upstream kube-aggregator's discovery probe.
+pub async fn fetch_with_headers(
+    target: &Target,
+    client_config: Arc<ClientConfig>,
+    headers: &[(String, String)],
+) -> Result<Response<BoxedBody>, Error> {
     let mut sender = dial(target, client_config).await?;
     let uri = build_uri(target)?;
-    let req = Request::builder().method("GET").uri(uri).header(hyper::header::HOST, &target.host).body(Empty::<Bytes>::new().boxed())?;
+    let mut builder = Request::builder().method("GET").uri(uri).header(hyper::header::HOST, &target.host);
+    for (name, value) in headers {
+        builder = builder.header(name.as_str(), value.as_str());
+    }
+    let req = builder.body(Empty::<Bytes>::new().boxed())?;
     let resp = sender.send_request(req).await.map_err(Error::Request)?;
     Ok(resp.map(|incoming| incoming.map_err(|e| Box::new(e) as BoxError).boxed()))
 }

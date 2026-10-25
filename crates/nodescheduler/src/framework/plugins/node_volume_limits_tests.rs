@@ -1,5 +1,5 @@
 use super::*;
-use crate::cache::{Cache, CsiNodeInfo, PvInfo, PvcInfo, VolumeAttachmentInfo};
+use crate::cache::{Cache, CsiDriverInfo, CsiNodeInfo, PvInfo, PvcInfo, VolumeAttachmentInfo};
 use crate::framework::plugins::testutil::pod;
 use k8s_openapi::api::core::v1::Node as ApiNode;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -150,17 +150,104 @@ fn a_node_with_no_csi_node_at_all_enforces_nothing() {
     assert!(NodeVolumeLimits.filter(&state, &p, &n).is_success());
 }
 
+fn incoming_for(driver: &str, cache: &mut Cache) -> Arc<PodInfo> {
+    cache.upsert_node(&api_node("n1"));
+    cache.upsert_pv("pv".to_string(), csi_pv("pv", driver));
+    cache.upsert_pvc("ns/claim".to_string(), bound_pvc("ns", "claim", "pv"));
+    let mut incoming = pod("incoming");
+    incoming.namespace = "ns".to_string();
+    incoming.uid = "incoming-uid".to_string();
+    incoming.pvc_names = vec!["claim".to_string()];
+    Arc::new(incoming)
+}
+
+#[test]
+fn opted_in_csi_driver_rejects_node_without_csinode() {
+    let mut cache = Cache::new();
+    let driver = "disk.example.com";
+    let incoming = incoming_for(driver, &mut cache);
+    cache.upsert_csi_driver(
+        driver.to_string(),
+        CsiDriverInfo { prevent_pod_scheduling_if_missing: true, ..Default::default() },
+    );
+    let snapshot = cache.snapshot();
+    let mut state = CycleState::default();
+    NodeVolumeLimits.pre_filter(&mut state, &incoming, &snapshot);
+    let node = snapshot.node("n1").unwrap();
+    let result = NodeVolumeLimits.filter(&state, &incoming, node);
+    assert!(!result.is_success());
+    assert!(result.reasons.join(" ").contains("not have CSI driver"));
+}
+
+#[test]
+fn opted_in_csi_driver_rejects_csinode_without_driver_registration() {
+    let mut cache = Cache::new();
+    let driver = "disk.example.com";
+    let incoming = incoming_for(driver, &mut cache);
+    cache.upsert_csi_driver(
+        driver.to_string(),
+        CsiDriverInfo { prevent_pod_scheduling_if_missing: true, ..Default::default() },
+    );
+    cache.upsert_csi_node("n1".to_string(), CsiNodeInfo::default());
+    let snapshot = cache.snapshot();
+    let mut state = CycleState::default();
+    NodeVolumeLimits.pre_filter(&mut state, &incoming, &snapshot);
+    let result = NodeVolumeLimits.filter(&state, &incoming, snapshot.node("n1").unwrap());
+    assert!(!result.is_success());
+}
+
+#[test]
+fn opted_in_csi_driver_allows_node_with_registered_driver() {
+    let mut cache = Cache::new();
+    let driver = "disk.example.com";
+    let incoming = incoming_for(driver, &mut cache);
+    cache.upsert_csi_driver(
+        driver.to_string(),
+        CsiDriverInfo { prevent_pod_scheduling_if_missing: true, ..Default::default() },
+    );
+    let mut registered = std::collections::BTreeMap::new();
+    registered.insert(driver.to_string(), None);
+    cache.upsert_csi_node("n1".to_string(), CsiNodeInfo { drivers: registered });
+    let snapshot = cache.snapshot();
+    let mut state = CycleState::default();
+    NodeVolumeLimits.pre_filter(&mut state, &incoming, &snapshot);
+    assert!(NodeVolumeLimits.filter(&state, &incoming, snapshot.node("n1").unwrap()).is_success());
+}
+
+#[test]
+fn non_opted_in_or_unknown_csi_driver_does_not_require_registration() {
+    for driver_info in [None, Some(false)] {
+        let mut cache = Cache::new();
+        let driver = "disk.example.com";
+        let incoming = incoming_for(driver, &mut cache);
+        if let Some(prevent_pod_scheduling_if_missing) = driver_info {
+            cache.upsert_csi_driver(
+                driver.to_string(),
+                CsiDriverInfo { prevent_pod_scheduling_if_missing, ..Default::default() },
+            );
+        }
+        let snapshot = cache.snapshot();
+        let mut state = CycleState::default();
+        NodeVolumeLimits.pre_filter(&mut state, &incoming, &snapshot);
+        assert!(NodeVolumeLimits.filter(&state, &incoming, snapshot.node("n1").unwrap()).is_success());
+    }
+}
+
 #[test]
 fn it_wakes_on_the_events_that_can_actually_change_the_answer() {
     let events = NodeVolumeLimits.events_to_register();
     let deleted = ClusterEvent::new(EventResource::AssignedPod, ActionType::DELETE);
     let pvc_updated = ClusterEvent::new(EventResource::PersistentVolumeClaim, ActionType::UPDATE);
     let csi_node_added = ClusterEvent::new(EventResource::CsiNode, ActionType::ADD);
+    let csi_driver_added = ClusterEvent::new(EventResource::CsiDriver, ActionType::ADD);
+    let csi_driver_deleted = ClusterEvent::new(EventResource::CsiDriver, ActionType::DELETE);
     let attachment_deleted = ClusterEvent::new(EventResource::VolumeAttachment, ActionType::DELETE);
 
     assert!(events.iter().any(|e| e.event.matches(&deleted)));
     assert!(events.iter().any(|e| e.event.matches(&pvc_updated)));
     assert!(events.iter().any(|e| e.event.matches(&csi_node_added)));
+    assert!(events.iter().any(|e| e.event.matches(&csi_driver_added)));
+    assert!(events.iter().any(|e| e.event.matches(&csi_driver_deleted)));
     assert!(events.iter().any(|e| e.event.matches(&attachment_deleted)));
 }
 

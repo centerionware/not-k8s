@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - '.github/scripts/check_nodemigrate_release.py'
+      - '.github/scripts/summarize_nodemigrate_test_log.py'
       - '.github/workflows/build.yml'
       - '.github/workflows/nodemigrate.yml'
       - '.github/workflows/release.yml'
@@ -59,4 +60,29 @@ jobs:
       - name: Setup toolchain
         uses: ./.github/actions/setup-toolchain
       - name: Test nodemigrate
-        run: cargo test -p nodemigrate
+        env:
+          CARGO_TERM_COLOR: never
+          NODEMIGRATE_TEST_LOG: ${{ runner.temp }}/nodemigrate-tests.log
+        run: |
+          set -o pipefail
+          cargo --color never test -p nodemigrate 2>&1 | tee "$NODEMIGRATE_TEST_LOG"
+      - name: Summarize test log
+        if: failure()
+        run: |
+          summary="$(python3 .github/scripts/summarize_nodemigrate_test_log.py "$RUNNER_TEMP/nodemigrate-tests.log")"
+          encoded="$(python3 -c 'import sys; value = sys.stdin.read(); print(value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"), end="")' <<< "$summary")"
+          echo "::error title=Nodemigrate test output::$encoded"
+          {
+            echo '### Nodemigrate test failure details'
+            echo '```text'
+            printf '%s\n' "$summary"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nodemigrate-tests-${{ github.run_id }}
+          path: ${{ runner.temp }}/nodemigrate-tests.log
+          if-no-files-found: warn
+          retention-days: 7

@@ -1,4 +1,4 @@
-//! Structural-schema pruning for CRD-defined objects: drops any object
+//! Structural-schema pruning for built-in and CRD objects: drops any object
 //! key a CRD's own `openAPIV3Schema` doesn't declare, unless that
 //! schema (at that level, or any ancestor level) sets
 //! `x-kubernetes-preserve-unknown-fields: true` — a faithful, if
@@ -28,6 +28,12 @@
 //! schema only ever describes `spec`/`status`, the overwhelming common
 //! case, must never have this build silently prune the object's own
 //! identity).
+//!
+//! OpenAPI `allOf` branches contribute to the object's effective properties.
+//! This matters for upstream built-in schemas, which use `allOf` to represent
+//! embedded Go fields. Treat their property declarations as one combined
+//! object while pruning, so fields are not lost merely because they are
+//! nested in an `allOf` branch.
 
 use serde_json::Value;
 
@@ -35,6 +41,36 @@ const ALWAYS_PRESERVED_TOP_LEVEL_FIELDS: &[&str] = &["apiVersion", "kind", "meta
 
 fn preserves_unknown_fields(schema: &Value) -> bool {
     schema.get("x-kubernetes-preserve-unknown-fields").and_then(Value::as_bool) == Some(true)
+}
+
+/// Collect properties across an OpenAPI `allOf` composition. Kubernetes' own
+/// generated built-in schemas use `allOf` for embedded Go fields; treating
+/// only the outer object's `properties` as declared would prune those fields
+/// from ordinary API writes.
+fn property_schemas<'a>(schema: &'a Value, name: &str, out: &mut Vec<&'a Value>) {
+    if let Some(property) = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get(name))
+    {
+        out.push(property);
+    }
+    if let Some(all_of) = schema.get("allOf").and_then(Value::as_array) {
+        for branch in all_of {
+            property_schemas(branch, name, out);
+        }
+    }
+}
+
+fn additional_property_schemas<'a>(schema: &'a Value, out: &mut Vec<&'a Value>) {
+    if let Some(additional) = schema.get("additionalProperties") {
+        out.push(additional);
+    }
+    if let Some(all_of) = schema.get("allOf").and_then(Value::as_array) {
+        for branch in all_of {
+            additional_property_schemas(branch, out);
+        }
+    }
 }
 
 /// Returns a pruned copy of `value` per `schema` — `value` itself is
@@ -52,40 +88,40 @@ fn prune_in_place(schema: &Value, value: &mut Value, is_root: bool) {
     }
 
     if let Some(obj) = value.as_object_mut() {
-        let properties = schema.get("properties").and_then(Value::as_object);
-        let additional_properties = schema.get("additionalProperties");
         let keys: Vec<String> = obj.keys().cloned().collect();
         for key in keys {
             if is_root && ALWAYS_PRESERVED_TOP_LEVEL_FIELDS.contains(&key.as_str()) {
                 continue;
             }
-            match properties.and_then(|p| p.get(&key)) {
-                Some(prop_schema) => {
-                    if let Some(child) = obj.get_mut(&key) {
-                        prune_in_place(prop_schema, child, false);
+            let mut property_matches = Vec::new();
+            property_schemas(schema, &key, &mut property_matches);
+            if !property_matches.is_empty() {
+                if let Some(child) = obj.get_mut(&key) {
+                    for property_schema in property_matches {
+                        prune_in_place(property_schema, child, false);
                     }
                 }
-                // Not declared in `properties` -- what happens next
-                // depends on `additionalProperties`: a schema-shaped one
-                // keeps the key and recurses pruning *its* value (a real
-                // "map of X" CRD field, same convention `schema_defaults`
-                // already treats this way); a bare `true` keeps the key
-                // *and* its value completely as-is (real upstream's own
-                // "no constraint on other keys at all" escape hatch --
-                // there's no schema to recurse into either); anything
-                // else (a bare `false`, or `additionalProperties` simply
-                // absent) is this level's real default -- drop it.
-                None => match additional_properties {
-                    Some(add) if add.is_object() => {
-                        if let Some(child) = obj.get_mut(&key) {
-                            prune_in_place(add, child, false);
-                        }
+                continue;
+            }
+
+            let mut additional_matches = Vec::new();
+            additional_property_schemas(schema, &mut additional_matches);
+            let additional_schemas: Vec<_> = additional_matches
+                .iter()
+                .copied()
+                .filter(|additional| additional.is_object())
+                .collect();
+            if !additional_schemas.is_empty() {
+                if let Some(child) = obj.get_mut(&key) {
+                    for additional_schema in additional_schemas {
+                        prune_in_place(additional_schema, child, false);
                     }
-                    Some(Value::Bool(true)) => {}
-                    _ => {
-                        obj.remove(&key);
-                    }
-                },
+                }
+            } else if !additional_matches
+                .iter()
+                .any(|additional| additional.as_bool() == Some(true))
+            {
+                obj.remove(&key);
             }
         }
         return;
@@ -124,6 +160,26 @@ mod tests {
         let schema = json!({"type": "object", "properties": {"spec": {"type": "object", "properties": {"color": {"type": "string"}}}}});
         let value = json!({"spec": {"color": "red", "junk": 1}});
         assert_eq!(prune(&schema, &value), json!({"spec": {"color": "red"}}));
+    }
+
+    #[test]
+    fn all_of_embedded_properties_survive_and_are_pruned_together() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "spec": {
+                    "allOf": [
+                        {"type": "object", "properties": {"first": {"type": "string"}}},
+                        {"type": "object", "properties": {"second": {"type": "boolean"}}}
+                    ]
+                }
+            }
+        });
+        let value = json!({"spec": {"first": "kept", "second": true, "unknown": "dropped"}});
+        assert_eq!(
+            prune(&schema, &value),
+            json!({"spec": {"first": "kept", "second": true}})
+        );
     }
 
     #[test]

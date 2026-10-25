@@ -11,6 +11,31 @@
 use super::*;
 use k8s_openapi::api::core::v1::{PodDNSConfig, PodDNSConfigOption, PodSpec};
 
+#[test]
+fn kubelet_resolv_conf_path_is_used_when_configured() {
+    let path = configured_kubelet_resolv_conf_path(
+        "apiVersion: kubelet.config.k8s.io/v1beta1\nresolvConf: /etc/kubernetes/nodemigrate-resolv.conf\n",
+    );
+    assert_eq!(
+        path,
+        Some(std::path::PathBuf::from(
+            "/etc/kubernetes/nodemigrate-resolv.conf"
+        ))
+    );
+}
+
+#[test]
+fn kubelet_resolv_conf_path_ignores_missing_or_relative_paths() {
+    assert_eq!(
+        configured_kubelet_resolv_conf_path("apiVersion: kubelet.config.k8s.io/v1beta1\n"),
+        None
+    );
+    assert_eq!(
+        configured_kubelet_resolv_conf_path("resolvConf: resolv.conf\n"),
+        None
+    );
+}
+
 fn pod(namespace: &str, dns_policy: Option<&str>, dns_config: Option<PodDNSConfig>) -> Pod {
     Pod {
         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {

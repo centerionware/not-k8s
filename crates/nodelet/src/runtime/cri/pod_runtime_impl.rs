@@ -15,7 +15,7 @@ impl PodRuntime for CriRuntime {
         let _ensure_guard = lock.lock().await;
         tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
             operation = "ensure", stage = "find sandbox", "pod runtime operation");
-        let found = self.find_sandbox_with_uid(&id.namespace, &id.name).await?;
+        let found = self.find_sandbox_with_uid(&id.namespace, &id.name, &id.uid).await?;
         let uid_matches = found.as_ref().is_some_and(|(_, _, found_uid)| *found_uid == id.uid);
         let ready_state = v1::PodSandboxState::SandboxReady as i32;
         let dns = dns_config_for(pod, &self.cluster_dns, &self.cluster_domain, read_host_resolv_conf().as_deref());
@@ -38,7 +38,7 @@ impl PodRuntime for CriRuntime {
         // (gVisor/Kata's userspace kernel cost) gets it accounted into the
         // sandbox's own resources.
         let qos = crate::eviction::qos_class(pod);
-        let cgroup_parent = crate::cgroup::cgroup_parent_for(qos, &id.uid);
+        let cgroup_parent = crate::cgroup::cgroup_parent_for(qos, self.cgroup_driver);
         let overhead = pod.spec.as_ref().and_then(|s| s.overhead.as_ref()).map(|list| resource_list_to_linux_resources(list));
         // hostPort (round 82; found in round 80's re-audit) — computed
         // once up front, same as cgroup_parent/overhead above, since
@@ -52,7 +52,13 @@ impl PodRuntime for CriRuntime {
             spec.and_then(|s| s.init_containers.as_deref()).unwrap_or(&[]),
         );
         let sandbox_id = match sandbox_reuse_decision(found.as_ref().map(|(_, s, _)| *s), ready_state, uid_matches) {
-            SandboxDecision::Reuse => found.unwrap().0,
+            SandboxDecision::Reuse => {
+                let sandbox_id = found.unwrap().0;
+                self.remove_orphaned_pod_uid_containers(&id.uid, Some(&sandbox_id))
+                    .await
+                    .context("cleaning abandoned containers before reusing a Pod sandbox")?;
+                sandbox_id
+            }
             SandboxDecision::RecreateStale => {
                 // The sandbox record exists but either its task/pause
                 // process isn't alive (e.g. this metadata survived a reboot
@@ -61,12 +67,43 @@ impl PodRuntime for CriRuntime {
                 // StatefulSet pod recreated after scale-to-0) — tear it down
                 // and start clean instead of reusing something
                 // CreateContainer can never succeed against, or that was
-                // built for a different pod spec entirely. Best-effort: it
-                // may already be half-gone.
+                // built for a different pod spec entirely. Remove old
+                // containers before the sandbox: some CRI implementations
+                // keep its name reserved until every old container is gone.
                 let (stale_id, _, _) = found.unwrap();
                 let mut rt = self.rt.clone();
-                let _ = rt.stop_pod_sandbox(StopPodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
-                let _ = rt.remove_pod_sandbox(RemovePodSandboxRequest { pod_sandbox_id: stale_id.clone() }).await;
+                for container in self.list_pod_containers(&stale_id).await? {
+                    let _ = rt
+                        .stop_container(StopContainerRequest {
+                            container_id: container.id.clone(),
+                            timeout: 0,
+                        })
+                        .await;
+                    rt.remove_container(RemoveContainerRequest {
+                        container_id: container.id,
+                    })
+                    .await
+                    .context("removing a container from a stale Pod sandbox")?;
+                }
+                let _ = rt
+                    .stop_pod_sandbox(StopPodSandboxRequest {
+                        pod_sandbox_id: stale_id.clone(),
+                    })
+                    .await;
+                rt.remove_pod_sandbox(RemovePodSandboxRequest {
+                    pod_sandbox_id: stale_id.clone(),
+                })
+                .await
+                .context("removing a stale Pod sandbox")?;
+                let remaining = self
+                    .find_sandbox_with_uid(&id.namespace, &id.name, &id.uid)
+                    .await?;
+                anyhow::ensure!(
+                    remaining.as_ref().is_none_or(|(sandbox_id, _, _)| sandbox_id != &stale_id),
+                    "stale Pod sandbox {stale_id} still reserves {}/{} after removal",
+                    id.namespace,
+                    id.name
+                );
                 self.restart_policies.lock().unwrap().remove(&stale_id);
                 self.pod_uids.lock().unwrap().remove(&stale_id);
                 self.sidecar_names.lock().unwrap().remove(&stale_id);
@@ -76,9 +113,15 @@ impl PodRuntime for CriRuntime {
                 self.clear_config_errors(&stale_id);
                 self.clear_last_terminated(&stale_id);
                 self.release_sandbox_devices(&stale_id).await;
+                self.remove_orphaned_pod_uid_containers(&id.uid, None)
+                    .await
+                    .context("cleaning abandoned containers before recreating a Pod sandbox")?;
                 self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone(), privileged).await.context("RunPodSandbox")?
             }
             SandboxDecision::CreateFresh => {
+                self.remove_orphaned_pod_uid_containers(&id.uid, None)
+                    .await
+                    .context("cleaning abandoned containers before creating a Pod sandbox")?;
                 self.run_sandbox(&id, &hostname, &sysctls, dns, runtime_handler, cgroup_parent, overhead, spec.and_then(|s| s.security_context.as_ref()), port_mappings.clone(), privileged).await.context("RunPodSandbox")?
             }
         };
@@ -324,6 +367,7 @@ impl PodRuntime for CriRuntime {
 
     async fn remove_pod(&self, pod: &Pod) -> Result<()> {
         let id = pod_id(pod);
+        self.csi.forget_waiting_pod(&id.uid);
         let removal_started = tokio::time::Instant::now();
         // Teardown runs on its own task so a long grace period cannot block
         // unrelated Pod events, but it must still serialize with a replacement
@@ -336,7 +380,9 @@ impl PodRuntime for CriRuntime {
         let _remove_guard = lock.lock().await;
         tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,
             operation = "remove", stage = "find sandbox", "pod runtime operation");
-        if let Some((sandbox_id, _state, sandbox_uid)) = self.find_sandbox_with_uid(&id.namespace, &id.name).await? {
+        if let Some((sandbox_id, _state, sandbox_uid)) =
+            self.find_sandbox_with_uid(&id.namespace, &id.name, &id.uid).await?
+        {
             if sandbox_uid.is_empty() || sandbox_uid == id.uid {
                 let grace = remaining_termination_grace(termination_grace_seconds(pod), removal_started.elapsed());
                 tracing::debug!(target: "nk_watch_trace", pod = %format!("{}/{}", id.namespace, id.name), uid = %id.uid,

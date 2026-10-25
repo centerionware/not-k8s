@@ -1,5 +1,15 @@
 use super::*;
 
+fn host_path_pv_source(pv: &PersistentVolume) -> Option<(PathBuf, Option<String>)> {
+    let spec = pv.spec.as_ref()?;
+    if let Some(host_path) = spec.host_path.as_ref() {
+        return Some((PathBuf::from(&host_path.path), host_path.type_.clone()));
+    }
+    spec.local
+        .as_ref()
+        .map(|local| (PathBuf::from(&local.path), Some("Directory".to_string())))
+}
+
 impl CriRuntime {
     /// Materialize every ConfigMap/Secret/emptyDir volume this Pod declares
     /// onto the host filesystem, and return volume name -> host directory.
@@ -13,6 +23,7 @@ impl CriRuntime {
     /// but at least it's visible in the logs why, instead of looking
     /// identical to the ConfigMap bug this fixes.
     pub(crate) async fn resolve_volumes(&self, pod: &Pod, id: &PodId, pull_secrets: &[String]) -> HashMap<String, ResolvedVolume> {
+        let pod_key = format!("{}/{}", id.namespace, id.name);
         let mut out = HashMap::new();
         let Some(volumes) = pod.spec.as_ref().and_then(|s| s.volumes.as_ref()) else {
             return out;
@@ -70,7 +81,7 @@ impl CriRuntime {
                     Err(e) => warn!(volume = %v.name, secret = %name, error = ?e, "failed to fetch Secret for volume"),
                 }
             } else if let Some(empty_dir) = &v.empty_dir {
-                if let Err(e) = std::fs::create_dir_all(&vol_dir) {
+                if let Err(e) = prepare_empty_dir(&vol_dir) {
                     warn!(volume = %v.name, error = ?e, "failed to create emptyDir volume");
                     continue;
                 }
@@ -109,35 +120,40 @@ impl CriRuntime {
                 }
                 out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
             } else if let Some(pvc_source) = &v.persistent_volume_claim {
-                match self.resolve_csi_source(&id.namespace, &pvc_source.claim_name).await {
-                    Ok(Some(mut source)) => {
-                        source.read_only |= pvc_source.read_only.unwrap_or(false);
-                        let block = source.block;
-                        match self.csi.mount(&source, &vol_dir, &id.uid, false).await {
-                            Ok(()) => {
-                                // Raw block volumes (round 77): the exact
-                                // same host path mount() just published to
-                                // -- for Block mode it's a device-node
-                                // bind-mount FILE, not a directory, so it's
-                                // resolved to BlockDevice instead of
-                                // HostPath (build_devices() picks it up for
-                                // volumeDevices; build_mounts() explicitly
-                                // ignores this variant).
-                                let resolved = if block { ResolvedVolume::BlockDevice(vol_dir) } else { ResolvedVolume::HostPath(vol_dir) };
-                                out.insert(v.name.clone(), resolved);
-                                csi_volume_names.insert(v.name.clone());
+                match self.resolve_host_path_pv(&id.namespace, &pvc_source.claim_name).await {
+                    Ok(Some(path)) => {
+                        out.insert(v.name.clone(), ResolvedVolume::HostPath(path));
+                        // PV-backed host paths use the host's existing data,
+                        // just like a Pod hostPath volume. Do not apply
+                        // fsGroup ownership changes to the host volume.
+                        host_path_volume_names.insert(v.name.clone());
+                    }
+                    Ok(None) => match self.resolve_csi_source_for_pod(&id.namespace, &pvc_source.claim_name, &pod_key, &id.uid).await {
+                        Ok(Some(mut source)) => {
+                            source.read_only |= pvc_source.read_only.unwrap_or(false);
+                            let block = source.block;
+                            match self.csi.mount(&source, &vol_dir, &id.uid, false).await {
+                                Ok(()) => {
+                                    let resolved = if block { ResolvedVolume::BlockDevice(vol_dir) } else { ResolvedVolume::HostPath(vol_dir) };
+                                    out.insert(v.name.clone(), resolved);
+                                    csi_volume_names.insert(v.name.clone());
+                                }
+                                Err(e) => warn!(
+                                    volume = %v.name,
+                                    claim = %pvc_source.claim_name,
+                                    error = ?e,
+                                    error_chain = %format!("{e:#}"),
+                                    "failed to mount CSI volume"
+                                ),
                             }
-                            Err(e) => warn!(volume = %v.name, claim = %pvc_source.claim_name, error = ?e, "failed to mount CSI volume"),
                         }
-                    }
-                    Ok(None) => {
-                        // Not yet Bound, no CSI source, or no driver
-                        // configured for it — resolve_csi_source() already
-                        // warned with the specific reason. Same as any
-                        // other unresolvable volume: silently absent from
-                        // the mount map, container starts without it.
-                    }
-                    Err(e) => warn!(volume = %v.name, claim = %pvc_source.claim_name, error = ?e, "failed to resolve PersistentVolumeClaim"),
+                        Ok(None) => {
+                            // Not yet Bound, unsupported PV source, or no
+                            // configured CSI driver; resolver logged why.
+                        }
+                        Err(e) => warn!(volume = %v.name, claim = %pvc_source.claim_name, error = ?e, "failed to resolve PersistentVolumeClaim"),
+                    },
+                    Err(e) => warn!(volume = %v.name, claim = %pvc_source.claim_name, error = ?e, "failed to resolve hostPath PersistentVolume"),
                 }
             } else if v.ephemeral.is_some() {
                 // Generic ephemeral volume (round 31): the actual PVC is
@@ -149,7 +165,7 @@ impl CriRuntime {
                 // this reuses resolve_csi_source() for everything past the
                 // ownership safety check.
                 let claim_name = ephemeral_pvc_name(&id.name, &v.name);
-                match self.resolve_ephemeral_source(&id.namespace, &claim_name, &id.uid).await {
+                match self.resolve_ephemeral_source(&id.namespace, &claim_name, &id.uid, &pod_key).await {
                     Ok(Some(source)) => {
                         let block = source.block;
                         match self.csi.mount(&source, &vol_dir, &id.uid, false).await {
@@ -158,7 +174,13 @@ impl CriRuntime {
                                 out.insert(v.name.clone(), resolved);
                                 csi_volume_names.insert(v.name.clone());
                             }
-                            Err(e) => warn!(volume = %v.name, claim = %claim_name, error = ?e, "failed to mount CSI volume for generic ephemeral volume"),
+                            Err(e) => warn!(
+                                volume = %v.name,
+                                claim = %claim_name,
+                                error = ?e,
+                                error_chain = %format!("{e:#}"),
+                                "failed to mount CSI volume for generic ephemeral volume"
+                            ),
                         }
                     }
                     Ok(None) => {
@@ -174,7 +196,7 @@ impl CriRuntime {
                 // 45's re-audit) — no PV/PVC at all, just this volume's own
                 // CSIVolumeSource fields (e.g. secrets-store-csi-driver's
                 // "mount a Secret from Vault directly" pattern).
-                match self.resolve_csi_ephemeral_source(&id.namespace, csi_source, &id.uid, &v.name).await {
+                match self.resolve_csi_ephemeral_source(&id.namespace, csi_source, &id.uid, &v.name, &pod_key).await {
                     Some(source) => match self.csi.mount(&source, &vol_dir, &id.uid, true).await {
                         Ok(()) => {
                             out.insert(v.name.clone(), ResolvedVolume::HostPath(vol_dir));
@@ -426,6 +448,7 @@ impl CriRuntime {
         namespace: &str,
         claim_name: &str,
         pod_uid: &str,
+        pod_key: &str,
     ) -> Result<Option<crate::runtime::csi::CsiVolumeSource>> {
         let pvc = match Api::<PersistentVolumeClaim>::namespaced(self.client.clone(), namespace).get_opt(claim_name).await {
             Ok(Some(pvc)) => pvc,
@@ -439,7 +462,7 @@ impl CriRuntime {
             warn!(claim = %claim_name, "generic ephemeral volume: a PersistentVolumeClaim with the expected name exists but isn't owned by this pod; refusing to use it (matches real kubelet's own safety check)");
             return Ok(None);
         }
-        self.resolve_csi_source(namespace, claim_name).await
+        self.resolve_csi_source_for_pod(namespace, claim_name, pod_key, pod_uid).await
     }
 
     /// Resolve a `PersistentVolumeClaim` (by name, in `namespace`) to its
@@ -453,6 +476,25 @@ impl CriRuntime {
     /// logged with its specific reason so "why isn't my volume mounted"
     /// doesn't require reading source to answer.
     pub(crate) async fn resolve_csi_source(&self, namespace: &str, claim_name: &str) -> Result<Option<crate::runtime::csi::CsiVolumeSource>> {
+        self.resolve_csi_source_inner(namespace, claim_name, None).await
+    }
+
+    async fn resolve_csi_source_for_pod(
+        &self,
+        namespace: &str,
+        claim_name: &str,
+        pod_key: &str,
+        pod_uid: &str,
+    ) -> Result<Option<crate::runtime::csi::CsiVolumeSource>> {
+        self.resolve_csi_source_inner(namespace, claim_name, Some((pod_key, pod_uid))).await
+    }
+
+    async fn resolve_csi_source_inner(
+        &self,
+        namespace: &str,
+        claim_name: &str,
+        waiter: Option<(&str, &str)>,
+    ) -> Result<Option<crate::runtime::csi::CsiVolumeSource>> {
         let pvc = match Api::<PersistentVolumeClaim>::namespaced(self.client.clone(), namespace).get(claim_name).await {
             Ok(pvc) => pvc,
             Err(e) => return Err(e).with_context(|| format!("fetching PersistentVolumeClaim {claim_name}")),
@@ -472,6 +514,9 @@ impl CriRuntime {
         };
 
         if !self.csi.driver_configured(&csi.driver) {
+            if let Some((pod_key, pod_uid)) = waiter {
+                self.csi.wait_for_driver(&csi.driver, pod_key, pod_uid);
+            }
             warn!(claim = %claim_name, driver = %csi.driver, "no CSI driver configured for this PersistentVolume's driver — set NODELET_CSI_DRIVERS");
             return Ok(None);
         }
@@ -517,6 +562,28 @@ impl CriRuntime {
             publish_context,
             block,
         }))
+    }
+
+    /// Resolve a bound hostPath or local PersistentVolume to the host path
+    /// kubelet mounts for a PVC-backed Pod volume. CSI volumes are left to
+    /// `resolve_csi_source`; other PV source kinds remain unsupported.
+    async fn resolve_host_path_pv(&self, namespace: &str, claim_name: &str) -> Result<Option<PathBuf>> {
+        let pvc = match Api::<PersistentVolumeClaim>::namespaced(self.client.clone(), namespace).get(claim_name).await {
+            Ok(pvc) => pvc,
+            Err(e) => return Err(e).with_context(|| format!("fetching PersistentVolumeClaim {claim_name}")),
+        };
+        let Some(pv_name) = pvc.spec.as_ref().and_then(|spec| spec.volume_name.as_deref()) else {
+            return Ok(None);
+        };
+        let pv = match Api::<PersistentVolume>::all(self.client.clone()).get(pv_name).await {
+            Ok(pv) => pv,
+            Err(e) => return Err(e).with_context(|| format!("fetching PersistentVolume {pv_name}")),
+        };
+        let Some((path, type_)) = host_path_pv_source(&pv) else {
+            return Ok(None);
+        };
+        validate_host_path(&path, type_.as_deref()).map_err(anyhow::Error::msg)?;
+        Ok(Some(path))
     }
 
     /// Whether `driver` needs an attach before it can be staged/published —
@@ -572,8 +639,10 @@ impl CriRuntime {
         csi: &k8s_openapi::api::core::v1::CSIVolumeSource,
         pod_uid: &str,
         volume_name: &str,
+        pod_key: &str,
     ) -> Option<crate::runtime::csi::CsiVolumeSource> {
         if !self.csi.driver_configured(&csi.driver) {
+            self.csi.wait_for_driver(&csi.driver, pod_key, pod_uid);
             warn!(driver = %csi.driver, volume = %volume_name, "CSI ephemeral volume: no CSI driver configured — set NODELET_CSI_DRIVERS or wait for it to register");
             return None;
         }
@@ -682,4 +751,38 @@ impl CriRuntime {
         }
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::host_path_pv_source;
+    use k8s_openapi::api::core::v1::PersistentVolume;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    #[test]
+    fn host_path_pv_uses_its_directory_and_declared_type() {
+        let pv: PersistentVolume = serde_json::from_value(json!({
+            "spec": {"hostPath": {"path": "/var/lib/data", "type": "Directory"}}
+        }))
+        .unwrap();
+
+        assert_eq!(
+            host_path_pv_source(&pv),
+            Some((PathBuf::from("/var/lib/data"), Some("Directory".to_string())))
+        );
+    }
+
+    #[test]
+    fn local_pv_uses_its_directory() {
+        let pv: PersistentVolume = serde_json::from_value(json!({
+            "spec": {"local": {"path": "/mnt/local-data"}}
+        }))
+        .unwrap();
+
+        assert_eq!(
+            host_path_pv_source(&pv),
+            Some((PathBuf::from("/mnt/local-data"), Some("Directory".to_string())))
+        );
+    }
 }

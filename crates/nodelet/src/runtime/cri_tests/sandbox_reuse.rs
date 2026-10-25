@@ -7,6 +7,50 @@
 //! failed the same way, permanently, for every pod on the node.
 use super::*;
 
+fn sandbox(id: &str, uid: &str, state: i32, created_at: i64) -> v1::PodSandbox {
+    v1::PodSandbox {
+        id: id.to_string(),
+        metadata: Some(v1::PodSandboxMetadata { uid: uid.to_string(), ..Default::default() }),
+        state,
+        created_at,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn sandbox_lookup_prefers_expected_pod_uid_over_stale_records() {
+    let selected = select_pod_sandbox(
+        vec![sandbox("stale", "old-uid", READY, 30), sandbox("current", "current-uid", READY, 20)],
+        Some("current-uid"),
+    );
+
+    assert_eq!(selected, Some(("current".to_string(), READY, "current-uid".to_string())));
+}
+
+#[test]
+fn name_only_sandbox_lookup_prefers_ready_then_newest_record() {
+    let selected = select_pod_sandbox(
+        vec![
+            sandbox("not-ready-newer", "uid-a", NOTREADY, 40),
+            sandbox("ready-older", "uid-b", READY, 20),
+            sandbox("ready-newer", "uid-c", READY, 30),
+        ],
+        None,
+    );
+
+    assert_eq!(selected, Some(("ready-newer".to_string(), READY, "uid-c".to_string())));
+}
+
+#[test]
+fn sandbox_lookup_returns_stale_record_for_replacement_when_uid_is_absent() {
+    let selected = select_pod_sandbox(
+        vec![sandbox("stale", "old-uid", READY, 30)],
+        Some("current-uid"),
+    );
+
+    assert_eq!(selected, Some(("stale".to_string(), READY, "old-uid".to_string())));
+}
+
 const READY: i32 = 0; // matches PodSandboxState::SandboxReady as i32
 const NOTREADY: i32 = 1;
 

@@ -170,6 +170,20 @@ fn build_pod(job: &Job, name: &str) -> Pod {
     }
 }
 
+fn next_pod_suffix(pods: &HashMap<String, Pod>, namespace: &str, job_name: &str) -> i32 {
+    let prefix = format!("{job_name}-");
+    pods.values()
+        .filter(|pod| pod.namespace().as_deref() == Some(namespace))
+        .filter_map(|pod| {
+            pod.name_any()
+                .strip_prefix(&prefix)
+                .and_then(|suffix| suffix.parse::<i32>().ok())
+        })
+        .max()
+        .map(|max| max + 1)
+        .unwrap_or(0)
+}
+
 fn condition(type_: &str, message: &str) -> JobCondition {
     let now = crate::k8s_time::from_chrono(crate::k8s_time::now());
     JobCondition {
@@ -260,25 +274,37 @@ async fn reconcile_job(
         // Never reuse a suffix after a terminal Pod disappears from the
         // cache. Reusing a live Pod's deterministic name turns AlreadyExists
         // into a permanent progress stall.
-        let prefix = format!("{name}-");
-        let base = owned
-            .iter()
-            .filter_map(|p| {
-                p.name_any()
-                    .strip_prefix(&prefix)
-                    .and_then(|s| s.parse::<i32>().ok())
-            })
-            .max()
-            .map(|max| max + 1)
-            .unwrap_or(0);
-        for i in 0..pods_to_create(parallelism, spec.completions, active, succeeded) {
-            let pod_name = format!("{name}-{}", base + i);
-            let pod = build_pod(&job, &pod_name);
-            match pod_api.create(&PostParams::default(), &pod).await {
-                Ok(_) => {}
-                Err(kube::Error::Api(ref e)) if e.is_already_exists() => {}
-                Err(e) => {
-                    tracing::warn!(namespace = %namespace, job = %name, pod = %pod_name, error = ?e, "failed to create Pod for Job");
+        // A previous Job with the same name may have been deleted while
+        // garbage collection still leaves one of its Pods in the namespace.
+        // Its Pod name is not owned by this Job UID, but the API still
+        // reserves it. Include every same-namespace Pod when choosing the
+        // next suffix so AlreadyExists cannot strand this Job waiting for a
+        // Pod name held by the earlier Job.
+        let base = next_pod_suffix(pod_cache, &namespace, &name);
+        let mut candidate = base;
+        for _ in 0..pods_to_create(parallelism, spec.completions, active, succeeded) {
+            loop {
+                let pod_name = format!("{name}-{candidate}");
+                candidate += 1;
+                let pod = build_pod(&job, &pod_name);
+                match pod_api.create(&PostParams::default(), &pod).await {
+                    Ok(_) => break,
+                    Err(kube::Error::Api(ref e)) if e.is_already_exists() => {
+                        match pod_api.get_opt(&pod_name).await {
+                            Ok(Some(existing)) if owned_by(&existing, &job_uid) => break,
+                            Ok(_) => {
+                                tracing::debug!(namespace = %namespace, job = %name, pod = %pod_name, "skipping a Pod name still held by a different Job UID");
+                            }
+                            Err(e) => {
+                                tracing::warn!(namespace = %namespace, job = %name, pod = %pod_name, error = ?e, "could not inspect a colliding Pod name");
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(namespace = %namespace, job = %name, pod = %pod_name, error = ?e, "failed to create Pod for Job");
+                        break;
+                    }
                 }
             }
         }
@@ -464,6 +490,27 @@ mod tests {
     #[test]
     fn never_negative() {
         assert_eq!(pods_to_create(1, Some(1), 5, 5), 0);
+    }
+
+    #[test]
+    fn next_suffix_skips_pod_left_by_previous_job_uid() {
+        let stale_pod = Pod {
+            metadata: ObjectMeta {
+                name: Some("migration-job-check-nodestore-0".to_string()),
+                namespace: Some("migration-apps".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let pods = HashMap::from([(
+            "migration-apps/migration-job-check-nodestore-0".to_string(),
+            stale_pod,
+        )]);
+
+        assert_eq!(
+            next_pod_suffix(&pods, "migration-apps", "migration-job-check-nodestore"),
+            1
+        );
     }
 
     #[test]

@@ -23,14 +23,15 @@
 //! as a periodic background task from `server::listener::run` (best
 //! effort, same posture the cache-registry spawn loop already has).
 //! Its written condition is now consulted too
-//! (`availability::cached_available`): `route::discoverable_group_versions`
-//! trusts a decisive cached answer outright (zero extra I/O either way);
-//! `server::listener::aggregate_proxy` short-circuits straight to `503`
-//! on a cached `Available: False` (skipping the Service/`EndpointSlice`
-//! fetch), but still runs the full fresh check on `True`/unknown, since
-//! it needs the backing Service fetched regardless to resolve the dial
-//! target — this only ever saves the *negative*-path I/O, not the
-//! positive one.
+//! (`availability::cached_available`): discovery and request routing list
+//! the small APIService collection directly from nodestore, so stale
+//! informer state cannot hide a registration or preserve an old status.
+//! `route::discoverable_group_versions` uses the current stored condition
+//! when present and preflights Service/EndpointSlice only before the
+//! availability controller has written one; `server::listener::aggregate_proxy`
+//! short-circuits to `503` for a current stored `Available: False` and
+//! otherwise runs the fresh backing-Service checks needed to resolve the
+//! dial target.
 //! **Phase 4 done — a genuine live reverse proxy, wired into
 //! `server::listener::handle`.** `route::resolve` finds the one stored,
 //! non-local `APIService` (if any) claiming a request's `(group,

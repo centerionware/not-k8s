@@ -77,6 +77,98 @@ pub fn apply_builtin_defaults(group: &str, version: &str, kind: &str, value: Val
     value
 }
 
+/// Generates the selector and pod-template labels that upstream assigns to
+/// a newly created Job. This runs after the API server has assigned the Job
+/// UID because that UID is the selector's unique controller label.
+pub fn default_job_selector(value: &mut Value) {
+    let Some(metadata) = value.get("metadata") else {
+        return;
+    };
+    let Some(uid) = metadata.get("uid").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(name) = metadata.get("name").and_then(Value::as_str) else {
+        return;
+    };
+    let uid = uid.to_string();
+    let name = name.to_string();
+    if value
+        .pointer("/spec/manualSelector")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return;
+    }
+
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let Some(spec) = object.get_mut("spec").and_then(Value::as_object_mut) else {
+        return;
+    };
+    {
+        let template = spec
+            .entry("template")
+            .or_insert_with(|| serde_json::json!({}));
+        if template.is_null() {
+            *template = serde_json::json!({});
+        }
+        let Some(template) = template.as_object_mut() else {
+            return;
+        };
+        let metadata = template
+            .entry("metadata")
+            .or_insert_with(|| serde_json::json!({}));
+        if metadata.is_null() {
+            *metadata = serde_json::json!({});
+        }
+        let Some(metadata) = metadata.as_object_mut() else {
+            return;
+        };
+        let labels = metadata
+            .entry("labels")
+            .or_insert_with(|| serde_json::json!({}));
+        if labels.is_null() {
+            *labels = serde_json::json!({});
+        }
+        let Some(labels) = labels.as_object_mut() else {
+            return;
+        };
+        for (key, label_value) in [
+            ("job-name", name.as_str()),
+            ("batch.kubernetes.io/job-name", name.as_str()),
+            ("controller-uid", uid.as_str()),
+            ("batch.kubernetes.io/controller-uid", uid.as_str()),
+        ] {
+            labels
+                .entry(key.to_string())
+                .or_insert_with(|| Value::String(label_value.to_string()));
+        }
+    }
+
+    let selector = spec
+        .entry("selector")
+        .or_insert_with(|| serde_json::json!({}));
+    if selector.is_null() {
+        *selector = serde_json::json!({});
+    }
+    let Some(selector) = selector.as_object_mut() else {
+        return;
+    };
+    let match_labels = selector
+        .entry("matchLabels")
+        .or_insert_with(|| serde_json::json!({}));
+    if match_labels.is_null() {
+        *match_labels = serde_json::json!({});
+    }
+    let Some(match_labels) = match_labels.as_object_mut() else {
+        return;
+    };
+    match_labels
+        .entry("batch.kubernetes.io/controller-uid".to_string())
+        .or_insert_with(|| Value::String(uid));
+}
+
 fn object_mut<'a>(value: &'a mut Value, path: &[&str]) -> Option<&'a mut serde_json::Map<String, Value>> {
     let mut current = value;
     for part in path {
@@ -464,6 +556,70 @@ mod tests {
     fn a_non_object_value_is_returned_unchanged() {
         let value = json!("not an object");
         assert_eq!(apply_defaults("io.k8s.api.core.v1.ContainerPort", &value), value);
+    }
+
+    #[test]
+    fn job_create_defaults_selector_and_matching_prefixed_and_legacy_labels() {
+        let mut job = json!({
+            "metadata": {"name": "nightly", "uid": "job-uid"},
+            "spec": {
+                "selector": null,
+                "template": {
+                    "metadata": {"labels": {"app": "worker"}},
+                    "spec": {}
+                }
+            }
+        });
+
+        default_job_selector(&mut job);
+
+        assert_eq!(
+            job["spec"]["selector"]["matchLabels"],
+            json!({"batch.kubernetes.io/controller-uid": "job-uid"})
+        );
+        assert_eq!(
+            job["spec"]["template"]["metadata"]["labels"]["app"],
+            "worker"
+        );
+        assert_eq!(
+            job["spec"]["template"]["metadata"]["labels"]["job-name"],
+            "nightly"
+        );
+        assert_eq!(
+            job["spec"]["template"]["metadata"]["labels"]["batch.kubernetes.io/job-name"],
+            "nightly"
+        );
+        assert_eq!(
+            job["spec"]["template"]["metadata"]["labels"]["controller-uid"],
+            "job-uid"
+        );
+        assert_eq!(
+            job["spec"]["template"]["metadata"]["labels"]["batch.kubernetes.io/controller-uid"],
+            "job-uid"
+        );
+    }
+
+    #[test]
+    fn job_create_preserves_manual_selectors_and_existing_template_labels() {
+        let mut job = json!({
+            "metadata": {"name": "manual", "uid": "job-uid"},
+            "spec": {
+                "manualSelector": true,
+                "selector": {"matchLabels": {"app": "worker"}},
+                "template": {"metadata": {"labels": {"app": "worker"}}, "spec": {}}
+            }
+        });
+
+        default_job_selector(&mut job);
+
+        assert_eq!(
+            job["spec"]["selector"]["matchLabels"],
+            json!({"app": "worker"})
+        );
+        assert_eq!(
+            job["spec"]["template"]["metadata"]["labels"],
+            json!({"app": "worker"})
+        );
     }
 
     /// Proves the two-pass design actually cascades: an absent nested

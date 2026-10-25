@@ -27,6 +27,8 @@ struct Member {
     id: u64,
     #[prost(string, repeated, tag = "3")]
     peer_urls: Vec<String>,
+    #[prost(bool, tag = "5")]
+    is_learner: bool,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -81,6 +83,20 @@ struct MemberRemoveResponse {
     members: Vec<Member>,
 }
 
+#[derive(Clone, PartialEq, Message)]
+struct MemberPromoteRequest {
+    #[prost(uint64, tag = "1")]
+    id: u64,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct MemberPromoteResponse {
+    #[prost(message, optional, tag = "1")]
+    header: Option<ResponseHeader>,
+    #[prost(message, repeated, tag = "2")]
+    members: Vec<Member>,
+}
+
 struct ClusterClient {
     grpc: tonic::client::Grpc<Channel>,
 }
@@ -107,6 +123,13 @@ impl ClusterClient {
     async fn member_remove(&mut self, request: MemberRemoveRequest) -> Result<()> {
         let _: MemberRemoveResponse = self
             .unary(request, "/etcdserverpb.Cluster/MemberRemove")
+            .await?;
+        Ok(())
+    }
+
+    async fn member_promote(&mut self, request: MemberPromoteRequest) -> Result<()> {
+        let _: MemberPromoteResponse = self
+            .unary(request, "/etcdserverpb.Cluster/MemberPromote")
             .await?;
         Ok(())
     }
@@ -187,6 +210,39 @@ pub fn remove_existing(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Promote the joined replacement after the caller has proved its Kubernetes
+/// node is Ready, then retire the requested old member. The two operations
+/// are ordered so a failed promotion never removes the old cluster member.
+/// Repeated invocation recovers from a completed promotion or removal.
+pub fn replace_existing(cfg: &Config) -> Result<()> {
+    let endpoint = cfg.control_plane_join_endpoint()?;
+    let peer_url = cfg.control_plane_peer_url()?;
+    validate_https("--join", &endpoint)?;
+    validate_https("--peer-url", &peer_url)?;
+    let old_member_id = cfg.control_plane_member_id.context(
+        "replace-member requires --member-id=N (or NODEBOOTSTRAP_MEMBER_ID) for the old member",
+    )?;
+    let tls = join_tls_paths()?;
+    for (name, path) in [("CA", &tls.ca), ("certificate", &tls.cert), ("key", &tls.key)] {
+        anyhow::ensure!(path.is_file(), "member replacement {name} is missing: {}", path.display());
+    }
+    block_on(replace_member(&endpoint, &peer_url, old_member_id, &tls))
+}
+
+/// Promote this host after the caller has proved its Kubernetes Node is Ready.
+/// This is used when adding a control plane without replacing an existing one.
+pub fn promote_existing(cfg: &Config) -> Result<()> {
+    let endpoint = cfg.control_plane_join_endpoint()?;
+    let peer_url = cfg.control_plane_peer_url()?;
+    validate_https("--join", &endpoint)?;
+    validate_https("--peer-url", &peer_url)?;
+    let tls = join_tls_paths()?;
+    for (name, path) in [("CA", &tls.ca), ("certificate", &tls.cert), ("key", &tls.key)] {
+        anyhow::ensure!(path.is_file(), "member promotion {name} is missing: {}", path.display());
+    }
+    block_on(promote_member(&endpoint, &peer_url, &tls))
+}
+
 struct AddResult {
     cluster_id: u64,
     member_id: u64,
@@ -246,6 +302,68 @@ async fn remove_member(endpoint: &str, member_id: u64, tls: &TlsPaths) -> Result
         .await
         .with_context(|| format!("removing nodestore member {member_id}"))?;
     Ok(())
+}
+
+async fn replace_member(endpoint: &str, peer_url: &str, old_member_id: u64, tls: &TlsPaths) -> Result<()> {
+    let mut client = connect(endpoint, tls).await?;
+    let listed = client.member_list().await.context("listing nodestore members before replacement")?;
+    let (new_member_id, is_learner) = replacement_member(&listed.members, peer_url, old_member_id)?;
+    let after_promotion =
+        promote_member_if_learner(&mut client, new_member_id, is_learner, Some(old_member_id)).await?;
+    if after_promotion.iter().any(|member| member.id == old_member_id) {
+        client.member_remove(MemberRemoveRequest { id: old_member_id }).await
+            .with_context(|| format!("removing replaced nodestore member {old_member_id} after promoting member {new_member_id}"))?;
+    }
+    tracing::info!(new_member_id, old_member_id, "replacement member promoted and prior member retired");
+    Ok(())
+}
+
+async fn promote_member(endpoint: &str, peer_url: &str, tls: &TlsPaths) -> Result<()> {
+    let mut client = connect(endpoint, tls).await?;
+    let listed = client.member_list().await.context("listing nodestore members before promotion")?;
+    let (member_id, is_learner) = joined_member(&listed.members, peer_url)?;
+    promote_member_if_learner(&mut client, member_id, is_learner, None).await?;
+    tracing::info!(member_id, "joined control-plane member promoted");
+    Ok(())
+}
+
+async fn promote_member_if_learner(
+    client: &mut ClusterClient,
+    member_id: u64,
+    is_learner: bool,
+    old_member_id: Option<u64>,
+) -> Result<Vec<Member>> {
+    if is_learner {
+        client.member_promote(MemberPromoteRequest { id: member_id }).await
+            .with_context(|| match old_member_id {
+                Some(old_id) => format!("promoting replacement member {member_id}; old member {old_id} remains in the cluster"),
+                None => format!("promoting joined control-plane member {member_id}"),
+            })?;
+    }
+    let after_promotion = client.member_list().await.context("confirming nodestore member promotion")?;
+    let promoted = after_promotion.members.iter().find(|member| member.id == member_id)
+        .context("joined nodestore member disappeared after promotion")?;
+    anyhow::ensure!(!promoted.is_learner,
+        "joined member {member_id} is still a learner; old member {old_member_id:?} remains unchanged");
+    Ok(after_promotion.members)
+}
+
+fn joined_member(members: &[Member], peer_url: &str) -> Result<(u64, bool)> {
+    members
+        .iter()
+        .find(|member| member.peer_urls.iter().any(|url| url == peer_url))
+        .map(|member| (member.id, member.is_learner))
+        .with_context(|| format!("joined peer {peer_url} is not a member of the target cluster"))
+}
+
+fn replacement_member(members: &[Member], peer_url: &str, old_member_id: u64) -> Result<(u64, bool)> {
+    let member = members
+        .iter()
+        .find(|member| member.peer_urls.iter().any(|url| url == peer_url))
+        .with_context(|| format!("joined replacement peer {peer_url} is not a member of the target cluster"))?;
+    anyhow::ensure!(member.id != old_member_id,
+        "refusing to remove member {old_member_id}: it is the joined replacement member");
+    Ok((member.id, member.is_learner))
 }
 
 async fn connect(endpoint: &str, tls: &TlsPaths) -> Result<ClusterClient> {
@@ -349,4 +467,52 @@ where
         .build()
         .context("building the nodestore membership runtime")?;
     runtime.block_on(future)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{joined_member, replacement_member, Member};
+
+    fn member(id: u64, peer_url: &str, is_learner: bool) -> Member {
+        Member { id, peer_urls: vec![peer_url.to_string()], is_learner }
+    }
+
+    #[test]
+    fn replacement_selects_the_joined_member_and_preserves_its_role() {
+        assert_eq!(
+            replacement_member(&[member(8, "https://new:2380", true)], "https://new:2380", 3)
+                .expect("replacement member should be selected"),
+            (8, true)
+        );
+    }
+
+    #[test]
+    fn replacement_cannot_remove_the_joined_member_itself() {
+        let error = replacement_member(
+            &[member(8, "https://new:2380", false)],
+            "https://new:2380",
+            8,
+        )
+        .expect_err("same id must be refused");
+        assert!(error.to_string().contains("joined replacement member"));
+    }
+
+    #[test]
+    fn replacement_requires_the_peer_to_be_registered() {
+        assert!(replacement_member(&[], "https://new:2380", 3).is_err());
+    }
+
+    #[test]
+    fn promotion_selects_new_control_plane_learner_without_requiring_old_member() {
+        assert_eq!(
+            joined_member(&[member(9, "https://cp-3:2380", true)], "https://cp-3:2380")
+                .expect("joined learner should be selected"),
+            (9, true)
+        );
+    }
+
+    #[test]
+    fn promotion_refuses_peer_not_in_cluster() {
+        assert!(joined_member(&[], "https://cp-3:2380").is_err());
+    }
 }

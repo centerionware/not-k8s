@@ -117,7 +117,7 @@ pub fn has_any_probe(containers: &[Container]) -> bool {
 /// `httpGet`/`tcpSocket`/`exec` is actually set (schema allows it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProbeCheck {
-    Http { path: String, port: u16, https: bool },
+    Http { path: String, port: u16, https: bool, host: Option<String>, headers: Vec<(String, String)> },
     Tcp { port: u16 },
     Exec { command: Vec<String> },
     /// `probe.grpc` (round 29) — the standard `grpc.health.v1.Health/Check`
@@ -149,7 +149,14 @@ pub fn probe_check(probe: &Probe, container: &Container) -> ProbeCheck {
         let port = resolve_port(&http.port, container);
         let path = http.path.clone().unwrap_or_else(|| "/".to_string());
         let https = http.scheme.as_deref() == Some("HTTPS");
-        ProbeCheck::Http { path, port, https }
+        let headers = http
+            .http_headers
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|header| (header.name.clone(), header.value.clone()))
+            .collect();
+        ProbeCheck::Http { path, port, https, host: http.host.clone(), headers }
     } else if let Some(tcp) = &probe.tcp_socket {
         ProbeCheck::Tcp { port: resolve_port(&tcp.port, container) }
     } else if let Some(exec) = &probe.exec {
@@ -215,52 +222,84 @@ impl ProbeTracker {
     }
 }
 
-/// Parse an HTTP/1.x response's status line and report whether it's in the
-/// success range kubelet uses for httpGet probes (`200 <= code < 400`).
-fn parse_http_status_ok(buf: &[u8]) -> Option<bool> {
+/// Parse the status code from an HTTP/1.x response's first line.
+fn parse_http_status(buf: &[u8]) -> Option<u16> {
     let text = std::str::from_utf8(buf).ok()?;
     let line = text.lines().next()?;
     let mut parts = line.split_whitespace();
     let _version = parts.next().filter(|v| v.starts_with("HTTP/"))?;
-    let code: u16 = parts.next()?.parse().ok()?;
-    Some((200..400).contains(&code))
+    parts.next()?.parse().ok()
 }
 
-async fn check_tcp(host: &str, port: u16, timeout: Duration) -> bool {
+type ProbeResult = std::result::Result<(), String>;
+
+async fn check_tcp(host: &str, port: u16, timeout: Duration) -> ProbeResult {
     if port == 0 {
-        return false;
+        return Err("resolved probe port is zero".to_string());
     }
-    matches!(tokio::time::timeout(timeout, TcpStream::connect((host, port))).await, Ok(Ok(_)))
+    match tokio::time::timeout(timeout, TcpStream::connect((host, port))).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(format!("TCP connect to {host}:{port} failed: {error}")),
+        Err(_) => Err(format!("TCP connect to {host}:{port} timed out after {timeout:?}")),
+    }
 }
 
-async fn check_http(host: &str, port: u16, path: &str, timeout: Duration) -> bool {
+async fn check_http(host: &str, port: u16, path: &str, headers: &[(String, String)], timeout: Duration) -> ProbeResult {
     if port == 0 {
-        return false;
+        return Err("resolved HTTP probe port is zero".to_string());
     }
     let host = host.to_string();
     let path = path.to_string();
-    tokio::time::timeout(timeout, async move {
-        let mut stream = TcpStream::connect((host.as_str(), port)).await.ok()?;
-        let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
-        stream.write_all(req.as_bytes()).await.ok()?;
+    let timeout_host = host.clone();
+    let timeout_path = path.clone();
+    let result = tokio::time::timeout(timeout, async move {
+        let mut stream = TcpStream::connect((host.as_str(), port))
+            .await
+            .map_err(|error| format!("HTTP connect to {host}:{port} failed: {error}"))?;
+        let host_header = headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("host"))
+            .map(|(_, value)| value.as_str())
+            .unwrap_or(host.as_str());
+        let mut req = format!("GET {path} HTTP/1.1\r\nHost: {host_header}\r\n");
+        for (name, value) in headers.iter().filter(|(name, _)| !name.eq_ignore_ascii_case("host")) {
+            req.push_str(name);
+            req.push_str(": ");
+            req.push_str(value);
+            req.push_str("\r\n");
+        }
+        req.push_str("Connection: close\r\n\r\n");
+        stream
+            .write_all(req.as_bytes())
+            .await
+            .map_err(|error| format!("HTTP request to {host}:{port}{path} failed: {error}"))?;
         let mut buf = Vec::with_capacity(256);
         let mut chunk = [0u8; 512];
         loop {
-            let n = stream.read(&mut chunk).await.ok()?;
+            let n = stream
+                .read(&mut chunk)
+                .await
+                .map_err(|error| format!("reading HTTP response from {host}:{port}{path} failed: {error}"))?;
             if n == 0 {
                 break;
             }
             buf.extend_from_slice(&chunk[..n]);
             if buf.contains(&b'\n') {
-                break; // status line is complete; that's all parse_http_status_ok needs
+                break; // status line is complete; that's all the probe result needs
             }
         }
-        parse_http_status_ok(&buf)
+        let status = parse_http_status(&buf).ok_or_else(|| format!("invalid HTTP status line from {host}:{port}{path}"))?;
+        if (200..400).contains(&status) {
+            Ok(())
+        } else {
+            Err(format!("HTTP probe {host}:{port}{path} returned status {status}"))
+        }
     })
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or(false)
+    .await;
+    match result {
+        Ok(result) => result,
+        Err(_) => Err(format!("HTTP probe {timeout_host}:{port}{timeout_path} timed out after {timeout:?}")),
+    }
 }
 
 /// Generated `grpc.health.v1` types/client (from `proto/health.proto`) —
@@ -312,27 +351,35 @@ async fn run_check(
     container: &str,
     pod_ip: &str,
     timeout: Duration,
-) -> bool {
+) -> ProbeResult {
     match check {
-        ProbeCheck::Http { path, port, https } => {
+        ProbeCheck::Http { path, port, https, host, headers } => {
+            let host = host.as_deref().unwrap_or(pod_ip);
             if *https {
                 // TLS probing isn't implemented; a bare connect at least
                 // proves the port accepts connections. See docs/GAP_CLOSURE.md.
-                check_tcp(pod_ip, *port, timeout).await
+                check_tcp(host, *port, timeout).await
             } else {
-                check_http(pod_ip, *port, path, timeout).await
+                check_http(host, *port, path, headers, timeout).await
             }
         }
         ProbeCheck::Tcp { port } => check_tcp(pod_ip, *port, timeout).await,
-        ProbeCheck::Grpc { port, service } => check_grpc(pod_ip, *port, service.as_deref(), timeout).await,
-        ProbeCheck::Exec { command } => {
-            tokio::time::timeout(timeout, runtime.exec(ns, name, container, command))
-                .await
-                .ok()
-                .and_then(|r| r.ok())
-                .unwrap_or(false)
+        ProbeCheck::Grpc { port, service } => {
+            if check_grpc(pod_ip, *port, service.as_deref(), timeout).await {
+                Ok(())
+            } else {
+                Err(format!("gRPC health probe to {pod_ip}:{port} failed or timed out"))
+            }
         }
-        ProbeCheck::None => true,
+        ProbeCheck::Exec { command } => {
+            match tokio::time::timeout(timeout, runtime.exec(ns, name, container, command)).await {
+                Ok(Ok(true)) => Ok(()),
+                Ok(Ok(false)) => Err("exec probe command returned unsuccessful status".to_string()),
+                Ok(Err(error)) => Err(format!("exec probe failed: {error:#}")),
+                Err(_) => Err(format!("exec probe timed out after {timeout:?}")),
+            }
+        }
+        ProbeCheck::None => Ok(()),
     }
 }
 
@@ -462,7 +509,8 @@ async fn probe_container(
         tokio::time::sleep(timing.initial_delay).await;
         let mut tracker = ProbeTracker::new(false);
         loop {
-            let ok = run_check(&check, runtime.as_ref(), &ns, &name, &cname, &pod_ip, timing.timeout).await;
+            let result = run_check(&check, runtime.as_ref(), &ns, &name, &cname, &pod_ip, timing.timeout).await;
+            let ok = result.is_ok();
             tracker.record(ok, timing.success_threshold, timing.failure_threshold);
             if tracker.passing {
                 break;
@@ -478,7 +526,7 @@ async fn probe_container(
             // container instance, rather than ending the supervisor task.
             if tracker.failures >= timing.failure_threshold.max(1) {
                 let grace = probe_grace_period_seconds(&startup, pod_grace_period_seconds);
-                warn!(pod = %key, container = %cname, grace_period_seconds = grace, "startup probe failed; restarting container");
+                warn!(pod = %key, container = %cname, probe = ?check, failure = %result.as_ref().err().map_or("probe succeeded", String::as_str), grace_period_seconds = grace, "startup probe failed; restarting container");
                 restart_and_reensure(&runtime, &client, &ns, &name, &cname, grace).await;
                 tracker = ProbeTracker::new(false);
             }
@@ -504,12 +552,13 @@ async fn probe_container(
         tokio::time::sleep(t.initial_delay).await;
         let mut tracker = ProbeTracker::new(true);
         loop {
-            let ok = run_check(check, runtime.as_ref(), &ns, &name, &cname, &pod_ip, t.timeout).await;
+            let result = run_check(check, runtime.as_ref(), &ns, &name, &cname, &pod_ip, t.timeout).await;
+            let ok = result.is_ok();
             let was_passing = tracker.passing;
             tracker.record(ok, t.success_threshold, t.failure_threshold);
             if was_passing && !tracker.passing {
                 let grace = probe_grace_period_seconds(container.liveness_probe.as_ref().unwrap(), pod_grace_period_seconds);
-                warn!(pod = %key, container = %cname, grace_period_seconds = grace, "liveness probe failed; restarting container");
+                warn!(pod = %key, container = %cname, probe = ?check, failure = %result.as_ref().err().map_or("probe succeeded", String::as_str), grace_period_seconds = grace, "liveness probe failed; restarting container");
                 restart_and_reensure(&runtime, &client, &ns, &name, &cname, grace).await;
                 tracker = ProbeTracker::new(true); // give the fresh container a clean slate
             }
@@ -521,9 +570,13 @@ async fn probe_container(
         tokio::time::sleep(t.initial_delay).await;
         let mut tracker = ProbeTracker::new(false);
         loop {
-            let ok = run_check(check, runtime.as_ref(), &ns, &name, &cname, &pod_ip, t.timeout).await;
+            let result = run_check(check, runtime.as_ref(), &ns, &name, &cname, &pod_ip, t.timeout).await;
+            let ok = result.is_ok();
             let was_passing = tracker.passing;
             tracker.record(ok, t.success_threshold, t.failure_threshold);
+            if !ok && tracker.failures == t.failure_threshold.max(1) {
+                warn!(pod = %key, container = %cname, probe = ?check, failure = %result.as_ref().err().unwrap(), "readiness probe reached its failure threshold");
+            }
             set_health(&health, &ns, &name, &cname, |h| h.ready = tracker.passing);
             if tracker.passing != was_passing {
                 notify_reconcile();

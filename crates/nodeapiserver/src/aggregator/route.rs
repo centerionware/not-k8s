@@ -17,9 +17,11 @@
 //! cardinality assumption `apiextensions::registry::resolve_in` already
 //! makes for CRDs.
 
-use crate::aggregator::availability;
+use crate::aggregator::{availability, client_tls, proxy_target};
+use crate::proxy::http_client;
 use crate::server::rest;
 use crate::storage::client::StorageClient;
+use http_body_util::BodyExt;
 use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]
@@ -38,14 +40,16 @@ pub enum Error {
 /// doesn't attempt to detect, same "not our job to police" posture
 /// `apiextensions::registry::resolve_in`'s own doc comment already takes
 /// for a CRD naming collision.
-pub async fn resolve(storage: &mut StorageClient, group: &str, version: &str, cache_registry: Option<&crate::cacher::CacheRegistry>) -> Result<Option<Value>, Error> {
+pub async fn resolve(storage: &mut StorageClient, group: &str, version: &str) -> Result<Option<Value>, Error> {
     if group.is_empty() {
         // The core group is never aggregated -- real upstream's own rule,
         // and this build has no `APIService` bootstrap for it anyway.
         return Ok(None);
     }
-    let cache = cache_registry.and_then(|registry| registry.get("apiregistration.k8s.io", "v1", "apiservices"));
-    let list = match rest::list(storage, cache.as_ref(), "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
+    // APIService routing decisions use current stored state rather than a
+    // potentially behind informer snapshot. A stale registration can route
+    // requests to an old backend or suppress a newly registered one.
+    let list = match rest::list(storage, None, "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
         rest::ListOutcome::Found(list) => list,
         rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken => return Ok(None),
     };
@@ -69,16 +73,17 @@ pub async fn resolve(storage: &mut StorageClient, group: &str, version: &str, ca
 /// backend (its Service deleted, no ready endpoints, ...) is correctly
 /// left out of discovery rather than advertised and then failing every
 /// real request — matching real upstream's own "only an `Available`
-/// `APIService`'s group-version appears in discovery" posture. Prefers
-/// `aggregator::reconcile`'s own already-computed condition when one
-/// exists (`availability::cached_available` — zero extra I/O), falling
-/// back to a fresh `preflight_check` (one `Service` GET + one
-/// `EndpointSlice` LIST, bounded by the same small real-world
-/// cardinality `resolve`'s own doc comment already assumes) only for an
-/// `APIService` the reconciliation loop hasn't reached yet.
-pub async fn discoverable_group_versions(storage: &mut StorageClient, cache_registry: Option<&crate::cacher::CacheRegistry>) -> Result<Vec<(String, String)>, Error> {
-    let cache = cache_registry.and_then(|registry| registry.get("apiregistration.k8s.io", "v1", "apiservices"));
-    let list = match rest::list(storage, cache.as_ref(), "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
+/// `APIService`'s group-version appears in discovery" posture. Reads the
+/// small APIService collection directly from storage so a lagging reflector
+/// cannot hide a newly available API group or keep a removed registration
+/// discoverable. Uses the reconciled Available condition when present,
+/// falling back to fresh Service/EndpointSlice preflight only before the
+/// availability controller has written one.
+pub async fn discoverable_group_versions(storage: &mut StorageClient) -> Result<Vec<(String, String)>, Error> {
+    // APIService objects are few, and their status gates discovery. Read the
+    // current nodestore snapshot instead of trusting an informer that may
+    // lag a status transition for the full discovery retry window.
+    let list = match rest::list(storage, None, "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
         rest::ListOutcome::Found(list) => list,
         rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken => return Ok(Vec::new()),
     };
@@ -86,8 +91,8 @@ pub async fn discoverable_group_versions(storage: &mut StorageClient, cache_regi
     let mut out = Vec::new();
     for api_service in candidates {
         let Some(service_ref) = api_service.pointer("/spec/service") else { continue };
-        let Some(group) = api_service.pointer("/spec/group").and_then(Value::as_str) else { continue };
-        let Some(version) = api_service.pointer("/spec/version").and_then(Value::as_str) else { continue };
+        let Some(group) = api_service.pointer("/spec/group").and_then(Value::as_str).map(str::to_owned) else { continue };
+        let Some(version) = api_service.pointer("/spec/version").and_then(Value::as_str).map(str::to_owned) else { continue };
         // `aggregator::reconcile`'s own already-computed condition, when
         // one exists, answers this without any I/O at all -- real
         // correctness is unaffected either way (`cached_available`'s own
@@ -96,28 +101,159 @@ pub async fn discoverable_group_versions(storage: &mut StorageClient, cache_regi
         // `APIService` the reconciliation loop hasn't reached yet).
         if let Some(available) = availability::cached_available(&api_service) {
             if available {
-                out.push((group.to_string(), version.to_string()));
+                out.push((group.clone(), version.clone()));
             }
             continue;
         }
 
-        let namespace = service_ref.get("namespace").and_then(Value::as_str).unwrap_or("");
-        let name = service_ref.get("name").and_then(Value::as_str).unwrap_or("");
+        let namespace = service_ref.get("namespace").and_then(Value::as_str).unwrap_or("").to_string();
+        let name = service_ref.get("name").and_then(Value::as_str).unwrap_or("").to_string();
         let port = service_ref.get("port").and_then(Value::as_i64).unwrap_or(443);
 
-        let service = match rest::get(storage, None, "", "v1", "services", Some(namespace), name).await? {
+        let service = match rest::get(storage, None, "", "v1", "services", Some(namespace.as_str()), name.as_str()).await? {
             rest::GetOutcome::Found(object) => Some(object),
             rest::GetOutcome::ObjectNotFound | rest::GetOutcome::UnknownResource => None,
         };
-        let endpoint_slices = match rest::list(storage, None, "discovery.k8s.io", "v1", "endpointslices", Some(namespace), &format!("kubernetes.io/service-name={name}"), "", 0, "").await? {
+        let endpoint_slices = match rest::list(storage, None, "discovery.k8s.io", "v1", "endpointslices", Some(namespace.as_str()), &format!("kubernetes.io/service-name={name}"), "", 0, "").await? {
             rest::ListOutcome::Found(list) => list.get("items").and_then(Value::as_array).cloned().unwrap_or_default(),
             rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken => Vec::new(),
         };
-        if availability::preflight_check(namespace, name, port, service.as_ref(), &endpoint_slices).is_ok() {
-            out.push((group.to_string(), version.to_string()));
+        if availability::preflight_check(namespace.as_str(), name.as_str(), port, service.as_ref(), &endpoint_slices).is_ok() {
+            out.push((group.clone(), version.clone()));
         }
     }
     Ok(out)
+}
+
+/// Fetches the live `APIResourceList` for each already-available aggregated
+/// group-version. Kubernetes aggregated discovery v2 needs the resource list
+/// inside `/apis`; an empty resource array hides the API from clients such as
+/// `kubectl api-resources` that prefer this one-request discovery format.
+pub async fn fetch_discovery_resource_lists(
+    storage: &mut StorageClient,
+    group_versions: &[(String, String)],
+    proxy_identity: Option<&client_tls::ClientIdentity>,
+) -> Vec<(String, String, Value)> {
+    let mut results = Vec::new();
+    for (group, version) in group_versions {
+        let group = group.clone();
+        let version = version.clone();
+        let api_service = match resolve(storage, &group, &version).await {
+            Ok(Some(api_service)) => api_service,
+            Ok(None) => continue,
+            Err(error) => {
+                tracing::warn!(%group, %version, error = ?error, "aggregated discovery: resolving APIService failed");
+                continue;
+            }
+        };
+        if availability::cached_available(&api_service) == Some(false) {
+            continue;
+        }
+        let Some(service_ref) = api_service.pointer("/spec/service") else { continue };
+        let namespace = service_ref.get("namespace").and_then(Value::as_str).unwrap_or("").to_string();
+        let name = service_ref.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let port = service_ref.get("port").and_then(Value::as_i64).unwrap_or(443);
+        let service = match rest::get(storage, None, "", "v1", "services", Some(namespace.as_str()), name.as_str()).await {
+            Ok(rest::GetOutcome::Found(service)) => service,
+            Ok(rest::GetOutcome::ObjectNotFound | rest::GetOutcome::UnknownResource) => continue,
+            Err(error) => {
+                tracing::warn!(%group, %version, error = ?error, "aggregated discovery: reading backing Service failed");
+                continue;
+            }
+        };
+        let endpoint_slices = match rest::list(storage, None, "discovery.k8s.io", "v1", "endpointslices", Some(namespace.as_str()), &format!("kubernetes.io/service-name={name}"), "", 0, "").await {
+            Ok(rest::ListOutcome::Found(list)) => list.get("items").and_then(Value::as_array).cloned().unwrap_or_default(),
+            Ok(rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken) => continue,
+            Err(error) => {
+                tracing::warn!(%group, %version, error = ?error, "aggregated discovery: reading backing EndpointSlices failed");
+                continue;
+            }
+        };
+        if availability::preflight_check(namespace.as_str(), name.as_str(), port, Some(&service), &endpoint_slices).is_err() {
+            continue;
+        }
+        let path = format!("/apis/{group}/{version}");
+        let target = match proxy_target::resolve(&api_service, &service, &path, "") {
+            Ok(target) => target,
+            Err(error) => {
+                tracing::warn!(%group, %version, error = ?error, "aggregated discovery: resolving backend target failed");
+                continue;
+            }
+        };
+        let insecure_skip_tls_verify = api_service.pointer("/spec/insecureSkipTLSVerify").and_then(Value::as_bool).unwrap_or(false);
+        let ca_bundle_pem = api_service.pointer("/spec/caBundle").and_then(Value::as_str).filter(|bundle| !bundle.is_empty()).and_then(|bundle| {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.decode(bundle).ok()
+        });
+        let client_config = match client_tls::build_client_config_with_identity(ca_bundle_pem.as_deref(), insecure_skip_tls_verify, proxy_identity) {
+            Ok(config) => std::sync::Arc::new(config),
+            Err(error) => {
+                tracing::warn!(%group, %version, error = ?error, "aggregated discovery: building backend TLS config failed");
+                continue;
+            }
+        };
+        let headers = if proxy_identity.is_some() {
+            vec![
+                ("X-Remote-User".to_string(), "system:kube-aggregator".to_string()),
+                ("X-Remote-Group".to_string(), "system:masters".to_string()),
+            ]
+        } else {
+            Vec::new()
+        };
+        let response = match http_client::fetch_with_headers(&target, client_config, &headers).await {
+            Ok(response) if response.status().is_success() => response,
+            Ok(response) => {
+                tracing::warn!(%group, %version, status = %response.status(), "aggregated discovery: backend returned a non-success response");
+                continue;
+            }
+            Err(error) => {
+                tracing::warn!(%group, %version, error = ?error, "aggregated discovery: fetching backend resource list failed");
+                continue;
+            }
+        };
+        const MAX_DISCOVERY_BODY_BYTES: usize = 4 * 1024 * 1024;
+        let mut response_body = response.into_body();
+        let mut body = Vec::new();
+        let mut body_read_failed = false;
+        while let Some(frame) = response_body.frame().await {
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(error) => {
+                    tracing::warn!(%group, %version, error = ?error, "aggregated discovery: reading backend resource list failed");
+                    body_read_failed = true;
+                    break;
+                }
+            };
+            if let Ok(data) = frame.into_data() {
+                if body.len().saturating_add(data.len()) > MAX_DISCOVERY_BODY_BYTES {
+                    tracing::warn!(%group, %version, limit = MAX_DISCOVERY_BODY_BYTES, "aggregated discovery: backend resource list exceeded its size limit");
+                    body_read_failed = true;
+                    break;
+                }
+                body.extend_from_slice(&data);
+            }
+        }
+        if body_read_failed {
+            continue;
+        }
+        let resource_list: Value = match serde_json::from_slice(&body) {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(%group, %version, error = ?error, "aggregated discovery: backend returned invalid JSON");
+                continue;
+            }
+        };
+        let expected_group_version = format!("{group}/{version}");
+        if resource_list.get("kind").and_then(Value::as_str) != Some("APIResourceList")
+            || resource_list.get("groupVersion").and_then(Value::as_str) != Some(expected_group_version.as_str())
+            || resource_list.get("resources").and_then(Value::as_array).is_none()
+        {
+            tracing::warn!(%group, %version, "aggregated discovery: backend response is not an APIResourceList");
+            continue;
+        }
+        results.push((group, version, resource_list));
+    }
+    results
 }
 
 #[cfg(test)]

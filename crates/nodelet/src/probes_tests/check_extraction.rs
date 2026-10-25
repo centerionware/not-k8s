@@ -17,7 +17,10 @@ fn http_get_resolves_numeric_port_and_defaults_path_and_scheme() {
         ..Default::default()
     };
     let check = probe_check(&probe, &Container::default());
-    assert_eq!(check, ProbeCheck::Http { path: "/".to_string(), port: 8080, https: false });
+    assert_eq!(
+        check,
+        ProbeCheck::Http { path: "/".to_string(), port: 8080, https: false, host: None, headers: Vec::new() }
+    );
 }
 
 #[test]
@@ -26,13 +29,27 @@ fn http_get_resolves_named_port_against_container_ports() {
         http_get: Some(HTTPGetAction {
             port: IntOrString::String("http".to_string()),
             path: Some("/healthz".to_string()),
+            host: Some("127.0.0.1".to_string()),
+            http_headers: Some(vec![k8s_openapi::api::core::v1::HTTPHeader {
+                name: "brief".to_string(),
+                value: "true".to_string(),
+            }]),
             scheme: Some("HTTPS".to_string()),
             ..Default::default()
         }),
         ..Default::default()
     };
     let check = probe_check(&probe, &container_with_port("http", 9090));
-    assert_eq!(check, ProbeCheck::Http { path: "/healthz".to_string(), port: 9090, https: true });
+    assert_eq!(
+        check,
+        ProbeCheck::Http {
+            path: "/healthz".to_string(),
+            port: 9090,
+            https: true,
+            host: Some("127.0.0.1".to_string()),
+            headers: vec![("brief".to_string(), "true".to_string())],
+        }
+    );
 }
 
 #[test]
@@ -42,7 +59,10 @@ fn http_get_named_port_not_found_resolves_to_zero() {
         ..Default::default()
     };
     let check = probe_check(&probe, &Container::default());
-    assert_eq!(check, ProbeCheck::Http { path: "/".to_string(), port: 0, https: false });
+    assert_eq!(
+        check,
+        ProbeCheck::Http { path: "/".to_string(), port: 0, https: false, host: None, headers: Vec::new() }
+    );
 }
 
 #[test]

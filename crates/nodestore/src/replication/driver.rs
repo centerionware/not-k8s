@@ -76,6 +76,7 @@ const LOG_COMPACT_THRESHOLD: u64 = 5_000;
 enum Request {
     Propose { data: Vec<u8>, id: u64 },
     ConfChange { cc: ConfChangeV2, context: Vec<u8>, id: u64 },
+    PromoteLearner { learner_id: u64, cc: ConfChangeV2, context: Vec<u8>, id: u64 },
     Step(Message),
     TransferLeader { to: u64, done: oneshot::Sender<Result<()>> },
     Campaign { done: oneshot::Sender<Result<()>> },
@@ -137,6 +138,24 @@ impl RaftHandle {
         let (id, rx) = self.proposals.register();
         let context = encode_entry(id, cmd);
         if self.tx.send(Request::ConfChange { cc, context, id }).await.is_err() {
+            self.proposals.forget(id);
+            return Err(Error::Unavailable("the raft driver has stopped".to_string()));
+        }
+        self.await_proposal(id, rx).await
+    }
+
+    /// Promote a learner only when the leader has observed it active and
+    /// replicated through the current end of the log. The check and proposal
+    /// run in the Raft owner task, so no other Raft request can interleave.
+    pub async fn promote_learner(
+        &self,
+        learner_id: u64,
+        cc: ConfChangeV2,
+        cmd: &Command,
+    ) -> Result<Applied> {
+        let (id, rx) = self.proposals.register();
+        let context = encode_entry(id, cmd);
+        if self.tx.send(Request::PromoteLearner { learner_id, cc, context, id }).await.is_err() {
             self.proposals.forget(id);
             return Err(Error::Unavailable("the raft driver has stopped".to_string()));
         }
@@ -340,6 +359,21 @@ fn refuse_empty_restart_into_a_live_cluster(
     )))
 }
 
+/// Return the trusted starting configuration for a fresh learner joining a
+/// live cluster. The leader's probe reports only committed voters; the new
+/// member is deliberately absent until the AddLearner entry is applied.
+fn joining_cluster_conf_state(
+    member_id: u64,
+    probe: &crate::replication::transport::ClusterProbe,
+) -> Option<raft::eraftpb::ConfState> {
+    if !probe.already_running || probe.voters.is_empty() || probe.voters.contains(&member_id) {
+        return None;
+    }
+    let mut state = raft::eraftpb::ConfState::default();
+    state.voters = probe.voters.clone();
+    Some(state)
+}
+
 /// Start the driver. Returns a handle; the loop runs on its own task.
 ///
 /// `probe` is what the peers said before raft was built. It is consulted only
@@ -417,10 +451,20 @@ pub fn start(
         refuse_empty_restart_into_a_live_cluster(member_id, &probe)?;
     }
     if bootstrap && probe.already_running && !probe.voters.contains(&member_id) {
-        // Added to a running cluster with MemberAdd: the leader already knows
-        // about this member and will send it a snapshot. Seeding a membership
-        // here would be this member inventing a configuration the cluster
-        // never agreed to, so it starts with none and takes the leader's.
+        // Added to a running cluster with MemberAdd: the leader has already
+        // committed this member as a learner. Seed the *existing voter set*
+        // reported by that live leader so the follower can apply the committed
+        // AddLearner entry. Starting from an empty ConfState makes raft reject
+        // that first entry as "removed all voters" before it can receive the
+        // leader's snapshot. Never add this member locally: its learner
+        // membership still comes from the leader's committed entry.
+        if let Some(cs) = joining_cluster_conf_state(member_id, &probe) {
+            log.set_conf_state(&cs, 0)?;
+            raw = RawNode::new(&cfg, log.clone(), &raft_logger())
+                .map_err(|e| {
+                    Error::Unavailable(format!("restarting raft with probed voters: {e}"))
+                })?;
+        }
         info!("joining a cluster that is already running; waiting for the leader's snapshot");
     } else if bootstrap && !peers.is_empty() {
         let voters: Vec<u64> = peers.iter().filter(|m| !m.is_learner).map(|m| m.id).collect();
@@ -557,6 +601,32 @@ impl Driver {
                 if let Err(e) = self.raw.propose_conf_change(context, cc) {
                     self.proposals
                         .complete(id, Err(Error::Unavailable(format!("propose conf change: {e}"))));
+                }
+            }
+            Request::PromoteLearner { learner_id, cc, context, id } => {
+                if self.raw.raft.state != StateRole::Leader {
+                    self.proposals.complete(id, Err(Error::Unavailable(
+                        "membership changes must go to the leader".to_string(),
+                    )));
+                    return;
+                }
+                let last_index = self.raw.raft.raft_log.last_index();
+                let progress = self.raw.raft.prs().get(learner_id);
+                let Some(progress) = progress else {
+                    self.proposals.complete(id, Err(Error::InvalidRequest(format!(
+                        "cannot promote member {learner_id}: it is not tracked by this Raft leader"
+                    ))));
+                    return;
+                };
+                if !learner_is_caught_up(progress.matched, last_index, progress.recent_active) {
+                    self.proposals.complete(id, Err(Error::Unavailable(format!(
+                        "cannot promote learner {learner_id}: replicated through {}, leader log ends at {last_index}, active={}",
+                        progress.matched, progress.recent_active
+                    ))));
+                    return;
+                }
+                if let Err(e) = self.raw.propose_conf_change(context, cc) {
+                    self.proposals.complete(id, Err(Error::Unavailable(format!("propose learner promotion: {e}"))));
                 }
             }
             Request::Step(msg) => {
@@ -818,6 +888,10 @@ impl Driver {
     }
 }
 
+fn learner_is_caught_up(matched: u64, leader_last_index: u64, recent_active: bool) -> bool {
+    recent_active && matched >= leader_last_index
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,6 +899,14 @@ mod tests {
 
     fn probe(running: bool, voters: Vec<u64>) -> ClusterProbe {
         ClusterProbe { reached_a_peer: !voters.is_empty(), already_running: running, voters }
+    }
+
+    #[test]
+    fn learner_promotion_requires_an_active_replica_at_the_log_tail() {
+        assert!(learner_is_caught_up(12, 12, true));
+        assert!(learner_is_caught_up(13, 12, true));
+        assert!(!learner_is_caught_up(11, 12, true));
+        assert!(!learner_is_caught_up(12, 12, false));
     }
 
     /// The crash this exists to prevent: a member restarted empty under an id
@@ -858,5 +940,17 @@ mod tests {
     fn a_newly_added_member_joins_a_live_cluster_without_complaint() {
         refuse_empty_restart_into_a_live_cluster(4, &probe(true, vec![1, 2, 3]))
             .expect("member 4 is new to this cluster; nothing has a position for it");
+    }
+
+    #[test]
+    fn a_new_learner_seeds_the_probed_voters_before_applying_member_add() {
+        let cs = joining_cluster_conf_state(4, &probe(true, vec![1, 2, 3])).unwrap();
+        assert_eq!(cs.voters, vec![1, 2, 3]);
+        assert!(
+            cs.learners.is_empty(),
+            "learner membership must arrive from the committed raft entry"
+        );
+        assert!(joining_cluster_conf_state(2, &probe(true, vec![1, 2, 3])).is_none());
+        assert!(joining_cluster_conf_state(4, &probe(false, vec![1, 2, 3])).is_none());
     }
 }

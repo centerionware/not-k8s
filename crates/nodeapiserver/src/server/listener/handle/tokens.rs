@@ -68,6 +68,7 @@ macro_rules! handle_tokens {
         && !$info.namespace.is_empty()
         && !$info.name.is_empty()
     {
+        let content_type = $req.headers().get("content-type").and_then(|value| value.to_str().ok()).map(str::to_owned);
         let Some(mut client) = $storage else {
             return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
         };
@@ -81,13 +82,22 @@ macro_rules! handle_tokens {
                 return Ok(body_read_error_response(&$path_str, &e));
             }
         };
-        let body_value: serde_json::Value = match crate::codec::json::decode(&body_bytes) {
-            Ok(v) => v,
-            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e.to_string()))),
+        let body_value = match decode_virtual_request(
+            &body_bytes,
+            content_type.as_deref(),
+            "authentication.k8s.io",
+            "v1",
+            "TokenRequest",
+        ) {
+            Ok(value) => value,
+            Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &error))),
         };
         let mut request = match crate::authn::service_account::parse_token_request(&body_value) {
             Ok(request) => request,
-            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e))),
+            Err(e) => {
+                warn!(path = %$path_str, error = %e, "TokenRequest validation failed");
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e)));
+            }
         };
         let service_account = match rest::get(&mut client, None, "", "v1", "serviceaccounts", Some(&$info.namespace), &$info.name).await {
             Ok(rest::GetOutcome::Found(service_account)) => service_account,
@@ -103,9 +113,16 @@ macro_rules! handle_tokens {
             .pointer("/metadata/uid")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
-        if let Some((pod_name, pod_uid)) = &request.bound_pod {
-            match rest::get(&mut client, None, "", "v1", "pods", Some(&$info.namespace), pod_name).await {
-                Ok(rest::GetOutcome::Found(pod)) if pod.pointer("/metadata/uid").and_then(serde_json::Value::as_str) == Some(pod_uid) => {
+        if let Some((pod_name, requested_pod_uid)) = request.bound_pod.clone() {
+            match rest::get(&mut client, None, "", "v1", "pods", Some(&$info.namespace), &pod_name).await {
+                Ok(rest::GetOutcome::Found(pod)) => {
+                    let Some(pod_uid) = pod.pointer("/metadata/uid").and_then(serde_json::Value::as_str).filter(|uid| !uid.is_empty()) else {
+                        return Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &internal_error_status(&$path_str)));
+                    };
+                    if requested_pod_uid.as_deref().is_some_and(|requested| requested != pod_uid) {
+                        return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, "bound Pod UID does not match the current Pod")));
+                    }
+                    request.bound_pod = Some((pod_name, Some(pod_uid.to_owned())));
                     if let Some(node_name) = pod
                         .pointer("/spec/nodeName")
                         .and_then(serde_json::Value::as_str)
@@ -126,9 +143,6 @@ macro_rules! handle_tokens {
                         request.bound_pod_node = Some((node_name.to_string(), node_uid));
                     }
                 }
-                Ok(rest::GetOutcome::Found(_)) => {
-                    return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, "bound Pod UID does not match the current Pod")));
-                }
                 Ok(rest::GetOutcome::ObjectNotFound) | Ok(rest::GetOutcome::UnknownResource) => {
                     return Ok(json_response(StatusCode::NOT_FOUND, &not_found_status(&$path_str)));
                 }
@@ -140,7 +154,10 @@ macro_rules! handle_tokens {
         }
         let issued = match authenticator.issue_token(&$info.namespace, &$info.name, service_account_uid, &request) {
             Ok(issued) => issued,
-            Err(e) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e.to_string()))),
+            Err(e) => {
+                warn!(path = %$path_str, error = %e, "TokenRequest issuance failed");
+                return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &e.to_string())));
+            }
         };
         let mut response_body = body_value;
         response_body["apiVersion"] = serde_json::json!("authentication.k8s.io/v1");

@@ -71,6 +71,25 @@ mod tests {
     }
 
     #[test]
+    fn typed_map_comprehensions_expose_map_keys_as_strings() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"annotations": {
+                "type": "object",
+                "maxProperties": 16,
+                "additionalProperties": {"type": "string", "maxLength": 4096}
+            }}
+        });
+        assert!(
+            check_rule(
+                &schema,
+                "self.annotations.all(key, key.matches('^[a-z]+$'))"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
     fn kubernetes_extension_values_and_format_optionals_are_typed() {
         let rule = "quantity(self.name).add(1).isGreaterThan(quantity('0')) && cidr('10.0.0.0/8').containsIP(ip('10.1.2.3')) && ip.isCanonical(self.name) && url(self.name).getQuery()['key'][0] == 'value' && semver('1.2.3').major() == 1 && format.named('uuid').value().validate(self.name).hasValue()";
         assert!(check_rule(&schema(), rule).is_empty());
@@ -142,5 +161,22 @@ mod tests {
         });
         assert!(check_rule(&schema, "self.__namespace__ == 'default'").is_empty());
         assert!(!check_rule(&schema, "self.namespace == 'default'").is_empty());
+    }
+
+    #[test]
+    fn openapi_map_fields_support_size_and_key_comprehensions() {
+        let schema = json!({
+            "type": "object",
+            "maxProperties": 16,
+            "properties": {"fixed": {"type": "string"}},
+            "additionalProperties": {"type": "string", "maxLength": 4096}
+        });
+        assert!(
+            check_rule(
+                &schema,
+                "size(self) <= 16 && self.all(key, key.matches('^[a-z]+$'))"
+            )
+            .is_empty()
+        );
     }
 }

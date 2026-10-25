@@ -332,8 +332,8 @@ fn schema_type(schema: &Value) -> Option<CelType> {
                 .filter(|value| value.is_object())
                 .and_then(schema_type)
                 .map(Box::new);
-            if fields.is_empty() && additional.is_none() {
-                Some(CelType::Dyn)
+            if fields.is_empty() {
+                Some(additional.map(CelType::Map).unwrap_or(CelType::Dyn))
             } else {
                 Some(CelType::Object { fields, additional })
             }

@@ -10,7 +10,7 @@
 //! systemd unit if one exists, `service_mgr.rs` (systemd -> OpenRC ->
 //! fallback loop) otherwise.
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 
 use crate::config::Config;
 use crate::pkg::{fetch_url, pkg_install, PkgNames};
@@ -265,8 +265,146 @@ fn ensure_config() -> Result<bool> {
         config = config.replace("enable_cdi = false", "enable_cdi = true");
     }
 
+    let cni_conf_dir = std::env::var("NODEBOOTSTRAP_CNI_CONF_DIR").ok();
+    let cni_bin_dir = std::env::var("NODEBOOTSTRAP_CNI_BIN_DIR").ok();
+    let (patched, cni_dirs_changed) =
+        configure_cni_dirs(&config, cni_conf_dir.as_deref(), cni_bin_dir.as_deref())?;
+    config = patched;
+
     std::fs::write(CONFIG_PATH, config).context("writing patched config.toml")?;
-    Ok(wrote_fresh || hugetlb_changed)
+    Ok(wrote_fresh || hugetlb_changed || cni_dirs_changed)
+}
+
+fn configure_cni_dirs(
+    config: &str,
+    conf_dir: Option<&str>,
+    bin_dir: Option<&str>,
+) -> Result<(String, bool)> {
+    let (Some(conf_dir), Some(bin_dir)) = (conf_dir, bin_dir) else {
+        ensure!(
+            conf_dir.is_none() && bin_dir.is_none(),
+            "NODEBOOTSTRAP_CNI_CONF_DIR and NODEBOOTSTRAP_CNI_BIN_DIR must be set together"
+        );
+        return Ok((config.to_string(), false));
+    };
+    ensure!(
+        std::path::Path::new(conf_dir).is_absolute(),
+        "NODEBOOTSTRAP_CNI_CONF_DIR must be an absolute path"
+    );
+    ensure!(
+        std::path::Path::new(bin_dir).is_absolute(),
+        "NODEBOOTSTRAP_CNI_BIN_DIR must be an absolute path"
+    );
+    let conf_value = serde_json::to_string(conf_dir).context("encoding CNI config directory")?;
+    let bin_value = serde_json::to_string(bin_dir).context("encoding CNI binary directory")?;
+
+    let mut output = Vec::new();
+    let mut in_cni_table = false;
+    let mut found_cni_table = false;
+    let mut found_conf_dir = false;
+    let mut found_bin_dir = false;
+    for line in config.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            if in_cni_table {
+                add_missing_cni_dirs(
+                    &mut output,
+                    !found_conf_dir,
+                    !found_bin_dir,
+                    &conf_value,
+                    &bin_value,
+                );
+            }
+            in_cni_table = is_cni_table(trimmed);
+            if in_cni_table {
+                found_cni_table = true;
+                found_conf_dir = false;
+                found_bin_dir = false;
+            }
+            output.push(line.to_string());
+            continue;
+        }
+
+        if in_cni_table && !trimmed.starts_with('#') {
+            if let Some((key, _)) = trimmed.split_once('=') {
+                let key = key.trim();
+                let replacement = match key {
+                    "conf_dir" => {
+                        found_conf_dir = true;
+                        Some((&conf_value, "conf_dir"))
+                    }
+                    "bin_dir" => {
+                        found_bin_dir = true;
+                        Some((&bin_value, "bin_dir"))
+                    }
+                    _ => None,
+                };
+                if let Some((value, key)) = replacement {
+                    let indent = &line[..line.len() - line.trim_start().len()];
+                    output.push(format!("{indent}{key} = {value}"));
+                    continue;
+                }
+            }
+        }
+        output.push(line.to_string());
+    }
+
+    if in_cni_table {
+        add_missing_cni_dirs(
+            &mut output,
+            !found_conf_dir,
+            !found_bin_dir,
+            &conf_value,
+            &bin_value,
+        );
+    }
+    if !found_cni_table {
+        if output.last().is_some_and(|line| !line.is_empty()) {
+            output.push(String::new());
+        }
+        output.push(cni_table_header(config).to_string());
+        output.push(format!("  conf_dir = {conf_value}"));
+        output.push(format!("  bin_dir = {bin_value}"));
+    }
+
+    let patched = output.join("\n");
+    let changed = patched != config;
+    Ok((patched, changed))
+}
+
+fn is_cni_table(header: &str) -> bool {
+    matches!(
+        header,
+        "[plugins.\"io.containerd.grpc.v1.cri\".cni]"
+            | "[plugins.'io.containerd.grpc.v1.cri'.cni]"
+            | "[plugins.\"io.containerd.cri.v1.runtime\".cni]"
+            | "[plugins.'io.containerd.cri.v1.runtime'.cni]"
+    )
+}
+
+fn cni_table_header(config: &str) -> &'static str {
+    if config.contains("io.containerd.cri.v1.runtime")
+        || config.lines().any(|line| line.trim() == "version = 3")
+    {
+        "[plugins.\"io.containerd.cri.v1.runtime\".cni]"
+    } else {
+        "[plugins.\"io.containerd.grpc.v1.cri\".cni]"
+    }
+}
+
+fn add_missing_cni_dirs(
+    output: &mut Vec<String>,
+    add_conf_dir: bool,
+    add_bin_dir: bool,
+    conf_value: &str,
+    bin_value: &str,
+) {
+    if add_conf_dir {
+        output.push(format!("  conf_dir = {conf_value}"));
+    }
+    if add_bin_dir {
+        output.push(format!("  bin_dir = {bin_value}"));
+    }
 }
 
 fn enable_hugetlb_controller(config: &str) -> (String, bool) {
@@ -373,7 +511,46 @@ fn cri_runtime_root(header: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod containerd_config_tests {
-    use super::enable_hugetlb_controller;
+    use super::{configure_cni_dirs, enable_hugetlb_controller};
+
+    #[test]
+    fn configures_and_preserves_an_existing_containerd_v1_cni_table() {
+        let config = "[plugins.\"io.containerd.grpc.v1.cri\".cni]\n  conf_dir = \"/etc/cni/net.d\"\n  bin_dir = \"/opt/cni/bin\"\n";
+        let (patched, changed) = configure_cni_dirs(
+            config,
+            Some("/var/lib/rancher/k3s/agent/etc/cni/net.d"),
+            Some("/var/lib/rancher/k3s/data/current/bin"),
+        )
+        .unwrap();
+        assert!(changed);
+        assert!(patched.contains("conf_dir = \"/var/lib/rancher/k3s/agent/etc/cni/net.d\""));
+        assert!(patched.contains("bin_dir = \"/var/lib/rancher/k3s/data/current/bin\""));
+        let (again, changed) = configure_cni_dirs(
+            &patched,
+            Some("/var/lib/rancher/k3s/agent/etc/cni/net.d"),
+            Some("/var/lib/rancher/k3s/data/current/bin"),
+        )
+        .unwrap();
+        assert!(!changed);
+        assert_eq!(again, patched);
+    }
+
+    #[test]
+    fn creates_a_v2_cni_table_for_containerd_schema_v3() {
+        let config = "version = 3\n[grpc]\naddress = \"/run/containerd/containerd.sock\"\n";
+        let (patched, changed) =
+            configure_cni_dirs(config, Some("/etc/cni/net.d"), Some("/opt/cni/bin")).unwrap();
+        assert!(changed);
+        assert!(patched.contains("[plugins.\"io.containerd.cri.v1.runtime\".cni]"));
+        assert!(patched.contains("conf_dir = \"/etc/cni/net.d\""));
+        assert!(patched.contains("bin_dir = \"/opt/cni/bin\""));
+    }
+
+    #[test]
+    fn requires_both_cni_paths_to_be_absolute_and_set_together() {
+        assert!(configure_cni_dirs("", Some("/etc/cni/net.d"), None).is_err());
+        assert!(configure_cni_dirs("", Some("relative"), Some("/opt/cni/bin")).is_err());
+    }
 
     #[test]
     fn enables_an_existing_v1_setting() {

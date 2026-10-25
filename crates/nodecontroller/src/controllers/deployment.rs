@@ -122,6 +122,12 @@ pub fn resolve_fenceposts(max_surge: i32, max_unavailable: i32, desired: i32) ->
 /// total Pod count across every ReplicaSet the Deployment owns (old + new)
 /// and the surge budget.
 pub fn new_rs_desired_replicas(desired: i32, max_surge: i32, current_total: i32, new_rs_current: i32) -> i32 {
+    // Scale-down must still converge when all current Pods belong to the new
+    // ReplicaSet. At the surge ceiling, holding this count steady leaves a
+    // scaled Deployment permanently above its desired replica count.
+    if new_rs_current > desired {
+        return desired;
+    }
     let max_total = desired + max_surge;
     if current_total >= max_total {
         return new_rs_current;
@@ -545,6 +551,11 @@ mod tests {
     #[test]
     fn new_rs_holds_steady_once_at_max_total() {
         assert_eq!(new_rs_desired_replicas(4, 1, 5, 2), 2);
+    }
+
+    #[test]
+    fn new_rs_scales_down_when_the_deployment_is_scaled_below_current_replicas() {
+        assert_eq!(new_rs_desired_replicas(1, 1, 2, 2), 1);
     }
 
     #[test]

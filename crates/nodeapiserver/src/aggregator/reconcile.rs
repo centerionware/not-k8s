@@ -41,7 +41,10 @@ fn now_rfc3339() -> String {
 /// written — a per-object I/O failure is logged and skipped rather than
 /// aborting the whole pass, so one unreachable backend doesn't stop
 /// every other registered `APIService` from being reconciled.
-pub async fn reconcile_once(storage: &mut StorageClient) -> Result<usize, rest::Error> {
+pub async fn reconcile_once(
+    storage: &mut StorageClient,
+    proxy_identity: Option<&client_tls::ClientIdentity>,
+) -> Result<usize, rest::Error> {
     let list = match rest::list(storage, None, "apiregistration.k8s.io", "v1", "apiservices", None, "", "", 0, "").await? {
         rest::ListOutcome::Found(list) => list,
         rest::ListOutcome::UnknownResource | rest::ListOutcome::InvalidContinueToken => return Ok(0),
@@ -54,7 +57,7 @@ pub async fn reconcile_once(storage: &mut StorageClient) -> Result<usize, rest::
         if name.is_empty() {
             continue;
         }
-        let condition = compute_condition(storage, &item).await;
+        let condition = compute_condition(storage, &item, proxy_identity).await;
         item["status"] = json!({ "conditions": [condition_to_json(&condition)] });
         match rest::update_status(storage, "apiregistration.k8s.io", "v1", "apiservices", None, &name, &item, false).await {
             Ok(rest::UpdateOutcome::Updated(_)) => reconciled += 1,
@@ -75,7 +78,11 @@ pub async fn reconcile_once(storage: &mut StorageClient) -> Result<usize, rest::
 /// passes — the discovery-endpoint dial this module's own doc comment
 /// names as a real, bounded simplification of upstream's 5-concurrent-
 /// probe check.
-async fn compute_condition(storage: &mut StorageClient, api_service: &Value) -> availability::Condition {
+async fn compute_condition(
+    storage: &mut StorageClient,
+    api_service: &Value,
+    proxy_identity: Option<&client_tls::ClientIdentity>,
+) -> availability::Condition {
     let Some(service_ref) = api_service.pointer("/spec/service") else {
         return availability::local_condition();
     };
@@ -120,7 +127,11 @@ async fn compute_condition(storage: &mut StorageClient, api_service: &Value) -> 
         use base64::Engine;
         base64::engine::general_purpose::STANDARD.decode(b64).ok()
     });
-    let client_config = match client_tls::build_client_config(ca_bundle_pem.as_deref(), insecure_skip_tls_verify) {
+    let client_config = match client_tls::build_client_config_with_identity(
+        ca_bundle_pem.as_deref(),
+        insecure_skip_tls_verify,
+        proxy_identity,
+    ) {
         Ok(cfg) => std::sync::Arc::new(cfg),
         Err(_) => {
             return availability::Condition {
@@ -130,7 +141,13 @@ async fn compute_condition(storage: &mut StorageClient, api_service: &Value) -> 
             };
         }
     };
-    match http_client::fetch(&target, client_config).await {
+    match http_client::fetch_with_headers(
+        &target,
+        client_config,
+        &discovery_probe_headers(proxy_identity.is_some()),
+    )
+    .await
+    {
         Ok(resp) if resp.status().is_success() || resp.status().is_redirection() => {
             availability::Condition { status: availability::ConditionStatus::True, reason: "Passed", message: "all checks passed".to_string() }
         }
@@ -141,6 +158,20 @@ async fn compute_condition(storage: &mut StorageClient, api_service: &Value) -> 
         },
         Err(e) => availability::Condition { status: availability::ConditionStatus::False, reason: "FailedDiscoveryCheck", message: format!("failing or missing response from discovery check: {e}") },
     }
+}
+
+/// The upstream kube-aggregator remote availability controller uses this
+/// privileged probe identity when requesting `/apis/{group}/{version}`.
+/// Aggregated servers trust it only over the configured front-proxy mTLS
+/// connection; caller-supplied identities are not involved in this probe.
+fn discovery_probe_headers(has_proxy_identity: bool) -> Vec<(String, String)> {
+    if !has_proxy_identity {
+        return Vec::new();
+    }
+    vec![
+        ("X-Remote-User".to_string(), "system:kube-aggregator".to_string()),
+        ("X-Remote-Group".to_string(), "system:masters".to_string()),
+    ]
 }
 
 /// Real upstream's own `APIServiceCondition` shape
@@ -171,5 +202,21 @@ mod tests {
         assert_eq!(doc["status"], "True");
         assert_eq!(doc["reason"], "Local");
         assert!(doc["lastTransitionTime"].as_str().unwrap().ends_with('Z'));
+    }
+
+    #[test]
+    fn discovery_probe_uses_upstream_kube_aggregator_identity() {
+        assert_eq!(
+            discovery_probe_headers(true),
+            vec![
+                ("X-Remote-User".to_string(), "system:kube-aggregator".to_string()),
+                ("X-Remote-Group".to_string(), "system:masters".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn discovery_probe_never_sends_identity_headers_without_its_certificate() {
+        assert!(discovery_probe_headers(false).is_empty());
     }
 }

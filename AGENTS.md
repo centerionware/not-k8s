@@ -154,6 +154,23 @@ changes that requirement. Quick-check is the integration-slice gate only;
 it is not a substitute for the main gate. A documentation-only check does not
 silently waive the merge protocol.
 
+For the user's authorized `nodemigrate` release work, the user has explicitly
+changed those defaults: the planned `v0.8.1` release is based on the active
+`nodemigrate` migration branch, and bugs may be fixed directly on that branch.
+Focused migration tests build the branch-built combined runtime with CRI
+support. Compiling `notk8s` compiles the packaged runtime components, including
+every component changed on this branch; do not build only a manually selected
+subset. The branch-built runtime is the primary target. Do not require migration
+validation to use only the latest regular release (`v0.8.0`); it is an
+optional baseline when useful. The user has explicitly waived the general
+`build.yml` gate and general full `e2e.yml` gate for this work. Run
+migration-utility checks and the requested K3s/upstream and isolated multi-node
+migration paths as needed. Set `runtime_source=branch` so the migration lanes
+exercise the combined runtime built from the checked-out PR branch. This
+exception does not authorize local Cargo
+builds/tests on the development host, nor does it authorize merging or
+publishing a release.
+
 For runtime fixes, add or strengthen a real-cluster regression in the current
 Rust e2e suite and add a focused unit test when it can deterministically expose
 the race. Keep the existing failing test's behavioral assertions. Do not create

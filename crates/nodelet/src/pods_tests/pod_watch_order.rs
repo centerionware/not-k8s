@@ -43,3 +43,10 @@ fn an_older_status_event_for_the_same_uid_is_ignored() {
 
     assert!(watch_event_is_stale(Some(&current), &stale));
 }
+
+#[test]
+fn retry_tasks_are_coalesced_per_pod_uid_and_replaced_across_uids() {
+    assert!(retry_task_is_for_uid(Some("pod-a"), "pod-a"));
+    assert!(!retry_task_is_for_uid(Some("pod-a"), "pod-b"));
+    assert!(!retry_task_is_for_uid(None, "pod-a"));
+}

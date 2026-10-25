@@ -22,7 +22,9 @@
 //! both. See `node.rs`'s `apply_topology_labels()` for that half.
 
 use anyhow::{Context, Result};
+use k8s_openapi::api::core::v1::Node;
 use k8s_openapi::api::storage::v1::{CSINode, CSINodeDriver, CSINodeSpec};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{Api, Patch, PatchParams, PostParams};
 use kube::Client;
 
@@ -63,6 +65,30 @@ async fn get(client: &Client, node_name: &str) -> Result<Option<CSINode>> {
     }
 }
 
+fn node_owner_reference(node_name: &str, node_uid: &str) -> OwnerReference {
+    OwnerReference {
+        api_version: "v1".to_string(),
+        kind: "Node".to_string(),
+        name: node_name.to_string(),
+        uid: node_uid.to_string(),
+        ..Default::default()
+    }
+}
+
+async fn current_node_owner_reference(client: &Client, node_name: &str) -> Result<OwnerReference> {
+    let nodes: Api<Node> = Api::all(client.clone());
+    let node = nodes
+        .get(node_name)
+        .await
+        .with_context(|| format!("getting Node {node_name} for CSINode owner reference"))?;
+    let uid = node
+        .metadata
+        .uid
+        .filter(|uid| !uid.is_empty())
+        .with_context(|| format!("Node {node_name} has no UID for CSINode owner reference"))?;
+    Ok(node_owner_reference(node_name, &uid))
+}
+
 /// Register (or update) `driver`'s entry on this node's `CSINode` object,
 /// creating the object itself if this cluster doesn't have one yet (a k3s
 /// control plane creates it automatically the moment a Node registers —
@@ -75,23 +101,26 @@ async fn get(client: &Client, node_name: &str) -> Result<Option<CSINode>> {
 /// in-memory state already has.
 pub async fn upsert(client: &Client, node_name: &str, driver: &str, node_id: &str, topology_keys: Vec<String>) -> Result<()> {
     let api: Api<CSINode> = Api::all(client.clone());
+    // Re-read the Node UID for every registration so same-name replacement
+    // repairs a stale CSINode owner reference before garbage collection can
+    // remove the freshly registered driver's node information.
+    let owner_reference = current_node_owner_reference(client, node_name).await?;
     match get(client, node_name).await? {
         Some(existing) => {
             let drivers = upsert_driver(existing.spec.drivers, driver, node_id, topology_keys);
-            let patch = serde_json::json!({ "spec": { "drivers": drivers } });
+            let patch = serde_json::json!({
+                "metadata": { "ownerReferences": [owner_reference] },
+                "spec": { "drivers": drivers }
+            });
             api.patch(node_name, &PatchParams::default(), &Patch::Merge(&patch)).await.context("patching CSINode")?;
         }
         None => {
-            // Real kubelet sets an `ownerReference` here pointing at the
-            // Node object (upstream's own `CSINode` doc comment mentions
-            // it), so a deleted Node gets its `CSINode` garbage-collected
-            // too. Skipped: it'd need an extra `Node` GET on this
-            // (uncommon — only fires the very first time any driver
-            // registers on a `CSINode`-less cluster) path just to read the
-            // Node's UID, purely for GC hygiene rather than anything this
-            // bug fix's own correctness depends on.
             let csi_node = CSINode {
-                metadata: kube::api::ObjectMeta { name: Some(node_name.to_string()), ..Default::default() },
+                metadata: kube::api::ObjectMeta {
+                    name: Some(node_name.to_string()),
+                    owner_references: Some(vec![owner_reference]),
+                    ..Default::default()
+                },
                 spec: CSINodeSpec { drivers: upsert_driver(Vec::new(), driver, node_id, topology_keys) },
             };
             api.create(&PostParams::default(), &csi_node).await.context("creating CSINode")?;

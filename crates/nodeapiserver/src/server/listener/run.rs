@@ -332,9 +332,15 @@ pub async fn run(cfg: Config) {
     // to `APIService` object mutations).
     if let Some(s) = storage.as_ref() {
         let mut reconcile_storage = s.clone();
+        let reconcile_proxy_identity = aggregation_proxy_identity.clone();
         tokio::spawn(async move {
             loop {
-                match crate::aggregator::reconcile::reconcile_once(&mut reconcile_storage).await {
+                match crate::aggregator::reconcile::reconcile_once(
+                    &mut reconcile_storage,
+                    reconcile_proxy_identity.as_deref(),
+                )
+                .await
+                {
                     Ok(n) if n > 0 => info!(
                         reconciled = n,
                         "aggregator: reconciled APIService availability"

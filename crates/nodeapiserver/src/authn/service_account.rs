@@ -77,7 +77,7 @@ pub struct IssuedToken {
 pub struct TokenRequestSpec {
     pub audiences: Vec<String>,
     pub expiration_seconds: Option<i64>,
-    pub bound_pod: Option<(String, String)>,
+    pub bound_pod: Option<(String, Option<String>)>,
     /// Resolved by the TokenRequest handler from the bound Pod. Clients do
     /// not provide this; it is signed into the token from live API objects.
     pub bound_pod_node: Option<(String, Option<String>)>,
@@ -386,7 +386,11 @@ pub fn parse_token_request(body: &Value) -> std::result::Result<TokenRequestSpec
         .and_then(Value::as_object)
         .ok_or_else(|| "TokenRequest.spec is required".to_string())?;
     let audiences = match spec.get("audiences") {
-        None => Vec::new(),
+        // Kubernetes clients commonly serialize a nil Go slice as JSON null
+        // even though the API treats an omitted/empty audience list as the
+        // default audience. Keep that wire representation equivalent to an
+        // omitted field.
+        None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(values)) => values
             .iter()
             .map(|audience| {
@@ -423,8 +427,8 @@ pub fn parse_token_request(body: &Value) -> std::result::Result<TokenRequestSpec
                 .get("uid")
                 .and_then(Value::as_str)
                 .filter(|uid| !uid.is_empty())
-                .ok_or_else(|| "TokenRequest.spec.boundObjectRef.uid is required".to_string())?;
-            Some((name.to_string(), uid.to_string()))
+                .map(str::to_string);
+            Some((name.to_string(), uid))
         }
         Some(_) => {
             return Err("TokenRequest.spec.boundObjectRef must be an object".to_string());
@@ -463,7 +467,7 @@ mod tests {
                 &TokenRequestSpec {
                     audiences: Vec::new(),
                     expiration_seconds: Some(600),
-                    bound_pod: Some(("coredns-0".to_string(), "pod-uid".to_string())),
+                    bound_pod: Some(("coredns-0".to_string(), Some("pod-uid".to_string()))),
                     bound_pod_node: Some(("node-1".to_string(), Some("node-uid".to_string()))),
                 },
             )
@@ -526,6 +530,35 @@ mod tests {
             }
         });
         assert!(parse_token_request(&body).is_err());
+    }
+
+    #[test]
+    fn token_request_accepts_bound_pod_without_uid_for_live_uid_resolution() {
+        let body = json!({
+            "spec": {
+                "boundObjectRef": {
+                    "kind": "Pod",
+                    "name": "pod-a"
+                }
+            }
+        });
+
+        let request = parse_token_request(&body).unwrap();
+        assert_eq!(request.bound_pod, Some(("pod-a".to_string(), None)));
+    }
+
+    #[test]
+    fn token_request_accepts_null_audiences_as_the_default_audience() {
+        let body = json!({
+            "spec": {
+                "audiences": null,
+                "expirationSeconds": 600
+            }
+        });
+
+        let request = parse_token_request(&body).unwrap();
+        assert!(request.audiences.is_empty());
+        assert_eq!(request.expiration_seconds, Some(600));
     }
 
     #[test]

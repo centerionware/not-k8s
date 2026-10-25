@@ -51,6 +51,7 @@ fn read_pki_from_dir(dir: &std::path::Path) -> Result<ClusterPki> {
     };
     Ok(ClusterPki {
         ca: pair("ca.crt", "ca.key")?,
+        client_ca_bundle: read("client-ca.crt")?,
         apiserver_serving: pair("apiserver.crt", "apiserver.key")?,
         kube_apiserver_client: pair("kube-apiserver.crt", "kube-apiserver.key")?,
         aggregation_proxy_client: pair("front-proxy-client.crt", "front-proxy-client.key")?,

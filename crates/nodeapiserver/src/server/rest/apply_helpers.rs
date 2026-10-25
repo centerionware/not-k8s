@@ -363,6 +363,14 @@ fn set_metadata_field(object: &mut Value, field: &str, value: Value) {
     metadata[field] = value;
 }
 
+/// Initialize the server-owned generation for a newly created object.
+/// Kubernetes stamps generation 1 on every CREATE, including create-on-apply;
+/// without it, workload status controllers cannot report an observed spec
+/// generation and rollout clients can wait forever.
+fn set_initial_generation(object: &mut Value) {
+    set_metadata_field(object, "generation", Value::Number(1.into()));
+}
+
 /// Same shape as [`set_metadata_field`], for `status` instead --
 /// `delete_with_options()`'s own use (stamping a Namespace's
 /// `status.phase: "Terminating"` alongside its `deletionTimestamp`) is

@@ -69,3 +69,46 @@ fn finds_multiple_sockets_and_ignores_a_mixed_in_regular_file() {
     assert_eq!(found, expected);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn default_registry_keeps_watching_the_source_kubelet_directory() {
+    assert_eq!(
+        registry_dirs(DEFAULT_REGISTRY_DIR),
+        vec![
+            PathBuf::from(DEFAULT_REGISTRY_DIR),
+            PathBuf::from(KUBELET_REGISTRY_DIR)
+        ]
+    );
+    assert_eq!(
+        registry_dirs("/custom/plugins_registry"),
+        vec![PathBuf::from("/custom/plugins_registry")]
+    );
+}
+
+#[test]
+fn finds_sockets_in_both_registry_directories() {
+    let nodelet_dir = scratch_dir();
+    let kubelet_dir = scratch_dir();
+    let nodelet_socket = nodelet_dir.join("nodelet-driver.sock");
+    let kubelet_socket = kubelet_dir.join("source-driver.sock");
+    let _nodelet_listener = UnixListener::bind(&nodelet_socket).unwrap();
+    let _kubelet_listener = UnixListener::bind(&kubelet_socket).unwrap();
+
+    let mut found = scan_registry_dirs(&[nodelet_dir.clone(), kubelet_dir.clone()]);
+    found.sort();
+    let mut expected = vec![nodelet_socket, kubelet_socket];
+    expected.sort();
+    assert_eq!(found, expected);
+    let _ = std::fs::remove_dir_all(nodelet_dir);
+    let _ = std::fs::remove_dir_all(kubelet_dir);
+}
+
+#[test]
+fn failed_csi_metadata_reconciliation_uses_bounded_backoff() {
+    let mut delay = CSI_METADATA_RETRY_INITIAL;
+    for _ in 0..16 {
+        delay = next_metadata_retry_delay(delay);
+        assert!(delay <= CSI_METADATA_RETRY_MAX);
+    }
+    assert_eq!(delay, CSI_METADATA_RETRY_MAX);
+}

@@ -33,9 +33,11 @@
 //! its `status.attachmentMetadata` through as `publish_context`.
 
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tokio::sync::mpsc::UnboundedSender;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tracing::{debug, warn};
 
@@ -87,15 +89,22 @@ fn has_stage_unstage_capability(capabilities: &[NodeServiceCapability]) -> bool 
     })
 }
 
-/// Where per-volume Stage mounts live — one per (driver, volume), shared
-/// across every pod on this node that references the same
-/// `PersistentVolume`, matching real kubelet's global staging directory
-/// convention (`/var/lib/kubelet/plugins/kubernetes.io/csi/...`).
-fn staging_path(driver: &str, volume_handle: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from("/var/lib/nodelet/csi")
-        .join(driver)
-        .join(volume_handle)
+/// Where per-volume Stage mounts live. Match kubelet's CSI global staging
+/// path and hash so a kubelet-to-nodelet handoff reuses the provider's
+/// existing stage instead of asking it to stage the same volume at a second
+/// path. The root can be set to the source kubelet's plugin directory during
+/// migration; native nodelet installs default to their plugin directory.
+fn staging_path(root: &Path, driver: &str, volume_handle: &str) -> PathBuf {
+    let volume_hash = format!("{:x}", Sha256::digest(volume_handle.as_bytes()));
+    root.join(driver)
+        .join(volume_hash)
         .join("globalmount")
+}
+
+fn staging_root() -> PathBuf {
+    std::env::var_os("NODELET_CSI_STAGING_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/nodelet/plugins/kubernetes.io/csi"))
 }
 
 /// (driver, volume_handle) as written to/read from disk, keyed by
@@ -167,6 +176,9 @@ pub struct CsiVolumeSource {
 }
 
 pub struct CsiDrivers {
+    /// Kubelet-compatible node-local root for CSI staging mounts. Captured
+    /// once at startup so all stage and unstage calls use the same root.
+    staging_root: PathBuf,
     /// driver name -> Node-service unix socket endpoint. Seeded from
     /// `NODELET_CSI_DRIVERS` at startup, and kept up to date afterwards by
     /// `plugin_registry.rs`'s dynamic registration watcher (a driver whose
@@ -177,6 +189,14 @@ pub struct CsiDrivers {
     /// PVC volume is skipped with a warning, same treatment any other
     /// unresolvable volume already gets.
     endpoints: Mutex<BTreeMap<String, String>>,
+    /// Emits a keyed wakeup when dynamic registration makes a driver
+    /// available. A Pod waiting on that dependency may have no further API
+    /// or CRI event to cause reconciliation.
+    registration_events: Mutex<Option<UnboundedSender<String>>>,
+    /// pod key -> Pod UID, indexed by the CSI driver that Pod is waiting for.
+    /// Registrar events drain only the keys for the driver that became
+    /// available; same-name Pod replacement updates or removes the UID.
+    waiting_pods: Mutex<HashMap<String, HashMap<String, String>>>,
     /// Per-driver `STAGE_UNSTAGE_VOLUME` capability, fetched once and
     /// cached — real kubelet does the same rather than calling
     /// `NodeGetCapabilities` on every single mount.
@@ -219,6 +239,9 @@ impl CsiDrivers {
     pub fn new(endpoints: BTreeMap<String, String>) -> Self {
         Self {
             endpoints: Mutex::new(endpoints),
+            registration_events: Mutex::new(None),
+            waiting_pods: Mutex::new(HashMap::new()),
+            staging_root: staging_root(),
             stage_capable: Mutex::new(HashMap::new()),
             refs: Mutex::new(HashMap::new()),
             mounted: Mutex::new(HashMap::new()),
@@ -250,6 +273,41 @@ impl CsiDrivers {
         self.endpoints.lock().unwrap().contains_key(driver)
     }
 
+    pub(crate) fn set_registration_events(&self, events: UnboundedSender<String>) {
+        *self.registration_events.lock().unwrap() = Some(events);
+    }
+
+    pub(crate) fn wait_for_driver(&self, driver: &str, pod_key: &str, pod_uid: &str) {
+        let endpoints = self.endpoints.lock().unwrap();
+        if endpoints.contains_key(driver) {
+            drop(endpoints);
+            self.send_pod_reconcile(pod_key);
+            return;
+        }
+        self.waiting_pods
+            .lock()
+            .unwrap()
+            .entry(driver.to_owned())
+            .or_default()
+            .insert(pod_key.to_owned(), pod_uid.to_owned());
+    }
+
+    pub(crate) fn forget_waiting_pod(&self, pod_uid: &str) {
+        let mut waiting = self.waiting_pods.lock().unwrap();
+        waiting.retain(|_, pods| {
+            pods.retain(|_, uid| uid != pod_uid);
+            !pods.is_empty()
+        });
+    }
+
+    fn send_pod_reconcile(&self, pod_key: &str) {
+        if let Some(events) = self.registration_events.lock().unwrap().as_ref() {
+            if events.send(pod_key.to_owned()).is_err() {
+                debug!(pod = pod_key, "Pod controller is not receiving CSI registration events");
+            }
+        }
+    }
+
     /// Every `(driver, volume_handle)` pair currently mounted by at least
     /// one pod on this node (round 34) — feeds
     /// `Node.status.volumesInUse`/`.volumesAttached`. Real kubelet tracks
@@ -266,7 +324,18 @@ impl CsiDrivers {
     /// dynamically-discovered driver. Called by `plugin_registry.rs` when a
     /// CSI driver's registrar announces itself.
     pub fn register(&self, driver: String, endpoint: String) {
-        self.endpoints.lock().unwrap().insert(driver, endpoint);
+        let mut endpoints = self.endpoints.lock().unwrap();
+        let changed = endpoints.insert(driver.clone(), endpoint.clone()).as_deref()
+            != Some(endpoint.as_str());
+        let waiting = if changed {
+            self.waiting_pods.lock().unwrap().remove(&driver).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        drop(endpoints);
+        for pod_key in waiting.keys() {
+            self.send_pod_reconcile(pod_key);
+        }
     }
 
     /// Remove a driver — its registration socket disappeared, so its
@@ -351,7 +420,7 @@ impl CsiDrivers {
         let capability = mount_capability(&source.fs_type, source.read_only, source.block);
         let volume_context: std::collections::HashMap<String, String> = source.volume_attributes.clone();
 
-        let staging = staging_path(&source.driver, &source.volume_handle);
+        let staging = staging_path(&self.staging_root, &source.driver, &source.volume_handle);
         let mut staging_target_path = String::new();
         if !ephemeral && self.supports_stage_unstage(&source.driver).await {
             std::fs::create_dir_all(&staging).context("creating CSI staging directory")?;
@@ -471,7 +540,7 @@ impl CsiDrivers {
         };
 
         if last_reference && !ephemeral && self.supports_stage_unstage(driver).await {
-            let staging = staging_path(driver, volume_handle);
+            let staging = staging_path(&self.staging_root, driver, volume_handle);
             match client
                 .node_unstage_volume(NodeUnstageVolumeRequest {
                     volume_id: volume_handle.to_string(),

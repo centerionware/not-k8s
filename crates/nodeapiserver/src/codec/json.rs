@@ -30,6 +30,18 @@ mod tests {
     }
 
     #[test]
+    fn round_trips_large_f64_values_without_changing_adjacent_bits() {
+        let expected = 9_223_372_036_854_775_000_i64 as f64;
+        let encoded = encode(&Value::from(expected)).unwrap();
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(
+            decoded.as_f64().unwrap().to_bits(),
+            expected.to_bits(),
+            "JSON decoding must preserve the exact source f64"
+        );
+    }
+
+    #[test]
     fn malformed_input_is_an_error_not_a_panic() {
         assert!(decode(b"{not json").is_err());
     }
