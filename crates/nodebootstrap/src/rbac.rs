@@ -673,7 +673,7 @@ kind: ClusterRole
 metadata:
   name: system:discovery
 rules:
-- nonResourceURLs: ["/api", "/api/*", "/apis", "/apis/*", "/openapi", "/openapi/*", "/version", "/healthz", "/readyz", "/livez"]
+- nonResourceURLs: ["/api", "/api/*", "/apis", "/apis/*", "/openapi", "/openapi/*", "/version", "/version/", "/healthz", "/readyz", "/livez"]
   verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

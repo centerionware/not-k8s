@@ -4987,11 +4987,12 @@ if (
     and kind in {"Role", "ClusterRole"}
     and labels.get("kubernetes.io/bootstrapping") == "rbac-defaults"
 ):
-    # Kubernetes API servers reconcile these version-owned default roles at
-    # startup. Keep their source rules so the comparison can require that
-    # reconciliation preserved every source permission while allowing the
-    # destination version to add rules.
     row["defaultRbacRules"] = obj.get("rules") or []
+if group == "rbac.authorization.k8s.io" and kind in {"Role", "ClusterRole"}:
+    # Kubernetes API servers reconcile these version-owned default roles at
+    # startup. Capture target rules even when nodebootstrap owns the target
+    # role and therefore does not carry the Kubernetes bootstrapping label.
+    row["rbacRules"] = obj.get("rules") or []
 if kind == "HorizontalPodAutoscaler":
     scale_target = (obj.get("spec") or {}).get("scaleTargetRef") or {}
     api_version = scale_target.get("apiVersion", "")
@@ -5098,7 +5099,7 @@ default_rbac_identities = {
 def comparable_fields(row, identity):
     fields = dict(row.get("fields", {}))
     value = json.loads(identity)
-    if row.get("defaultRbacRules") is not None:
+    if identity in default_rbac_identities:
         fields = {path: digest for path, digest in fields.items() if not path.startswith("/rules/")}
     if identity in default_rbac_identities:
         fields.pop("/metadata/labels", None)
@@ -5129,10 +5130,11 @@ def comparable_fields(row, identity):
 def default_rbac_source_rules_preserved(source, target, identity):
     if source.get("defaultRbacRules") is None:
         return True
-    if target.get("defaultRbacRules") is None:
+    target_rules = target.get("rbacRules")
+    if target_rules is None:
         return False
     from nodemigrate_rbac_rules import missing_source_rules
-    missing_rules = missing_source_rules(source["defaultRbacRules"], target["defaultRbacRules"])
+    missing_rules = missing_source_rules(source["defaultRbacRules"], target_rules)
     if missing_rules:
         print(f"Kubernetes default RBAC role lost source rules {identity}:", file=sys.stderr)
         json.dump(missing_rules, sys.stderr, indent=2)
