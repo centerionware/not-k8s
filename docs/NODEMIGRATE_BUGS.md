@@ -1,6 +1,36 @@
 # nodemigrate bug and fix tracker
 
-Last updated: 2026-10-24
+Last updated: 2026-10-25
+
+## Add-on migration verification 40147764846
+
+Run [40147764846](https://github.com/centerionware/not-k8s/actions/runs/40147764846)
+used `runtime_source=branch`, `metrics_server=true`, and `nodeactivator=true`
+at SHA `7efdeb94288400b7e59d63a37e5f2b2d73dd25ca`. In the K3s lane, the
+imported HPA scaled its three-replica target up, down, and back up; the
+Metrics Server and both Activator Deployments rolled out; each Activator Pod
+received its own PodCertificate; and a live request was buffered while the
+HPA-scaled backend had zero replicas, then completed after activation. The
+migration also passed the optional-addon installation assertions.
+
+The K3s lane then failed its source-to-nodestore API snapshot comparison.
+The changed objects were version-managed CoreDNS configuration, default
+RBAC rules and metadata, and descriptions on the two built-in PriorityClasses;
+the HPA and user workload snapshots were not among the reported differences.
+Kubernetes [auto-reconciles default RBAC roles](https://v1-35.docs.kubernetes.io/docs/reference/access-authn-authz/rbac/)
+across API server versions by adding missing permissions while retaining
+additional rules.
+The comparator now treats these narrow Kubernetes-owned changes according to
+their contracts: it requires all source rules in a default RBAC ClusterRole
+to remain present, checks system-addon rollout and the existing runtime
+probes for CoreDNS, and continues comparing PriorityClass scheduling fields.
+That comparator change is pending another migration run. The upstream lane
+failed before migration because `kubernetes-cni` did not install bridge and
+loopback, and Docker preflight failed its kubeadm etcd-member probe. Job logs:
+`/tmp/nodeactivator-40147764846-kubernetes.log`,
+`/tmp/nodeactivator-40147764846-k3s.log`, and
+`/tmp/nodeactivator-40147764846-preflight.log`; K3s artifact log:
+`/tmp/nodeactivator-40147764846-k3s-artifact/nodemigrate-k3s.log`.
 
 ## HPA scale-down stabilization
 

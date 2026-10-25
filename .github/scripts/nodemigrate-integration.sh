@@ -4927,6 +4927,16 @@ if (
     lifecycle_class = "nodebootstrap-runtime-rbac"
 elif kind == "EndpointSlice" and labels.get("endpointslice.kubernetes.io/managed-by") == "nodecontroller":
     lifecycle_class = "nodecontroller-regenerated-endpoints"
+elif (
+    group == "apps"
+    and kind == "Deployment"
+    and metadata.get("namespace") == "kube-system"
+    and name == "coredns"
+):
+    # The destination installs its Kubernetes-version-matched CoreDNS
+    # manifest. Runtime DNS and HTTP health probes cover this regenerated
+    # platform addon; its exact Pod template is not durable user state.
+    lifecycle_class = "nodebootstrap-regenerated-coredns"
 elif kind in {"ReplicaSet", "ControllerRevision"} and any(
     owner.get("controller") is True
     and owner.get("kind") in {"Deployment", "StatefulSet", "DaemonSet"}
@@ -4944,6 +4954,16 @@ row = {
     "fields": fields,
     "lifecycleClass": lifecycle_class,
 }
+if (
+    group == "rbac.authorization.k8s.io"
+    and kind == "ClusterRole"
+    and labels.get("kubernetes.io/bootstrapping") == "rbac-defaults"
+):
+    # Kubernetes API servers reconcile these version-owned default roles at
+    # startup. Keep their source rules so the comparison can require that
+    # reconciliation preserved every source permission while allowing the
+    # destination version to add rules.
+    row["defaultRbacRules"] = obj.get("rules") or []
 if kind == "CustomResourceDefinition":
     row["crdSpec"] = obj.get("spec")
 if (
@@ -5019,6 +5039,52 @@ before = records(sys.argv[1])
 after = records(sys.argv[2])
 replaced_node_name = sys.argv[3] or None
 
+def comparable_fields(row, identity):
+    fields = dict(row.get("fields", {}))
+    value = json.loads(identity)
+    if row.get("defaultRbacRules") is not None:
+        fields = {path: digest for path, digest in fields.items() if not path.startswith("/rules/")}
+    if value == {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "extension-apiserver-authentication-reader",
+        "namespace": "kube-system",
+    }:
+        fields.pop("/metadata/labels/rbac.authorization.k8s.io~1autoupdate", None)
+    if value in ({
+        "apiGroup": "scheduling.k8s.io",
+        "kind": "PriorityClass",
+        "name": "system-cluster-critical",
+        "namespace": "",
+    }, {
+        "apiGroup": "scheduling.k8s.io",
+        "kind": "PriorityClass",
+        "name": "system-node-critical",
+        "namespace": "",
+    }):
+        fields.pop("/description", None)
+    return fields
+
+def default_rbac_source_rules_preserved(source, target, identity):
+    if source.get("defaultRbacRules") is None:
+        return True
+    if target.get("defaultRbacRules") is None:
+        return False
+    target_rules = {
+        json.dumps(rule, sort_keys=True, separators=(",", ":"))
+        for rule in target["defaultRbacRules"]
+    }
+    missing_rules = [
+        rule for rule in source["defaultRbacRules"]
+        if json.dumps(rule, sort_keys=True, separators=(",", ":")) not in target_rules
+    ]
+    if missing_rules:
+        print(f"Kubernetes default RBAC role lost source rules {identity}:", file=sys.stderr)
+        json.dump(missing_rules, sys.stderr, indent=2)
+        print(file=sys.stderr)
+        return False
+    return True
+
 def is_replaced_node_password(identity):
     if replaced_node_name is None:
         return False
@@ -5033,8 +5099,9 @@ def is_replaced_node_password(identity):
 missing = sorted(before.keys() - after.keys())
 changed = sorted(
     identity for identity in before.keys() & after.keys()
-    if before[identity]["sha256"] != after[identity]["sha256"]
+    if comparable_fields(before[identity], identity) != comparable_fields(after[identity], identity)
     and not is_replaced_node_password(identity)
+    and before[identity].get("lifecycleClass") != "nodebootstrap-regenerated-coredns"
 )
 expected_runtime_changes = sorted(
     identity for identity in before.keys() & after.keys()
@@ -5106,6 +5173,9 @@ if missing or changed or unclassified:
             json.dump(after[identity].get("csiVolumeDiagnostics", []), sys.stderr, indent=2)
             print(file=sys.stderr)
     sys.exit(1)
+for identity in before.keys() & after.keys():
+    if not default_rbac_source_rules_preserved(before[identity], after[identity], identity):
+        sys.exit(1)
 print(f"Source objects preserved: {len(before)}; target-only objects: {len(target_only)}")
 PY
     then
