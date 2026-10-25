@@ -68,18 +68,23 @@ jobs:
       - name: Run all unit tests
         run: |
           set -euo pipefail
-          sudo -E env "PATH=$PATH" cargo test -p nodelet
-          sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
-          sudo -E env "PATH=$PATH" cargo test -p nodeproxy
-          sudo -E env "PATH=$PATH" cargo test -p nodestore
-          sudo -E env "PATH=$PATH" cargo test -p nodescheduler
-          sudo -E env "PATH=$PATH" cargo test -p node-leaderelection
-          sudo -E env "PATH=$PATH" cargo test -p nodecontroller
-          sudo -E env "PATH=$PATH" cargo test -p nodeapiserver
-          sudo -E env "PATH=$PATH" cargo test -p nodebootstrap
-          sudo -E env "PATH=$PATH" cargo test -p notk8s
+          as_runner_rust() {
+            sudo env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" \
+              "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
+              "RUSTUP_TOOLCHAIN=stable" "$@"
+          }
+          as_runner_rust cargo test -p nodelet
+          as_runner_rust cargo test -p nodelet --features cri
+          as_runner_rust cargo test -p nodeproxy
+          as_runner_rust cargo test -p nodestore
+          as_runner_rust cargo test -p nodescheduler
+          as_runner_rust cargo test -p node-leaderelection
+          as_runner_rust cargo test -p nodecontroller
+          as_runner_rust cargo test -p nodeapiserver
+          as_runner_rust cargo test -p nodebootstrap
+          as_runner_rust cargo test -p notk8s
           if [[ -d crates/nodemigrate ]]; then
-            sudo -E env "PATH=$PATH" cargo test -p nodemigrate
+            as_runner_rust cargo test -p nodemigrate
           else
             echo "crates/nodemigrate not present on this ref — skipping its tests."
           fi
