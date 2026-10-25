@@ -1,6 +1,363 @@
 # nodemigrate bug and fix tracker
 
-Last updated: 2026-10-01
+Last updated: 2026-10-25
+
+## Add-on migration verification 40147764846
+
+Run [40147764846](https://github.com/centerionware/not-k8s/actions/runs/40147764846)
+used `runtime_source=branch`, `metrics_server=true`, and `nodeactivator=true`
+at SHA `7efdeb94288400b7e59d63a37e5f2b2d73dd25ca`. In the K3s lane, the
+imported HPA scaled its three-replica target up, down, and back up; the
+Metrics Server and both Activator Deployments rolled out; each Activator Pod
+received its own PodCertificate; and a live request was buffered while the
+HPA-scaled backend had zero replicas, then completed after activation. The
+migration also passed the optional-addon installation assertions.
+
+The K3s lane then failed its source-to-nodestore API snapshot comparison.
+The changed objects were version-managed CoreDNS configuration, default
+RBAC rules and metadata, and descriptions on the two built-in PriorityClasses;
+the HPA and user workload snapshots were not among the reported differences.
+Kubernetes [auto-reconciles default RBAC roles](https://v1-35.docs.kubernetes.io/docs/reference/access-authn-authz/rbac/)
+across API server versions by adding missing permissions while retaining
+additional rules.
+The comparator now treats these narrow Kubernetes-owned changes according to
+their contracts: it requires all source rules in a default RBAC ClusterRole
+to remain present, checks system-addon rollout and the existing runtime
+probes for CoreDNS, and continues comparing PriorityClass scheduling fields.
+The comparator update was exercised in the follow-up
+[run 40149940860](https://github.com/centerionware/not-k8s/actions/runs/40149940860)
+at SHA `c8bdce2d0630dad9a520e94030eccfce41b329be`; both migration jobs and
+Docker preflight failed. The upstream lane was not diagnosed, and Docker
+preflight again failed its kubeadm node probe. The PR validation job passed
+all shell syntax, snapshot jq, Helm state, API inventory, and diagnostic JSON
+checks. GitHub's job-log and artifact endpoints returned connection errors
+from this host, so the K3s failure detail and whether the new comparator passed
+remain unverified. Do not treat the change as validated until that log can be
+retrieved and the failure diagnosed. The previous run's job logs are:
+`/tmp/nodeactivator-40147764846-kubernetes.log`,
+`/tmp/nodeactivator-40147764846-k3s.log`, and
+`/tmp/nodeactivator-40147764846-preflight.log`; K3s artifact log:
+`/tmp/nodeactivator-40147764846-k3s-artifact/nodemigrate-k3s.log`.
+
+## HPA scale-down stabilization
+
+Focused e2e run [40080190436](https://github.com/centerionware/not-k8s/actions/runs/40080190436)
+at PR SHA `0a8f33856dfb4778e65f1f024725de596129a2be` failed before the
+activator wake-up assertion: the backend reached zero, but the HPA never
+published its `ScaledToZero=True` condition. The controller's downscale
+stabilization history started with the first low metric recommendation rather
+than the current replica count. That allowed an immediate scale to zero, while
+the Scale write and HPA status write could still be observed in different
+orders by the controller's watches. The controller now seeds its first
+downscale history with the current replicas, following Kubernetes HPA
+behavior, and checks live HPA status before treating a zero observed in that
+watch gap as a manual pause. It has a focused stabilization regression test.
+Quick-check [40081632699](https://github.com/centerionware/not-k8s/actions/runs/40081632699)
+and the focused real-cluster test
+[40081632565](https://github.com/centerionware/not-k8s/actions/runs/40081632565)
+both passed at code SHA `7e6fa2e46d143559aec78e4ba63555fb96f2872a`. That e2e
+workflow ran only `hpa_scale_to_zero_activator_full_flow` against nodeapiserver.
+The unfiltered suite at documentation-only descendant SHA
+`666de5e1642fd99bc3dd01c8a3c9468e5638d118` failed in shard 4 after 83 seconds;
+the other four shards passed. The result is recorded in run
+[40082977306](https://github.com/centerionware/not-k8s/actions/runs/40082977306).
+Its job log and full controller journal were published to `e2e-results`, but
+GitHub log access from the development host is currently failing, so the cause
+is unresolved. Full shard log from the earlier focused failure:
+`/tmp/nodebootstrap-e2e-40080190436.log`.
+
+## Add-on migration verification 40086015125
+
+At PR SHA `62703c173af6450852d16e2087428c88a131caeb`, the targeted
+`nodemigrate` quick-check passed in run
+[40086015069](https://github.com/centerionware/not-k8s/actions/runs/40086015069).
+The workflow-dispatch migration run
+[40086015125](https://github.com/centerionware/not-k8s/actions/runs/40086015125)
+used `runtime_source=branch`, `metrics_server=true`, and `nodeactivator=true`.
+Both addon image builds completed. The upstream Kubernetes migration lane
+failed before migration because the installed `kubernetes-cni` package lacked
+bridge and loopback, and the unrelated Docker preflight failed at its kubeadm
+node probe. In the K3s lane migration completed, both addons rolled out, the
+HPA reached `ScaledToZero=True`, and the backend had zero replicas. The test
+then timed out waiting for its newly created caller Pod, which remained
+`Unknown` with no node assignment or Pod IP; existing migrated workloads and
+addon Pods were running. This did not exercise the buffered-request path. The
+integration check now sends the request from the already-running
+`migration-standalone` fixture Pod, removing an unrelated dependency on
+scheduling a new Pod after migration. The follow-up
+[40128276914](https://github.com/centerionware/not-k8s/actions/runs/40128276914)
+at commit `081d67a7bba1a45e596da4e364f6f691e7a6e0a8` confirmed that the
+existing Pod could run the request, but its connection to the activator
+ClusterIP timed out. The audit log shows nodecontroller creating the front
+Service's EndpointSlice only near the end of that attempt. The helper now
+waits for a real `/healthz` response through that ClusterIP before sending the
+buffered request, and prints EndpointSlice, Pod, metric, and Activator logs if
+the route does not become ready. The subsequent addon-enabled migration runs
+are summarized below. Full logs are saved at
+`/tmp/nodemigrate-40086015125-kubernetes.log` and
+`/tmp/nodemigrate-40086015125-k3s.log`, and
+`/tmp/nodemigrate-40128276914-kubernetes.log`,
+`/tmp/nodemigrate-40128276914-k3s.log`, and
+`/tmp/nodemigrate-40128276914-preflight.log`.
+
+The follow-up at SHA `d6a2706e8744a8c14751aff99c13d313f842e55e`, run
+[40130334614](https://github.com/centerionware/not-k8s/actions/runs/40130334614),
+installed all three addon Deployments and reached the Activator front-Service
+readiness gate. Its diagnostics showed the `nodeactivator` Pod Ready in
+`kube-system`, but the selector-based front Service was in `migration-apps`;
+Services cannot select Pods in another namespace, so its EndpointSlice had no
+endpoints. The Activator now requires a selectorless front Service and
+publishes a standard, Activator-managed EndpointSlice with its own Pod IP in
+the Service namespace. Its ClusterRole grants only EndpointSlice get/create/
+patch/delete alongside the existing Service watch. The focused bootstrap e2e
+asserts that the selectorless Service receives a ready EndpointSlice, while
+the migration fixture exercises the production `kube-system` deployment
+against a Service in `migration-apps`. Quick-check
+[40132784025](https://github.com/centerionware/not-k8s/actions/runs/40132784025)
+caught an EndpointSlice model compile error, fixed in `21a50b70`.
+The next focused e2e exposed Nodelet's missing `status.podIP` Downward API
+support while creating the Activator Pod. Nodelet now resolves that field from
+the CRI sandbox before Pod status has an IP. On SHA
+`7cdd7335e8e8c38852f14e9a77fba132d9b2fc80`, quick-check
+[40134685203](https://github.com/centerionware/not-k8s/actions/runs/40134685203)
+passed for `nodelet,nodeactivator,nodebootstrap`, and focused e2e
+[40134685233](https://github.com/centerionware/not-k8s/actions/runs/40134685233)
+passed `hpa_scale_to_zero_activator_full_flow` with 1 passed, 0 skipped, and
+0 failed.
+
+The addon-enabled migration run at that SHA,
+[40134685231](https://github.com/centerionware/not-k8s/actions/runs/40134685231),
+failed in K3s because the BusyBox backend fixture wrote to `/www/index.html`
+without first creating `/www`; the backend entered `CrashLoopBackOff`, so the
+Activator's buffered request timed out. The fixture now creates its web root
+before launching `httpd`. The rerun at SHA
+`bfb5c6fa976215659f07bd5e1c5d969d2d8245fb`,
+[40136961421](https://github.com/centerionware/not-k8s/actions/runs/40136961421),
+still failed in both migration lanes. GitHub API log retrieval failed with a
+network connection error after the jobs completed, so the latest failure
+details and any K3s buffered-request result remain unverified. Docker preflight
+also failed at its kubeadm probe. Local logs from the previous migration run
+are `/tmp/nodeactivator-40134685231-k3s.log`,
+`/tmp/nodeactivator-40134685231-kubernetes.log`, and
+`/tmp/nodeactivator-40134685231-preflight.log`.
+
+The earlier K3s run
+[40078358744](https://github.com/centerionware/not-k8s/actions/runs/40078358744)
+at SHA `ad6c7574d8ce3fd68c1dea40c92783cda0c3187d` did run with both addon
+options set to `true`. Its saved job log confirms migration completed, one
+`autoscaling/v2` HPA was selected for import, and the bootstrap reconciliation
+rolled out `metrics-server`, `nodeactivator-cert-signer`, and `nodeactivator`.
+It then stopped at the HPA wake-up fixture because that NodeApiserver revision
+did not advertise the standard `hpa` short name. That discovery fix is present
+on the current branch, and the current focused bootstrap e2e passes the HPA
+wake-up flow. This older migration run proves addon installation and HPA object
+transfer, but not the post-migration buffered-request wake-up on current code.
+
+A separate focused bootstrap e2e run
+[40088234059](https://github.com/centerionware/not-k8s/actions/runs/40088234059)
+passed at the same SHA with `metrics_server=true` and the requested cases
+`metrics_server_reports_real_pod_usage` and
+`hpa_scale_to_zero_activator_full_flow`. This verifies the bootstrap-installed
+Metrics Server against real Pod usage and the Activator scale-to-zero flow in
+the e2e cluster, but does not replace the failed migration workflow check.
+
+The Node Activator and signer already ship together in the multi-architecture
+`ghcr.io/centerionware/not-k8s/nodeactivator` image, published by the release
+workflow. `--enable-activator` uses its `:latest` tag by default; Metrics Server
+uses the upstream `registry.k8s.io` image. Thus deployment does not require a
+source checkout or Rust toolchain on cluster hosts. GHCR package visibility
+must be set to public once for unauthenticated cluster pulls.
+
+## Add-on migration run 40071938966
+
+Run [40071938966](https://github.com/centerionware/not-k8s/actions/runs/40071938966)
+at SHA `8121976a9baa857e87e43a77d0ac8ae89cb4c97f` passed quick-check
+[40071939000](https://github.com/centerionware/not-k8s/actions/runs/40071939000)
+and built the addon image, but the K3s lane failed waiting for
+`nodeactivator-cert-signer`. The new timeout diagnostics first showed the Pod
+used `ghcr.io/centerionware/not-k8s/nodeactivator:latest` and entered
+`ImagePullBackOff` after GHCR returned HTTP 403. The integration helper had
+set `NODEBOOTSTRAP_NODEACTIVATOR_IMAGE`, but nodemigrate intentionally clears
+inherited addon environment variables and received only `nodeactivator=true`;
+it therefore selected the published default image instead of the locally
+preloaded CI image. The helper now passes its explicit image reference as
+`nodeactivator-image=...` when available.
+
+The follow-up run [40074075359](https://github.com/centerionware/not-k8s/actions/runs/40074075359)
+confirmed that image handoff and local import worked. It exposed a second
+packaging problem: the migration CI job copied glibc-linked binaries into an
+Alpine image, so the signer exited with `exec ...: no such file or directory`.
+The migration image build now uses the production multi-stage Dockerfile,
+which builds and runs the binaries on Debian bookworm. The separate Alpine
+fixture remains for the Rust e2e suite, which supplies musl-linked binaries.
+Quick-check is unnecessary for these workflow/image changes; the next
+addon-enabled migration run will exercise the fix. Certificate issuance and
+HPA scale-to-zero wakeup remain unverified.
+
+The upstream Kubernetes lane failed before migration because the installed
+`kubernetes-cni` package lacked bridge and loopback. The Docker preflight's
+kubeadm join probe failed because the joining etcd member did not start. These
+are independent environment/setup failures. Logs:
+`/tmp/nodemigrate-40071938966-k3s.log`,
+`/tmp/nodemigrate-40071938966-kubernetes.log`, and
+`/tmp/nodemigrate-40071938966-preflight.log`.
+
+Run [40076060158](https://github.com/centerionware/not-k8s/actions/runs/40076060158)
+at SHA `43993ef11996ed9d2f9e6734df3ba75d24460350` built the production addon
+image, imported it into the K3s node, and started both addon Deployments. The
+certificate signer issued a unique `PodCertificateRequest` to the running
+Node Activator Pod. Migration then stopped at an integration assertion that
+incorrectly required two issued certificates, counting the signer Pod as if it
+served TLS. The signer is a controller using its own ServiceAccount and RBAC;
+only Node Activator Pods request this serving certificate. The assertion now
+checks that every running Node Activator Pod UID has an issued request. The
+HPA zero-replica traffic-buffering check did not run in this migration attempt.
+The upstream Kubernetes lane again failed before migration because its CNI
+package lacked bridge and loopback, and Docker preflight failed at kubeadm's
+etcd-join probe. Logs:
+`/tmp/nodemigrate-40076060158-k3s.log`,
+`/tmp/nodemigrate-40076060158-kubernetes.log`,
+`/tmp/nodemigrate-40076060158-preflight.log`, and
+`/tmp/nodemigrate-40076060158-artifact/nodemigrate-k3s.log`.
+
+The focused real-cluster test
+[40076146445](https://github.com/centerionware/not-k8s/actions/runs/40076146445)
+at the then-current PR head `3d2f85a3bb7a1ed8c06dbd6848c90880e9ac1049`
+passed `hpa_scale_to_zero_activator_full_flow` with 1 passed, 0 skipped, and
+0 failed. This verifies Kubernetes 1.37 HPA scale-to-zero, buffered Service
+traffic, and metric-triggered wakeup against nodeapiserver. Log:
+`/tmp/nodebootstrap-e2e-40076146445.log`.
+
+Run [40078358744](https://github.com/centerionware/not-k8s/actions/runs/40078358744)
+at SHA `ad6c7574d8ce3fd68c1dea40c92783cda0c3187d` passed workflow validation
+and built the branch runtime and production addon image. In the K3s lane,
+migration completed, both optional addon Deployments rolled out, and the new
+per-running-Activator-Pod certificate check passed. The HPA traffic wake-up
+fixture then stopped immediately because NodeApiserver discovery omitted the
+standard `hpa` short name for `horizontalpodautoscalers`; the API itself had
+the `autoscaling/v2` resource, but `kubectl delete hpa` could not resolve that
+alias. NodeApiserver discovery now advertises the standard alias and has a
+focused regression assertion. The 1.37 scale-to-zero buffering path in the
+migration environment needs a rerun. The upstream Kubernetes lane failed
+before migration because its CNI package lacked bridge and loopback; Docker
+preflight again failed at kubeadm's etcd-join probe. Logs:
+`/tmp/nodemigrate-40078358744-k3s.log`,
+`/tmp/nodemigrate-40078358744-kubernetes.log`, and
+`/tmp/nodemigrate-40078358744-preflight.log`.
+
+## Add-on migration attempts 40044732754 and 40051256195
+
+Run [40044732754](https://github.com/centerionware/not-k8s/actions/runs/40044732754)
+at SHA `52b077a7` built the migration utility, branch runtime, and Node
+Activator image. The K3s lane reached destination bootstrap with both optional
+addons enabled, then timed out waiting for the metrics-server Deployment. Its
+target Nodelet had become Ready, but CoreDNS repeatedly failed `RunPodSandbox`
+because containerd reported the Pod sandbox name was still reserved. The CRI
+lookup already collected source and destination sandboxes for a Pod, but stale
+recreation removed only the single sandbox selected for status. The runtime
+was changed to remove every sandbox matching that Pod namespace/name and
+verify none remain before calling `RunPodSandbox`; the focused nodelet
+quick-check passed at `944f11e0` in run
+[40050947434](https://github.com/centerionware/not-k8s/actions/runs/40050947434).
+However, branch-runtime run
+[40051256195](https://github.com/centerionware/not-k8s/actions/runs/40051256195)
+reproduced the reservation failure. Nodelet logged `RunPodSandbox` for the
+target CoreDNS Pod, then its 30-second reconcile timeout; the following request
+received a name reservation held by the preceding sandbox ID. This disconfirms
+the listed-stale-sandboxes fix as a complete resolution. The timing matches
+upstream Kubernetes issue [139097](https://github.com/kubernetes/kubernetes/issues/139097),
+which documents a canceled `RunPodSandbox` leaving containerd's name reserved.
+Nodelet now moves the Pod lifecycle lock into a detached CRI request task so
+the outer reconcile timeout cannot cancel that request or permit an overlapping
+same-name create. The focused cancellation regression and nodelet quick-check
+passed at `83f2ad03` in run
+[40053617600](https://github.com/centerionware/not-k8s/actions/runs/40053617600).
+The follow-up migration run
+[40053924313](https://github.com/centerionware/not-k8s/actions/runs/40053924313)
+at that SHA contains no `sandbox name reserved` errors. It exposed a later K3s
+blocker: CoreDNS `RunPodSandbox` repeatedly failed because Cilium's local agent
+socket refused connections, leaving DNS and Metrics Server without ready
+endpoints. As a result, addon readiness, Node Activator certificate issuance,
+and HPA activation remain unverified. The upstream lane again failed before
+migration because its source kubelet could not load `/var/lib/kubelet/config.yaml`;
+the five-node preflight's kubeadm probe also failed. Logs are saved at
+`/tmp/nodemigrate-40053924313-k3s.log`,
+`/tmp/nodemigrate-40053924313-kubernetes.log`, and
+`/tmp/nodemigrate-40053924313-preflight.log`.
+In the earlier runs, the upstream lane failed before migration because the
+source Kubernetes CNI package lacked bridge/loopback, and the five-node
+preflight failed its etcd join probe. The addon image and branch runtime builds
+passed. The K3s artifacts also contain metrics-server unknown-CA scrape
+messages, but they cannot yet be attributed to a live target scrape rather than
+source/rollback.
+Logs: `/tmp/nodemigrate-40044732754-artifacts/nodemigrate-k3s-40044732754/nodemigrate-k3s.log`
+and `/tmp/nodemigrate-40044732754-artifacts/nodemigrate-kubernetes-40044732754/nodemigrate-kubernetes.log`.
+Run 400512 job logs: `/tmp/nodemigrate-40051256195-k3s.log`,
+`/tmp/nodemigrate-40051256195-kubernetes.log`, and
+`/tmp/nodemigrate-40051256195-preflight.log`.
+
+Run [40063386850](https://github.com/centerionware/not-k8s/actions/runs/40063386850)
+at SHA `c247043a13dcd653b677437e07a77fd9aae834fb` passed the migration checks
+and focused Cilium restart probe but failed before importing the protected API
+export. The first destination bootstrap installed the requested metrics-server
+and waited for it to become Available while the source metrics-server Pod was
+still using source-cluster credentials. That Pod received 401 responses from
+the new API server, so the wait timed out. Fresh migrations now defer addon
+flags until after import, while joins to an existing destination still install
+them during bootstrap because there is no import phase. The scoped quick-check
+passed this change at `b2a605f9` in run
+[40065653846](https://github.com/centerionware/not-k8s/actions/runs/40065653846).
+
+The addon-enabled follow-up
+[40065653855](https://github.com/centerionware/not-k8s/actions/runs/40065653855)
+at SHA `b2a605f9ea59d342d1bb532c4300d36095fa073e` built nodemigrate, the branch
+runtime, and addon image successfully. The source HPA fixture passed scale-up
+to 3, scale-down to 1, and restore to 3; it did not exercise zero replicas. The
+K3s migration progressed past the earlier metrics-server bootstrap timeout but
+failed waiting for `nodeactivator-cert-signer` to become Available. Nodelet
+logs show repeated Cilium CNI sandbox setup failures because the local Cilium
+agent socket was unavailable. Cilium host-state reset was ordered after addon
+reconciliation, which waits for addon Pods; reset is now moved before that wait
+for fresh Cilium destinations. The destination HPA zero-replica ownership
+round-trip and Node Activator request buffering/wakeup remain unverified. The
+upstream lane again stopped before migration because its source kubelet could
+not load `/var/lib/kubelet/config.yaml`. Docker preflight reached kubeadm's
+etcd-join phase, but its new etcd member did not start. Logs:
+`/tmp/nodemigrate-40065653855-k3s.log`,
+`/tmp/nodemigrate-40065653855-kubernetes.log`, and
+`/tmp/nodemigrate-40065653855-preflight.log`.
+
+Run [40067706232](https://github.com/centerionware/not-k8s/actions/runs/40067706232)
+at SHA `81e2f6fc2ca5cbd57ec88be8ce1a9bb2dc4364f2` repeated the signer
+availability timeout and Cilium CNI socket failures. Although Cilium reset had
+been moved ahead of addon reconciliation, the migration test still supplied
+`NODEBOOTSTRAP_NODEACTIVATOR_IMAGE` to the parent process. Generated bootstrap
+commands inherited it and enabled the signer during the initial bootstrap,
+before the reset phase. The upstream and Docker preflight failures also
+recurred. The current fix strips bootstrap-only addon environment variables
+from child commands so addon installation follows the explicit nodemigrate
+request flags. A focused unit test covers that environment boundary; CI and an
+addon-enabled migration retest are pending. Logs:
+`/tmp/nodemigrate-40067706232-k3s.log`,
+`/tmp/nodemigrate-40067706232-kubernetes.log`, and
+`/tmp/nodemigrate-40067706232-preflight.log`.
+
+Run [40069693594](https://github.com/centerionware/not-k8s/actions/runs/40069693594)
+at SHA `cb08018d8dfaf7631d877ac0a611f8943cb9ef34` passed the scoped quick-check
+and built the branch runtime and addon image. The K3s migration still failed
+waiting for `nodeactivator-cert-signer` to become Available. This run confirms
+the Cilium host-state reset completed before addon reconciliation, and Cilium
+logs show both signer and Activator container endpoints were created; the
+failure log did not capture the addon's Pod status or container logs, so the
+remaining startup cause is not yet identified. Nodebootstrap now includes
+Deployment status, matching Pod state, and Pod logs in addon readiness errors
+to make the next run diagnostic. HPA scale-to-zero ownership and buffered
+request wakeup remain unverified. The upstream lane failed before migration
+because its Kubernetes CNI package did not install bridge and loopback. Docker
+preflight again failed because kubeadm reported its new etcd member was not
+started. Logs: `/tmp/nodemigrate-40069693594-k3s.log`,
+`/tmp/nodemigrate-40069693594-kubernetes.log`, and
+`/tmp/nodemigrate-40069693594-preflight.log`.
 
 ## Branch-runtime matrix 36871609082
 
@@ -16,21 +373,21 @@ the upstream round trip completed. K3s passed as well. This resolves the
 corresponding harness issues recorded below; no general build or full e2e
 gate ran.
 
-## Confirmed full-migration gap: HPA reconciliation
+## HPA migration and Kubernetes 1.37 scale-to-zero
 
-The migration acceptance inventory requires autoscaler behavior at source,
-nodestore, and returned-source checkpoints. `nodecontroller` currently has
-only the disruption controller; its module documentation explicitly scopes
-out `horizontalpodautoscaler-controller`, and there is no HPA reconciliation
-implementation in its controller set. API object transfer and semantic
-comparison therefore cannot prove that an HPA continues scaling after the
-destination becomes authoritative. This is an acceptance gap in
-`nodecontroller`, exercised by the `nodemigrate` fixtures, not a failure in
-the passing run 36871609082. The next implementation must provide bounded
-HPA reconciliation against the aggregated metrics API and the Scale
-subresource, then add a live CPU-utilization scale-up/scale-down scenario to
-the K3s and upstream source → nodestore → returned fixtures. No HPA behavior
-is claimed as tested yet.
+`nodecontroller` now implements `horizontalpodautoscaler-controller`, and the
+`nodemigrate` integration fixture exercises an `autoscaling/v2` CPU HPA at
+source, nodestore, and returned-source checkpoints. The HPA API object is
+included by generic discovery-based export/import and its spec is compared in
+the migration snapshots.
+
+Kubernetes 1.37 also uses `status.conditions[ScaledToZero=True]` to distinguish
+an HPA-owned zero-replica target from one manually paused at zero. The HPA
+controller now keeps manually scaled zero paused. Since migration normally
+discards computed status, the export retains this ownership condition as
+migration metadata and restores it through the destination HPA status
+subresource after import. Focused unit coverage is present; the full migration
+round trip for a zero-replica HPA and its condition remains unverified.
 
 ## Previous branch-runtime matrix 36865090999
 

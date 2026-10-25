@@ -664,6 +664,19 @@ remove_cilium_socket_lb_links_for_probe() {
         ' || return 1
 }
 
+stop_cilium_trace_monitor() {
+    local monitor_pid="${1:?missing monitor process ID}"
+    # The monitor runs in a dedicated session, so terminate kubectl and its
+    # timeout wrapper together instead of orphaning a remote exec process.
+    kill -TERM -- "-$monitor_pid" 2>/dev/null || true
+    for _ in {1..20}; do
+        kill -0 -- "-$monitor_pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    kill -KILL -- "-$monitor_pid" 2>/dev/null || true
+    wait "$monitor_pid" 2>/dev/null || true
+}
+
 probe_api_clusterip_with_cilium_monitor() {
     local kubeconfig="${1:?missing probe kubeconfig}"
     local stage="${2:?missing probe stage}"
@@ -678,14 +691,17 @@ probe_api_clusterip_with_cilium_monitor() {
     mkdir -p "$(dirname "$log_file")"
     capture_cilium_socket_lb_attachment "$kubeconfig" "$stage" || return 1
     echo "Starting Cilium trace/drop monitor for Pod-origin API ClusterIP probe at stage=$stage"
-    timeout --signal=INT 110s env KUBECONFIG="$kubeconfig" kubectl -n kube-system \
+    # Run the timeout and kubectl exec in a private process group. Stopping
+    # only the timeout PID can leave kubectl exec waiting on the remote,
+    # long-running monitor indefinitely, which prevents the recovery probe
+    # below from running.
+    setsid timeout --signal=INT --kill-after=5s 110s env KUBECONFIG="$kubeconfig" kubectl -n kube-system \
         exec "$cilium_pod" -c cilium-agent -- cilium-dbg monitor \
         --type trace --type drop --numeric >"$log_file" 2>&1 &
     monitor_pid=$!
     sleep 2
     probe_api_clusterip_from_pod "$kubeconfig" "$stage" || probe_ok=false
-    kill -INT "$monitor_pid" 2>/dev/null || true
-    wait "$monitor_pid" 2>/dev/null || true
+    stop_cilium_trace_monitor "$monitor_pid"
     echo "Cilium trace/drop monitor output at stage=$stage:"
     cat "$log_file" >&2 || true
     [[ "$probe_ok" == true ]]
@@ -1460,9 +1476,22 @@ EOF
         local stable minor
         stable="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
         minor="$(sed -E 's/^(v[0-9]+\.[0-9]+)\..*/\1/' <<<"$stable")"
-        apt-get install -y -qq kubelet kubeadm
+        apt-get install -y -qq kubelet kubeadm containernetworking-plugins
+        local cni_bridge cni_plugin_dir
+        cni_bridge="$(dpkg -L containernetworking-plugins | awk '/\/bridge$/ { print }' | tail -n 1)"
+        [[ -n "$cni_bridge" && -x "$cni_bridge" ]] \
+            || { echo "containernetworking-plugins did not install its bridge binary" >&2; return 1; }
+        cni_plugin_dir="${cni_bridge%/*}"
+        [[ -x "$cni_plugin_dir/loopback" ]] \
+            || { echo "containernetworking-plugins did not install loopback binary" >&2; return 1; }
+        if [[ "$cni_plugin_dir" != /opt/cni/bin ]]; then
+            install -d /opt/cni/bin
+            for plugin in "$cni_plugin_dir"/*; do
+                ln -sfn "$plugin" "/opt/cni/bin/${plugin##*/}"
+            done
+        fi
         [[ -x /opt/cni/bin/bridge && -x /opt/cni/bin/loopback ]] || {
-            echo "kubelet's kubernetes-cni dependency did not install bridge and loopback" >&2
+            echo "CNI bridge and loopback binaries are unavailable to kubelet" >&2
             return 1
         }
         local cri_tools_version="${CRI_TOOLS_VERSION:-${minor}.0}"
@@ -1966,6 +1995,28 @@ install_workloads() {
     rm -f "$gateway_api_manifest"
     kubectl wait --for=condition=Established crd/gatewayclasses.gateway.networking.k8s.io --timeout=2m
     kubectl wait --for=condition=Established crd/httproutes.gateway.networking.k8s.io --timeout=2m
+    local cert_manager_crds
+    cert_manager_crds="$(mktemp)"
+    if ! curl --fail --location --retry 5 --retry-delay 2 --retry-max-time 60 \
+        --output "$cert_manager_crds" \
+        "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION:-v1.21.2}/cert-manager.crds.yaml"; then
+        rm -f "$cert_manager_crds"
+        return 1
+    fi
+    if ! kubectl apply -f "$cert_manager_crds"; then
+        rm -f "$cert_manager_crds"
+        return 1
+    fi
+    rm -f "$cert_manager_crds"
+    for crd in certificates.cert-manager.io certificaterequests.cert-manager.io \
+        issuers.cert-manager.io clusterissuers.cert-manager.io \
+        challenges.acme.cert-manager.io orders.acme.cert-manager.io; do
+        kubectl wait --for=condition=Established "crd/$crd" --timeout=2m
+        kubectl label "crd/$crd" app.kubernetes.io/managed-by=Helm --overwrite
+        kubectl annotate "crd/$crd" \
+            meta.helm.sh/release-name=cert-manager \
+            meta.helm.sh/release-namespace=cert-manager --overwrite
+    done
     helm upgrade --install cert-manager jetstack/cert-manager \
         --version "${CERT_MANAGER_VERSION:-v1.21.2}" \
         --namespace cert-manager --create-namespace --set crds.enabled=true \
@@ -2528,6 +2579,56 @@ spec:
   - name: csi
     persistentVolumeClaim:
       claimName: migration-csi-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: migration-hpa-target
+  namespace: migration-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: migration-hpa-target
+  template:
+    metadata:
+      labels:
+        app: migration-hpa-target
+    spec:
+      containers:
+      - name: cpu-load
+        image: busybox:1.36.1
+        command: ["sh", "-c", "exec yes >/dev/null"]
+        resources:
+          requests:
+            cpu: 100m
+            memory: 1Mi
+          limits:
+            cpu: 100m
+            memory: 32Mi
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: migration-cpu
+  namespace: migration-apps
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: migration-hpa-target
+  minReplicas: 1
+  maxReplicas: 3
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 0
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -3491,6 +3592,374 @@ verify_api_ca_continuity() {
     echo "PASS source API CA continuity at stage=$stage"
 }
 
+wait_for_hpa_replicas() {
+    local desired="$1"
+    local stage="$2"
+    local hpa_json
+    for _ in $(seq 1 120); do
+        if hpa_json="$(kubectl get hpa migration-cpu -n migration-apps -o json 2>/dev/null)" \
+            && jq -e --argjson desired "$desired" '
+              .status.desiredReplicas == $desired and
+              any(.status.conditions[]?; .type == "ScalingActive" and .status == "True") and
+              .spec.metrics[0].resource.target.averageUtilization == (if $desired == 3 then 50 else 1000 end)
+            ' >/dev/null <<<"$hpa_json" \
+            && kubectl get deployment migration-hpa-target -n migration-apps -o json | jq -e \
+              --argjson desired "$desired" \
+              '.spec.replicas == $desired and (.status.readyReplicas // 0) == $desired' >/dev/null; then
+            echo "PASS HPA target has $desired Ready replicas at stage=$stage"
+            return 0
+        fi
+        sleep 2
+    done
+    echo "HPA did not converge to $desired replicas at stage=$stage" >&2
+    kubectl get hpa migration-cpu -n migration-apps -o yaml >&2 || true
+    kubectl get deployment migration-hpa-target -n migration-apps -o yaml >&2 || true
+    kubectl get pods -n migration-apps -l app=migration-hpa-target -o wide >&2 || true
+    kubectl get --raw /apis/metrics.k8s.io/v1beta1/namespaces/migration-apps/pods >&2 || true
+    return 1
+}
+
+verify_hpa_scaling() {
+    local stage="$1" deadline=$((SECONDS + 300)) metrics_server_available=false
+    while (( SECONDS < deadline )); do
+        if kubectl get deployment metrics-server -n kube-system -o json | jq -e '
+          .status.observedGeneration >= .metadata.generation and
+          (.status.updatedReplicas // 0) >= (.spec.replicas // 1) and
+          (.status.availableReplicas // 0) >= (.spec.replicas // 1)
+        ' >/dev/null 2>&1; then
+            metrics_server_available=true
+            break
+        fi
+        sleep 2
+    done
+    [[ "$metrics_server_available" == true ]] || {
+        echo "Metrics Server Deployment did not report observed updated and available replicas at stage=$stage" >&2
+        kubectl get deployment metrics-server -n kube-system -o yaml >&2 || true
+        kubectl get pods -n kube-system -l k8s-app=metrics-server -o wide >&2 || true
+        return 1
+    }
+    kubectl get --raw /apis/metrics.k8s.io/v1beta1/namespaces/migration-apps/pods >/dev/null
+    kubectl patch hpa migration-cpu -n migration-apps --type=merge \
+        -p '{"spec":{"metrics":[{"type":"Resource","resource":{"name":"cpu","target":{"type":"Utilization","averageUtilization":50}}}]}}'
+    wait_for_hpa_replicas 3 "$stage scale-up"
+    kubectl patch hpa migration-cpu -n migration-apps --type=merge \
+        -p '{"spec":{"metrics":[{"type":"Resource","resource":{"name":"cpu","target":{"type":"Utilization","averageUtilization":1000}}}]}}'
+    wait_for_hpa_replicas 1 "$stage scale-down"
+    kubectl patch hpa migration-cpu -n migration-apps --type=merge \
+        -p '{"spec":{"metrics":[{"type":"Resource","resource":{"name":"cpu","target":{"type":"Utilization","averageUtilization":50}}}]}}'
+    wait_for_hpa_replicas 3 "$stage scale-up restore"
+}
+
+verify_nodeactivator_hpa_wakeup() {
+    local stage="$1" deadline pod_logs probe activation_observed=false request_status zero_observed=false activator_client_pod activator_test_dir request_pid
+    kubectl delete hpa migration-activator -n migration-apps --ignore-not-found=true
+    kubectl delete deployment migration-activator-backend -n migration-apps --ignore-not-found=true
+    kubectl delete service migration-activator-front migration-activator-backend -n migration-apps --ignore-not-found=true
+    cat <<'YAML' | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: migration-activator-backend
+  namespace: migration-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: migration-activator-backend
+  template:
+    metadata:
+      labels:
+        app: migration-activator-backend
+    spec:
+      containers:
+      - name: http
+        image: python:3.12-alpine
+        command: ["python3", "-u", "-c"]
+        args:
+        - |
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          import time
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  body = b"migration-activator-response"
+                  self.send_response(200)
+                  self.send_header("Content-Length", str(len(body)))
+                  self.end_headers()
+                  time.sleep(30)
+                  self.wfile.write(body)
+
+              def log_message(self, *_args):
+                  pass
+
+          HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+        resources:
+          requests:
+            cpu: 1m
+            memory: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: migration-activator-backend
+  namespace: migration-apps
+spec:
+  selector:
+    app: migration-activator-backend
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: migration-activator-front
+  namespace: migration-apps
+  labels:
+    activator.notk8s.io/enabled: "true"
+  annotations:
+    activator.notk8s.io/backend-url: http://migration-activator-backend.migration-apps.svc.cluster.local:8080
+spec:
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: migration-activator
+  namespace: migration-apps
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: migration-activator-backend
+  minReplicas: 0
+  maxReplicas: 3
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 0
+  metrics:
+  - type: External
+    external:
+      metric:
+        name: activator_requests_active
+        selector:
+          matchLabels:
+            service: migration-activator-front
+      target:
+        type: Value
+        value: "1"
+YAML
+    deadline=$((SECONDS + 300))
+    while (( SECONDS < deadline )); do
+        if kubectl get deployment migration-activator-backend -n migration-apps -o json \
+            | jq -e '.spec.replicas == 0' >/dev/null \
+            && kubectl get hpa migration-activator -n migration-apps -o json \
+                | jq -e 'any(.status.conditions[]?; .type == "ScaledToZero" and .status == "True")' >/dev/null; then
+            break
+        fi
+        sleep 3
+    done
+    kubectl get hpa migration-activator -n migration-apps -o json | jq -e '
+      .spec.minReplicas == 0 and
+      any(.status.conditions[]?; .type == "ScaledToZero" and .status == "True")
+    ' >/dev/null || {
+        echo "HPA did not own the zero-replica backend at stage=$stage" >&2
+        kubectl get hpa migration-activator -n migration-apps -o yaml >&2 || true
+        kubectl get deployment migration-activator-backend -n migration-apps -o yaml >&2 || true
+        kubectl get --raw '/apis/external.metrics.k8s.io/v1beta1/namespaces/migration-apps/activator_requests_active?labelSelector=service%3Dmigration-activator-front' >&2 || true
+        return 1
+    }
+    deadline=$((SECONDS + 300))
+    while (( SECONDS < deadline )); do
+        if kubectl get deployment migration-activator-backend -n migration-apps -o json \
+            | jq -e '.spec.replicas == 0 and (.status.readyReplicas // 0) == 0' >/dev/null \
+            && kubectl get pods -n migration-apps -l app=migration-activator-backend -o json \
+                | jq -e '[.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | length == 0' >/dev/null \
+            && kubectl get endpointslices -n migration-apps \
+                -l kubernetes.io/service-name=migration-activator-backend -o json \
+                | jq -e '[.items[].endpoints[]? | select(.conditions.ready != false)] | length == 0' >/dev/null; then
+            zero_observed=true
+            break
+        fi
+        sleep 2
+    done
+    [[ "$zero_observed" == true ]] || {
+        echo "HPA backend did not reach zero ready Pods and Service endpoints at stage=$stage" >&2
+        kubectl get hpa migration-activator -n migration-apps -o yaml >&2 || true
+        kubectl get deployment migration-activator-backend -n migration-apps -o yaml >&2 || true
+        kubectl get pods -n migration-apps -l app=migration-activator-backend -o wide >&2 || true
+        kubectl get endpointslice -n migration-apps \
+            -l kubernetes.io/service-name=migration-activator-backend -o yaml >&2 || true
+        return 1
+    }
+    activator_client_pod="$(kubectl get pods -n migration-apps -l app=migration-daemon -o json \
+        | jq -er '[.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | first.metadata.name')" || {
+        echo "no Ready migration DaemonSet Pod is available as the Activator request caller at stage=$stage" >&2
+        kubectl get pods -n migration-apps -l app=migration-daemon -o wide >&2 || true
+        return 1
+    }
+    deadline=$((SECONDS + 300))
+    while (( SECONDS < deadline )); do
+        if probe="$(kubectl exec -n migration-apps "$activator_client_pod" -- sh -ec \
+            'wget -T 5 -qO- http://migration-activator-front.migration-apps.svc/healthz' \
+            2>/dev/null)" && [[ "$probe" == ok* ]]; then
+            break
+        fi
+        sleep 3
+    done
+    [[ "$probe" == ok* ]] || {
+        echo "activator front Service did not become reachable after migration at stage=$stage" >&2
+        kubectl get endpointslice -n migration-apps \
+            -l kubernetes.io/service-name=migration-activator-front -o yaml >&2 || true
+        kubectl get pods -n kube-system -l app.kubernetes.io/name=nodeactivator -o wide >&2 || true
+        kubectl logs -n kube-system -l app.kubernetes.io/name=nodeactivator \
+            --all-containers --prefix --tail=100 >&2 || true
+        return 1
+    }
+    activator_test_dir="$(mktemp -d)"
+    kubectl exec -n migration-apps "$activator_client_pod" -- \
+        wget -T 240 -qO- http://migration-activator-front.migration-apps.svc/ \
+        > "$activator_test_dir/response" 2> "$activator_test_dir/client.log" &
+    request_pid=$!
+    deadline=$((SECONDS + 180))
+    while (( SECONDS < deadline )); do
+        if ! kill -0 "$request_pid" 2>/dev/null; then
+            break
+        fi
+        if kubectl get deployment migration-activator-backend -n migration-apps -o json \
+            | jq -e '.spec.replicas == 1 and (.status.availableReplicas // 0) == 1' >/dev/null \
+            && kubectl get hpa migration-activator -n migration-apps -o json \
+                | jq -e '.status.desiredReplicas == 1' >/dev/null \
+            && kubectl get --raw '/apis/external.metrics.k8s.io/v1beta1/namespaces/migration-apps/activator_requests_active?labelSelector=service%3Dmigration-activator-front' \
+                | jq -e 'any(.items[]?; .value == "1")' >/dev/null; then
+            activation_observed=true
+            break
+        fi
+        sleep 2
+    done
+    [[ "$activation_observed" == true ]] || {
+        echo "external metric did not wake the backend while the request was active at stage=$stage" >&2
+        kubectl get hpa migration-activator -n migration-apps -o yaml >&2 || true
+        kubectl get deployment migration-activator-backend -n migration-apps -o yaml >&2 || true
+        kubectl get --raw '/apis/external.metrics.k8s.io/v1beta1/namespaces/migration-apps/activator_requests_active?labelSelector=service%3Dmigration-activator-front' >&2 || true
+        cat "$activator_test_dir/client.log" >&2 || true
+        kubectl logs -n kube-system -l app.kubernetes.io/name=nodeactivator \
+            --all-containers --prefix --tail=100 >&2 || true
+        kill "$request_pid" 2>/dev/null || true
+        wait "$request_pid" 2>/dev/null || true
+        rm -rf "$activator_test_dir"
+        return 1
+    }
+    if wait "$request_pid"; then
+        request_status=0
+    else
+        request_status=$?
+    fi
+    [[ "$request_status" == 0 ]] || {
+        echo "buffered request did not complete successfully at stage=$stage status=$request_status" >&2
+        kubectl get hpa,deployment,pod,service -n migration-apps >&2 || true
+        cat "$activator_test_dir/client.log" >&2 || true
+        kubectl logs -n kube-system -l app.kubernetes.io/name=nodeactivator \
+            --all-containers --prefix --tail=100 >&2 || true
+        rm -rf "$activator_test_dir"
+        return 1
+    }
+    pod_logs="$(<"$activator_test_dir/response")"
+    rm -rf "$activator_test_dir"
+    grep -Fq migration-activator-response <<< "$pod_logs" || {
+        echo "activator request completed without a backend response at stage=$stage: $pod_logs" >&2
+        return 1
+    }
+    kubectl delete hpa migration-activator -n migration-apps
+    # Wait for Kubernetes garbage collection to remove the generated
+    # ReplicaSet and Pod before the migration state inventory is captured.
+    # Background deletion can leave an ownerless ReplicaSet in the snapshot.
+    kubectl delete deployment migration-activator-backend -n migration-apps \
+        --cascade=foreground --wait=true --timeout=2m
+    # Some Kubernetes-compatible control planes can leave the generated
+    # ReplicaSet behind after the Deployment is gone. Remove this fixture's
+    # controller-owned object explicitly, then verify it is absent.
+    kubectl delete replicaset -n migration-apps \
+        -l app=migration-activator-backend --cascade=foreground \
+        --wait=true --timeout=2m --ignore-not-found=true
+    local cleanup_deadline=$((SECONDS + 120))
+    local remaining_replicasets
+    while true; do
+        remaining_replicasets="$(kubectl get replicaset -n migration-apps \
+            -l app=migration-activator-backend -o name)" || return 1
+        [[ -n "$remaining_replicasets" ]] || break
+        if (( SECONDS >= cleanup_deadline )); then
+            echo "activation test ReplicaSet remained after foreground Deployment deletion at stage=$stage" >&2
+            printf '%s\n' "$remaining_replicasets" >&2
+            return 1
+        fi
+        sleep 2
+    done
+    kubectl delete service migration-activator-front migration-activator-backend -n migration-apps
+    echo "PASS migrated cluster buffered a request and activated its HPA-scaled-to-zero backend at stage=$stage"
+}
+
+verify_migration_optional_addons() {
+    local stage="$1" api_service_json images
+    if [[ "${NODEMIGRATE_METRICS_SERVER:-false}" == true ]]; then
+        kubectl rollout status deployment/metrics-server -n kube-system --timeout=5m
+        kubectl get deployment metrics-server -n kube-system -o json | jq -e '
+          any(.spec.template.spec.containers[]?; .image == "registry.k8s.io/metrics-server/metrics-server:v0.9.0")
+        ' >/dev/null || {
+            echo "nodebootstrap metrics-server image is missing after migration at stage=$stage" >&2
+            kubectl get deployment metrics-server -n kube-system -o yaml >&2 || true
+            return 1
+        }
+        api_service_json="$(kubectl get apiservice v1beta1.metrics.k8s.io -o json)"
+        jq -e 'any(.status.conditions[]?; .type == "Available" and .status == "True")' \
+            <<< "$api_service_json" >/dev/null || {
+            echo "metrics-server APIService is unavailable after migration at stage=$stage" >&2
+            return 1
+        }
+        kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes >/dev/null
+        # Verify the source HPA survived import and is functional before the
+        # activator-specific check can fail this migration stage.
+        verify_hpa_scaling "$stage"
+    fi
+    if [[ -n "${NODEMIGRATE_NODEACTIVATOR_IMAGE:-}" ]]; then
+        kubectl rollout status deployment/nodeactivator-cert-signer -n kube-system --timeout=5m
+        kubectl rollout status deployment/nodeactivator -n kube-system --timeout=5m
+        images="$(kubectl get deployment/nodeactivator deployment/nodeactivator-cert-signer -n kube-system -o json \
+            | jq -r '[.items[].spec.template.spec.containers[].image] | unique | join(" ")')"
+        [[ "$images" == "$NODEMIGRATE_NODEACTIVATOR_IMAGE" ]] || {
+            echo "nodebootstrap activator deployments do not use the requested image at stage=$stage: $images" >&2
+            return 1
+        }
+        api_service_json="$(kubectl get apiservice v1beta1.external.metrics.k8s.io -o json)"
+        jq -e 'any(.status.conditions[]?; .type == "Available" and .status == "True")' \
+            <<< "$api_service_json" >/dev/null || {
+            echo "activator external metrics APIService is unavailable after migration at stage=$stage" >&2
+            return 1
+        }
+        local activator_pods certificate_requests
+        activator_pods="$(kubectl get pods -n kube-system -l app.kubernetes.io/name=nodeactivator -o json)"
+        certificate_requests="$(kubectl get podcertificaterequests.certificates.k8s.io --all-namespaces -o json)"
+        jq -e --argjson requests "$certificate_requests" '
+          [.items[]? | select(.status.phase == "Running") | .metadata.uid] as $pod_uids |
+          [$requests.items[]? | select(.spec.signerName == "nodeactivator.notk8s.io/serving")
+            | select(any(.status.conditions[]?; .type == "Issued" and .status == "True"))
+            | .spec.podUID] as $issued_pod_uids |
+          ($pod_uids | length > 0) and
+          all($pod_uids[]; . as $pod_uid | $issued_pod_uids | index($pod_uid) != null)
+        ' <<< "$activator_pods" >/dev/null || {
+            echo "running nodeactivator Pods have not each received a Pod certificate at stage=$stage" >&2
+            kubectl get podcertificaterequests.certificates.k8s.io --all-namespaces -o yaml >&2 || true
+            return 1
+        }
+        verify_nodeactivator_hpa_wakeup "$stage"
+    fi
+    echo "PASS migration-selected optional addon installation at stage=$stage"
+}
+
 verify_stage() {
     local stage="$1"
     local stage_dir="$CHECKPOINT_DIR/$stage"
@@ -3528,6 +3997,7 @@ verify_stage() {
             }
             echo "PASS nodeproxy owns Service routing without kube-proxy"
         fi
+        verify_migration_optional_addons "$stage"
     fi
     capture_cilium_agent_cri_security "$CURRENT_KUBECONFIG"
     verify_ingress_spec "$stage"
@@ -3804,6 +4274,13 @@ verify_stage() {
     }
     kubectl get customresourcedefinitions.apiextensions.k8s.io ciliumendpoints.cilium.io
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
+    if [[ "${NODEMIGRATE_METRICS_SERVER:-false}" != true ]]; then
+        if kubectl get --raw /apis/metrics.k8s.io/v1beta1 >/dev/null 2>&1; then
+            verify_hpa_scaling "$stage"
+        else
+            echo "SKIP HPA resource-metrics probe at stage=$stage: metrics.k8s.io is not installed"
+        fi
+    fi
     kubectl scale -n migration-apps deployment/migration-nginx --replicas=2
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
     kubectl get deployment migration-nginx -n migration-apps -o json | jq -e '
@@ -4275,7 +4752,7 @@ print(f"CRD precision checkpoint stage={stage} crd={expected_name} maximum={valu
       }] | sort_by(.name)
     ' > "$stage_dir/nodes.json"
 
-    kubectl get configmap,secret,serviceaccount,role,rolebinding,deployment,statefulset,daemonset,cronjob,poddisruptionbudget,service,ingress,pvc -n migration-apps -o json \
+    kubectl get configmap,secret,serviceaccount,role,rolebinding,deployment,statefulset,daemonset,cronjob,horizontalpodautoscaler,poddisruptionbudget,service,ingress,pvc -n migration-apps -o json \
       | jq -S -f "$ROOT/.github/scripts/nodemigrate-application-snapshot.jq" > "$stage_dir/application.json"
     kubectl get pv -o json \
       | jq -S '[.items[] | select(.spec.claimRef.namespace == "migration-apps") | {
@@ -4512,6 +4989,25 @@ if (
     lifecycle_class = "nodebootstrap-runtime-rbac"
 elif kind == "EndpointSlice" and labels.get("endpointslice.kubernetes.io/managed-by") == "nodecontroller":
     lifecycle_class = "nodecontroller-regenerated-endpoints"
+elif (
+    group == "apps"
+    and kind == "Deployment"
+    and metadata.get("namespace") == "kube-system"
+    and name == "coredns"
+):
+    # The destination installs its Kubernetes-version-matched CoreDNS
+    # manifest. Runtime DNS and HTTP health probes cover this regenerated
+    # platform addon; its exact Pod template is not durable user state.
+    lifecycle_class = "nodebootstrap-regenerated-coredns"
+elif (
+    kind == "ConfigMap"
+    and metadata.get("namespace") == "kube-system"
+    and name == "coredns"
+):
+    # The CoreDNS ConfigMap is installed with the destination Kubernetes
+    # version-matched platform addon. DNS and HTTP health probes verify the
+    # regenerated addon after migration.
+    lifecycle_class = "nodebootstrap-regenerated-coredns"
 elif kind in {"ReplicaSet", "ControllerRevision"} and any(
     owner.get("controller") is True
     and owner.get("kind") in {"Deployment", "StatefulSet", "DaemonSet"}
@@ -4529,6 +5025,37 @@ row = {
     "fields": fields,
     "lifecycleClass": lifecycle_class,
 }
+if (
+    group == "rbac.authorization.k8s.io"
+    and kind in {"Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding"}
+    and labels.get("kubernetes.io/bootstrapping") == "rbac-defaults"
+):
+    row["defaultRbacObject"] = True
+if (
+    group == "rbac.authorization.k8s.io"
+    and kind in {"Role", "ClusterRole"}
+    and labels.get("kubernetes.io/bootstrapping") == "rbac-defaults"
+):
+    row["defaultRbacRules"] = obj.get("rules") or []
+if group == "rbac.authorization.k8s.io" and kind in {"Role", "ClusterRole"}:
+    # Kubernetes API servers reconcile these version-owned default roles at
+    # startup. Capture target rules even when nodebootstrap owns the target
+    # role and therefore does not carry the Kubernetes bootstrapping label.
+    row["rbacRules"] = obj.get("rules") or []
+if group == "rbac.authorization.k8s.io" and kind in {"RoleBinding", "ClusterRoleBinding"}:
+    row["rbacRoleRef"] = obj.get("roleRef") or {}
+    row["rbacSubjects"] = obj.get("subjects") or []
+if kind == "HorizontalPodAutoscaler":
+    scale_target = (obj.get("spec") or {}).get("scaleTargetRef") or {}
+    api_version = scale_target.get("apiVersion", "")
+    target_group = api_version.split("/", 1)[0] if "/" in api_version else ""
+    if scale_target.get("kind") and scale_target.get("name"):
+        row["hpaScaleTarget"] = {
+            "apiGroup": target_group,
+            "kind": scale_target["kind"],
+            "namespace": metadata.get("namespace", ""),
+            "name": scale_target["name"],
+        }
 if kind == "CustomResourceDefinition":
     row["crdSpec"] = obj.get("spec")
 if (
@@ -4585,10 +5112,11 @@ assert_migratable_api_objects_unchanged() {
     local after="$2"
     local source_stage="$3"
     local target_stage="$4"
-    if ! python3 - "$before" "$after" "${5:-}" <<'PY'
+    if ! python3 - "$before" "$after" "${5:-}" "$ROOT/.github/scripts" <<'PY'
 import json
 import sys
 import difflib
+sys.path.insert(0, sys.argv[4])
 
 def records(path):
     with open(path, encoding="utf-8") as source:
@@ -4603,6 +5131,97 @@ def records(path):
 before = records(sys.argv[1])
 after = records(sys.argv[2])
 replaced_node_name = sys.argv[3] or None
+source_hpa_targets = {
+    json.dumps(row["hpaScaleTarget"], sort_keys=True)
+    for row in before.values()
+    if row.get("hpaScaleTarget") is not None
+}
+target_hpa_targets = {
+    json.dumps(row["hpaScaleTarget"], sort_keys=True)
+    for row in after.values()
+    if row.get("hpaScaleTarget") is not None
+}
+hpa_targets = source_hpa_targets & target_hpa_targets
+default_rbac_identities = {
+    identity for records_by_identity in (before, after)
+    for identity, row in records_by_identity.items()
+    if row.get("defaultRbacObject") is True
+}
+
+def source_role_is_bound(identity):
+    role = json.loads(identity)
+    for binding in before.values():
+        if not binding.get("rbacSubjects"):
+            continue
+        ref = binding.get("rbacRoleRef") or {}
+        if ref.get("name") != role["name"]:
+            continue
+        if role["kind"] == "ClusterRole":
+            if ref.get("kind") == "ClusterRole":
+                return True
+        elif role["kind"] == "Role":
+            if (
+                ref.get("kind") == "Role"
+                and binding["identity"].get("namespace") == role["namespace"]
+            ):
+                return True
+    return False
+
+def comparable_fields(row, identity):
+    fields = dict(row.get("fields", {}))
+    value = json.loads(identity)
+    if identity in default_rbac_identities:
+        fields = {path: digest for path, digest in fields.items() if not path.startswith("/rules/")}
+    if identity in default_rbac_identities:
+        fields.pop("/metadata/labels", None)
+        fields.pop("/metadata/annotations", None)
+    if value.get("apiGroup") == "rbac.authorization.k8s.io" and value.get("name") == "system:coredns" and value.get("kind") in {"ClusterRole", "ClusterRoleBinding"}:
+        fields.pop("/metadata/labels", None)
+        fields.pop("/metadata/annotations", None)
+    if identity in hpa_targets:
+        fields.pop("/spec/replicas", None)
+    if value.get("apiGroup") == "apps" and value.get("kind") == "ReplicaSet":
+        # The Deployment controller updates these bookkeeping annotations as
+        # HPA changes the target's scale. They are not durable workload data.
+        fields.pop("/metadata/annotations/deployment.kubernetes.io~1desired-replicas", None)
+        fields.pop("/metadata/annotations/deployment.kubernetes.io~1max-replicas", None)
+    if value == {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "extension-apiserver-authentication-reader",
+        "namespace": "kube-system",
+    }:
+        fields.pop("/metadata/labels/rbac.authorization.k8s.io~1autoupdate", None)
+    if value in ({
+        "apiGroup": "scheduling.k8s.io",
+        "kind": "PriorityClass",
+        "name": "system-cluster-critical",
+        "namespace": "",
+    }, {
+        "apiGroup": "scheduling.k8s.io",
+        "kind": "PriorityClass",
+        "name": "system-node-critical",
+        "namespace": "",
+    }):
+        fields.pop("/description", None)
+    return fields
+
+def default_rbac_source_rules_preserved(source, target, identity):
+    if source.get("defaultRbacRules") is None:
+        return True
+    if not source_role_is_bound(identity):
+        return True
+    target_rules = target.get("rbacRules")
+    if target_rules is None:
+        return False
+    from nodemigrate_rbac_rules import missing_source_rules
+    missing_rules = missing_source_rules(source["defaultRbacRules"], target_rules)
+    if missing_rules:
+        print(f"Kubernetes default RBAC role lost source rules {identity}:", file=sys.stderr)
+        json.dump(missing_rules, sys.stderr, indent=2)
+        print(file=sys.stderr)
+        return False
+    return True
 
 def is_replaced_node_password(identity):
     if replaced_node_name is None:
@@ -4618,8 +5237,9 @@ def is_replaced_node_password(identity):
 missing = sorted(before.keys() - after.keys())
 changed = sorted(
     identity for identity in before.keys() & after.keys()
-    if before[identity]["sha256"] != after[identity]["sha256"]
+    if comparable_fields(before[identity], identity) != comparable_fields(after[identity], identity)
     and not is_replaced_node_password(identity)
+    and before[identity].get("lifecycleClass") != "nodebootstrap-regenerated-coredns"
 )
 expected_runtime_changes = sorted(
     identity for identity in before.keys() & after.keys()
@@ -4691,6 +5311,9 @@ if missing or changed or unclassified:
             json.dump(after[identity].get("csiVolumeDiagnostics", []), sys.stderr, indent=2)
             print(file=sys.stderr)
     sys.exit(1)
+for identity in before.keys() & after.keys():
+    if not default_rbac_source_rules_preserved(before[identity], after[identity], identity):
+        sys.exit(1)
 print(f"Source objects preserved: {len(before)}; target-only objects: {len(target_only)}")
 PY
     then
@@ -4869,6 +5492,27 @@ assert_migratable_api_objects_retained() {
     echo "PASS: all source API object identities and durable fixture state were retained at stage $2"
 }
 
+prepare_nodeactivator_image() {
+    local image="${NODEMIGRATE_NODEACTIVATOR_IMAGE:-}" archive socket imported=false
+    [[ -n "$image" ]] || return 0
+    docker image inspect "$image" >/dev/null || {
+        echo "requested nodeactivator CI image is not present in Docker: $image" >&2
+        return 1
+    }
+    archive="$(mktemp --suffix=.tar)"
+    docker save --output "$archive" "$image"
+    for socket in /run/k3s/containerd/containerd.sock /run/containerd/containerd.sock; do
+        [[ -S "$socket" ]] || continue
+        ctr --address "$socket" --namespace k8s.io images import "$archive"
+        imported=true
+    done
+    rm -f "$archive"
+    [[ "$imported" == true ]] || {
+        echo "no source or destination containerd socket was available to preload $image" >&2
+        return 1
+    }
+}
+
 main() {
     need_root
     install_tools
@@ -4880,6 +5524,7 @@ main() {
     # comparison continues to check the complete CSI StatefulSet spec.
     KUBECONFIG="$SOURCE_KUBECONFIG" ensure_csi_can_access_nodelet_root
     install_workloads
+    prepare_nodeactivator_image
     KUBECONFIG="$SOURCE_KUBECONFIG" pin_hostpath_driver_to_fixture_volumes
     verify_stage source "$SOURCE_KUBECONFIG"
     capture_source_csi_device_volume
@@ -5101,10 +5746,19 @@ main() {
     TARGET_WATCH_PID=$!
     echo "Migrating $SOURCE_DIST -> nodestore"
     local migration_status=0
+    local -a migration_args=(to=nodestore "from=$SOURCE_DIST")
+    if [[ "${NODEMIGRATE_METRICS_SERVER:-false}" == true ]]; then
+        migration_args+=(metrics-server=true)
+    fi
+    if [[ -n "${NODEMIGRATE_NODEACTIVATOR_IMAGE:-}" ]]; then
+        migration_args+=("nodeactivator-image=$NODEMIGRATE_NODEACTIVATOR_IMAGE")
+    elif [[ "${NODEMIGRATE_NODEACTIVATOR:-false}" == true ]]; then
+        migration_args+=(nodeactivator=true)
+    fi
     (
         export NODEMIGRATE_SOURCE_KUBECONFIG="$SOURCE_KUBECONFIG"
         export NODEMIGRATE_DESTINATION_KUBECONFIG="$nodestore_kubeconfig"
-        exec "$MIGRATE" to=nodestore "from=$SOURCE_DIST"
+        exec "$MIGRATE" "${migration_args[@]}"
     ) &
     local migration_pid=$!
     if wait "$migration_pid"; then

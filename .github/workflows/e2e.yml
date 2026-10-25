@@ -43,6 +43,11 @@ on:
         required: false
         default: ''
         type: string
+      metrics_server:
+        description: 'Install metrics-server through optional bootstrap support'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -117,6 +122,15 @@ jobs:
           # The installer is already an applet. Upload one release binary,
           # not a second copy dereferenced from its nodebootstrap symlink.
           e2e-bin/notk8s components | grep -Fx nodebootstrap
+
+      - name: Build activator
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/nodeactivator-target
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p nodeactivator --target x86_64-unknown-linux-musl
+          install -m0755 "$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/release/nodeactivator" e2e-bin/nodeactivator
+          install -m0755 "$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/release/nodeactivator-cert-signer" e2e-bin/nodeactivator-cert-signer
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -203,6 +217,7 @@ jobs:
           cluster_domain: ${{ inputs.cluster_domain }}
           cidr: ${{ inputs.cidr }}
           cidr6: ${{ inputs.cidr6 }}
+          metrics_server: ${{ inputs.metrics_server }}
           results_prefix: history/${{ github.run_id }}-${{ github.run_attempt }}
 
   cleanup-e2e-artifact:

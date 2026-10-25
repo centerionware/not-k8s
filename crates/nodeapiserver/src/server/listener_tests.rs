@@ -46,6 +46,24 @@ mod tests {
     }
 
     #[test]
+    fn delete_options_accept_the_resource_version_protobuf_envelope() {
+        let schema = "io.k8s.apimachinery.pkg.apis.meta.v1.DeleteOptions";
+        let value = serde_json::json!({"preconditions":{"uid":"node-uid"}});
+        let raw = crate::codec::protobuf::encode_message(schema, &value).unwrap();
+        let wire = crate::codec::protobuf::wrap_unknown("storage.k8s.io/v1", "DeleteOptions", &raw);
+        let decoded = decode_virtual_request(
+            &wire,
+            Some("application/vnd.kubernetes.protobuf"),
+            "storage.k8s.io",
+            "v1",
+            "DeleteOptions",
+        )
+        .unwrap();
+        assert_eq!(decoded["preconditions"]["uid"], "node-uid");
+        assert_eq!(decoded["apiVersion"], "storage.k8s.io/v1");
+    }
+
+    #[test]
     fn api_root_serves_api_versions() {
         let route = route_discovery(&parts("/api"), None, &[], &[], &[]);
         let DiscoveryRoute::Found(doc) = route else {
@@ -832,6 +850,37 @@ mod tests {
             "",
             ""
         ));
+    }
+
+    #[test]
+    fn watch_event_matches_namespace_filters_replayed_and_live_events() {
+        let prefix = crate::storage::keys::list_prefix(
+            "certificates.k8s.io",
+            "podcertificaterequests",
+            Some("kube-system"),
+        );
+        let event = |key: &[u8]| crate::cacher::store::WatchEvent {
+            kind: crate::cacher::store::EventKind::Added,
+            key: key.to_vec(),
+            value: Vec::new(),
+            revision: 1,
+        };
+        let bookmark = crate::cacher::store::WatchEvent {
+            kind: crate::cacher::store::EventKind::Bookmark,
+            key: Vec::new(),
+            value: Vec::new(),
+            revision: 1,
+        };
+
+        assert!(watch_event_matches_namespace(
+            &event(b"/registry/podcertificaterequests/kube-system/request"),
+            prefix.as_bytes(),
+        ));
+        assert!(!watch_event_matches_namespace(
+            &event(b"/registry/podcertificaterequests/another-namespace/request"),
+            prefix.as_bytes(),
+        ));
+        assert!(watch_event_matches_namespace(&bookmark, prefix.as_bytes()));
     }
 
     #[test]

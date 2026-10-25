@@ -75,6 +75,8 @@ data:
         forward . /etc/resolv.conf
     }
     import /etc/coredns/custom/*.server
+  NodeHosts: |
+    127.0.0.1 localhost
 ---
 apiVersion: apps/v1
 kind: Deployment

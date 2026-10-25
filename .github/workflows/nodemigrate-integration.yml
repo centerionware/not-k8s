@@ -44,6 +44,21 @@ on:
         required: false
         type: boolean
         default: false
+      metrics_server:
+        description: Install metrics-server through nodebootstrap during migration
+        required: false
+        type: boolean
+        default: false
+      nodeactivator:
+        description: Enable Node Activator through nodemigrate's standard flag
+        required: false
+        type: boolean
+        default: false
+      nodeactivator_image:
+        description: Override the Node Activator image used by the migration test
+        required: false
+        type: string
+        default: ''
   pull_request:
     paths:
       - '.github/scripts/nodemigrate-integration.sh'
@@ -100,6 +115,9 @@ jobs:
 
       - name: Check snapshot jq
         run: bash .github/scripts/check_nodemigrate_snapshot_filter.sh
+
+      - name: Check RBAC coverage
+        run: python3 .github/scripts/nodemigrate_rbac_rules.py
 
       - name: Check Helm state
         run: bash .github/scripts/check_nodemigrate_helm_snapshot.sh
@@ -292,6 +310,15 @@ jobs:
       - name: Build branch runtime
         run: cargo build --release --features cri -p notk8s
 
+      - name: Build addon image
+        if: inputs.nodeactivator == true || inputs.nodeactivator_image != ''
+        env:
+          NODEMIGRATE_NODEACTIVATOR_IMAGE: ${{ inputs.nodeactivator_image != '' && inputs.nodeactivator_image || format('notk8s-nodeactivator:ci-{0}', github.sha) }}
+        run: |
+          set -euo pipefail
+          docker build --file addons/nodeactivator/Dockerfile \
+            --tag "$NODEMIGRATE_NODEACTIVATOR_IMAGE" .
+
       - name: Fetch latest runtime
         if: inputs.runtime_source != 'branch'
         env:
@@ -328,9 +355,13 @@ jobs:
           NODEMIGRATE_SOURCE_DIST: ${{ matrix.source }}
           NODEMIGRATE_TEST_LOG: ${{ runner.temp }}/nodemigrate-${{ matrix.source }}.log
           NODEMIGRATE_CILIUM_KPR: ${{ inputs.cilium_kpr }}
+          NODEMIGRATE_METRICS_SERVER: ${{ inputs.metrics_server }}
+          NODEMIGRATE_NODEACTIVATOR: ${{ inputs.nodeactivator }}
+          NODEMIGRATE_NODEACTIVATOR_IMAGE: ${{ inputs.nodeactivator_image != '' && inputs.nodeactivator_image || (inputs.nodeactivator && format('notk8s-nodeactivator:ci-{0}', github.sha)) || '' }}
+          NODEBOOTSTRAP_NODEACTIVATOR_IMAGE: ${{ inputs.nodeactivator && (inputs.nodeactivator_image != '' && inputs.nodeactivator_image || format('notk8s-nodeactivator:ci-{0}', github.sha)) || '' }}
         run: |
           set -euo pipefail
-          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,GH_TOKEN,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG,NODEMIGRATE_CILIUM_KPR \
+          sudo --preserve-env=PATH,HOME,GITHUB_WORKSPACE,RUNNER_TEMP,GH_TOKEN,NODEMIGRATE_SOURCE_DIST,NODEMIGRATE_TEST_LOG,NODEMIGRATE_CILIUM_KPR,NODEMIGRATE_METRICS_SERVER,NODEMIGRATE_NODEACTIVATOR,NODEMIGRATE_NODEACTIVATOR_IMAGE,NODEBOOTSTRAP_NODEACTIVATOR_IMAGE \
             bash .github/scripts/nodemigrate-integration.sh
 
       - name: Upload test log

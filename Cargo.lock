@@ -1833,6 +1833,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "nodeactivator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "bytes",
+ "chrono",
+ "futures",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "k8s-openapi",
+ "kube",
+ "reqwest",
+ "rustls",
+ "rustls-pemfile",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "nodeapiserver"
 version = "0.1.0"
 dependencies = [
@@ -1968,6 +1993,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
@@ -1987,9 +2013,11 @@ name = "nodemigrate"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "k8s-openapi",
  "kube",
  "libc",
+ "rustls",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2853,6 +2881,7 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",

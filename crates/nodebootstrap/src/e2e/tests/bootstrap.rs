@@ -1452,6 +1452,91 @@ pub(super) async fn nodeapiserver_rejects_invalid_builtin_schema_constraints(
     }
 }
 
+pub(super) async fn nodeapiserver_hpa_scale_to_zero_validation(
+    context: &E2eContext,
+) -> Result<()> {
+    let cfg = crate::config::Config::from_env()?;
+    if !matches!(cfg.target, crate::config::Target::NodeApiserver) {
+        return Err(skip_test(
+            "HPA scale-to-zero validation is only exercised against nodeapiserver",
+        ));
+    }
+
+    let hpa_uri = format!(
+        "/apis/autoscaling/v2/namespaces/{}/horizontalpodautoscalers",
+        context.namespace
+    );
+    let target = json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "name": "not-created-hpa-target"
+    });
+    let request = Request::builder()
+        .method("POST")
+        .uri(&hpa_uri)
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&json!({
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {
+                "name": format!("hpa-zero-external-{}", std::process::id()),
+                "namespace": context.namespace
+            },
+            "spec": {
+                "scaleTargetRef": target.clone(),
+                "minReplicas": 0,
+                "maxReplicas": 3,
+                "metrics": [{
+                    "type": "External",
+                    "external": {
+                        "metric": {"name": "queue_depth"},
+                        "target": {"type": "Value", "value": "1"}
+                    }
+                }]
+            }
+        }))?)?;
+    let accepted = context.client.request::<Value>(request).await?;
+    anyhow::ensure!(
+        accepted.pointer("/spec/minReplicas").and_then(Value::as_i64) == Some(0),
+        "nodeapiserver did not preserve minReplicas: 0 for an External metric: {accepted}"
+    );
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(&hpa_uri)
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&json!({
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {
+                "name": format!("hpa-zero-resource-{}", std::process::id()),
+                "namespace": context.namespace
+            },
+            "spec": {
+                "scaleTargetRef": target,
+                "minReplicas": 0,
+                "maxReplicas": 3,
+                "metrics": [{
+                    "type": "Resource",
+                    "resource": {
+                        "name": "cpu",
+                        "target": {"type": "Utilization", "averageUtilization": 50}
+                    }
+                }]
+            }
+        }))?)?;
+    match context.client.request::<Value>(request).await {
+        Err(KubeError::Api(error)) if error.code == 422 => {}
+        Err(error) => anyhow::bail!(
+            "minReplicas: 0 with only a Resource metric returned the wrong API error: {error}"
+        ),
+        Ok(value) => anyhow::bail!(
+            "nodeapiserver accepted minReplicas: 0 with only a Resource metric: {value}"
+        ),
+    }
+    Ok(())
+}
+
 pub(super) async fn nodeapiserver_rejects_invalid_metadata_keys(
     context: &E2eContext,
 ) -> Result<()> {

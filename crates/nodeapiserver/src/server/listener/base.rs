@@ -330,6 +330,10 @@ fn decode_virtual_request(bytes: &[u8], content_type: Option<&str>, group: &str,
         negotiation::Format::Protobuf => {
             let (api_version, body_kind, raw) = crate::codec::protobuf::unwrap_unknown(bytes).map_err(|e| e.to_string())?;
             let expected_version = if group.is_empty() { version.to_string() } else { format!("{group}/{version}") };
+            // DELETE requests may encode virtual metav1 DeleteOptions using
+            // either the canonical metadata version or the request
+            // resource's API version in the protobuf envelope. Decode its
+            // stable metav1 schema while retaining strict GVK checks.
             if body_kind != kind || (api_version != expected_version
                 && !(kind == "DeleteOptions" && api_version == "meta.k8s.io/v1")) {
                 return Err(format!("expected {expected_version} {kind}, got {api_version} {body_kind}"));

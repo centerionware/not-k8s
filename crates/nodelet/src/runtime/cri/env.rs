@@ -569,6 +569,19 @@ pub(crate) fn pod_field_value(pod: &Pod, field_path: &str) -> Option<String> {
     }
 }
 
+pub(crate) fn pod_env_field_value(
+    pod: &Pod,
+    field_path: &str,
+    sandbox_ip: Option<&str>,
+) -> Option<String> {
+    // Downward-API env is expanded before the Pod status write can expose its
+    // IP. The CRI sandbox already has the assigned address at that point.
+    pod_field_value(pod, field_path).or_else(|| match field_path {
+        "status.podIP" | "status.podIPs" => sandbox_ip.map(str::to_string),
+        _ => None,
+    })
+}
+
 
 impl CriRuntime {
     pub(crate) async fn resolve_service_env(&self, namespace: &str, enable_service_links: bool) -> Result<BTreeMap<String, Vec<u8>>> {
@@ -625,6 +638,7 @@ impl CriRuntime {
         pod: &Pod,
         id: &PodId,
         container: &k8s_openapi::api::core::v1::Container,
+        sandbox_ip: Option<&str>,
     ) -> Result<Option<Vec<u8>>> {
         if let Some(reference) = &source.config_map_key_ref {
             let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &id.namespace);
@@ -655,7 +669,7 @@ impl CriRuntime {
         }
 
         if let Some(reference) = &source.field_ref {
-            let value = pod_field_value(pod, &reference.field_path)
+            let value = pod_env_field_value(pod, &reference.field_path, sandbox_ip)
                 .with_context(|| format!("unsupported or unavailable fieldRef {}", reference.field_path))?;
             return Ok(Some(value.into_bytes()));
         }
@@ -679,6 +693,7 @@ impl CriRuntime {
         id: &PodId,
         container: &k8s_openapi::api::core::v1::Container,
         service_env: &BTreeMap<String, Vec<u8>>,
+        sandbox_id: &str,
     ) -> Result<Vec<KeyValue>> {
         let mut values = service_env.clone();
 
@@ -688,9 +703,28 @@ impl CriRuntime {
             }
         }
 
-        for env in container.env.as_deref().unwrap_or(&[]) {
+        let env_vars = container.env.as_deref().unwrap_or(&[]);
+        let needs_sandbox_ip = env_vars.iter().any(|env| {
+            env.value_from
+                .as_ref()
+                .and_then(|source| source.field_ref.as_ref())
+                .is_some_and(|reference| {
+                    matches!(reference.field_path.as_str(), "status.podIP" | "status.podIPs")
+                        && pod_field_value(pod, &reference.field_path).is_none()
+                })
+        });
+        let sandbox_ip = if needs_sandbox_ip {
+            self.pod_ip(sandbox_id).await
+        } else {
+            None
+        };
+
+        for env in env_vars {
             if let Some(source) = &env.value_from {
-                if let Some(value) = self.resolve_env_var_source(source, pod, id, container).await? {
+                if let Some(value) = self
+                    .resolve_env_var_source(source, pod, id, container, sandbox_ip.as_deref())
+                    .await?
+                {
                     values.insert(env.name.clone(), value);
                 }
             } else {

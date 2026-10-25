@@ -353,8 +353,9 @@ async fn handle(
         && info.subresource.is_empty();
     let is_certificate_status_subresource = info.is_resource_request
         && info.api_group == "certificates.k8s.io"
-        && info.resource == "certificatesigningrequests"
-        && matches!(info.subresource.as_str(), "approval" | "status");
+        && ((info.resource == "certificatesigningrequests"
+            && matches!(info.subresource.as_str(), "approval" | "status"))
+            || (info.resource == "podcertificaterequests" && info.subresource == "status"));
     // `watch` (no name — `path::parse` already tells a namefull `watch`
     // apart, though real upstream's own single-resource watch form isn't
     // handled specially here either way today) is deliberately handled in

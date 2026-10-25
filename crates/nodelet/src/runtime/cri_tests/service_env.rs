@@ -79,3 +79,28 @@ fn resolves_common_downward_api_field_refs() {
     assert_eq!(pod_field_value(&pod, "metadata.namespace"), Some("kube-system".to_string()));
     assert_eq!(pod_field_value(&pod, "metadata.uid"), Some("pod-uid".to_string()));
 }
+
+#[test]
+fn pod_ip_env_field_ref_uses_the_assigned_sandbox_ip_before_status_is_written() {
+    let pod = Pod::default();
+    assert_eq!(
+        pod_env_field_value(&pod, "status.podIP", Some("10.42.0.7")),
+        Some("10.42.0.7".to_string())
+    );
+    assert_eq!(
+        pod_env_field_value(&pod, "status.podIPs", Some("10.42.0.7")),
+        Some("10.42.0.7".to_string())
+    );
+
+    let pod = Pod {
+        status: Some(k8s_openapi::api::core::v1::PodStatus {
+            pod_ip: Some("10.42.0.8".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        pod_env_field_value(&pod, "status.podIP", Some("10.42.0.7")),
+        Some("10.42.0.8".to_string())
+    );
+}

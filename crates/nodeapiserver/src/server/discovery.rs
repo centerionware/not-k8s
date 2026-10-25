@@ -73,6 +73,7 @@ fn short_names_for(group: &str, resource: &str) -> &'static [&'static str] {
         ("apps", "deployments") => &["deploy"],
         ("apps", "replicasets") => &["rs"],
         ("apps", "statefulsets") => &["sts"],
+        ("autoscaling", "horizontalpodautoscalers") => &["hpa"],
         ("batch", "cronjobs") => &["cj"],
         ("batch", "jobs") => &["job"],
         ("certificates.k8s.io", "certificatesigningrequests") => &["csr"],
@@ -434,6 +435,7 @@ fn group_discovery_value(group: &str) -> Value {
             let mut sorted: Vec<&codegen::api_resources::ApiResource> = resources.map(|r| r.iter().copied().collect()).unwrap_or_default();
             sorted.sort_by_key(|r| r.resource);
             let resource_values: Vec<Value> = sorted.iter().map(|r| api_resource_discovery_value(r)).collect();
+            let resource_values = nest_api_group_subresources(resource_values);
             json!({
                 "version": version,
                 "resources": resource_values,
@@ -518,7 +520,8 @@ fn group_discovery_value_with_resources(
             let resources = codegen::api_resources_by_group_version().get(&(group, version.as_str()));
             let mut sorted: Vec<&codegen::api_resources::ApiResource> = resources.map(|r| r.iter().copied().collect()).unwrap_or_default();
             sorted.sort_by_key(|r| r.resource);
-            let mut resource_values: Vec<Value> = sorted.iter().map(|r| api_resource_discovery_value(r)).collect();
+            let resource_values: Vec<Value> = sorted.iter().map(|r| api_resource_discovery_value(r)).collect();
+            let mut resource_values = nest_api_group_subresources(resource_values);
             resource_values.extend(crds.iter().filter(|r| r.group == group && &r.version == version).map(crd_resource_discovery_value));
             if let Some((_, _, remote_list)) = resource_lists.iter().find(|(remote_group, remote_version, _)| remote_group == group && remote_version == version) {
                 resource_values.extend(aggregated_resource_discovery_values(group, version, remote_list));
@@ -536,6 +539,48 @@ fn group_discovery_value_with_resources(
         "metadata": {"name": group},
         "versions": version_values,
     })
+}
+
+/// APIGroupDiscovery v2 nests subresources beneath their parent resource.
+/// The generated OpenAPI table stores each path as `parent/subresource`,
+/// matching legacy APIResourceList discovery; translate that representation
+/// before serving the v2 document.
+fn nest_api_group_subresources(resources: Vec<Value>) -> Vec<Value> {
+    let mut parents = BTreeMap::<String, Value>::new();
+    let mut subresources = BTreeMap::<String, Vec<Value>>::new();
+    for resource in resources {
+        let Some(name) = resource
+            .get("resource")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let Some((parent, subresource)) = name.split_once('/') else {
+            let mut resource = resource;
+            resource["subresources"] = json!([]);
+            parents.insert(name, resource);
+            continue;
+        };
+        if subresource.is_empty() {
+            continue;
+        }
+        let mut value = json!({
+            "subresource": subresource,
+            "verbs": resource.get("verbs").cloned().unwrap_or_else(|| json!([])),
+        });
+        if let Some(response_kind) = resource.get("responseKind") {
+            value["responseKind"] = response_kind.clone();
+        }
+        subresources.entry(parent.to_string()).or_default().push(value);
+    }
+    for (parent, children) in subresources {
+        let entry = parents
+            .entry(parent.clone())
+            .or_insert_with(|| json!({"resource": parent, "subresources": []}));
+        entry["subresources"] = json!(children);
+    }
+    parents.into_values().collect()
 }
 
 /// Converts an aggregated backend's APIResourceList into APIGroupDiscovery
@@ -707,6 +752,16 @@ mod tests {
             .find(|resource| resource["name"] == "persistentvolumeclaims")
             .expect("persistentvolumeclaims should be listed");
         assert_eq!(pvc["shortNames"], json!(["pvc"]));
+
+        let autoscaling = api_resource_list("autoscaling", "v2")
+            .expect("autoscaling/v2 should be served");
+        let hpa = autoscaling["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource| resource["name"] == "horizontalpodautoscalers")
+            .expect("horizontalpodautoscalers should be listed");
+        assert_eq!(hpa["shortNames"], json!(["hpa"]));
     }
 
     #[test]
@@ -735,6 +790,51 @@ mod tests {
         let list = api_group_discovery_list();
         assert_eq!(list["kind"], "APIGroupDiscoveryList");
         assert_eq!(list["apiVersion"], "apidiscovery.k8s.io/v2");
+    }
+
+    #[test]
+    fn aggregated_discovery_nests_builtin_scale_under_its_workload() {
+        let lists = [
+            api_group_discovery_list(),
+            api_group_discovery_list_with_aggregated_resources(&[], &[], &[]),
+        ];
+        for list in lists {
+            let apps = list["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|group| group["metadata"]["name"] == "apps")
+                .expect("apps group should be discoverable");
+            let v1 = apps["versions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|version| version["version"] == "v1")
+                .expect("apps/v1 should be discoverable");
+            let resources = v1["resources"].as_array().unwrap();
+            let deployments = resources
+                .iter()
+                .find(|resource| resource["resource"] == "deployments")
+                .expect("Deployment should be discoverable");
+            let scale = deployments["subresources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|subresource| subresource["subresource"] == "scale")
+                .expect("Deployment scale should be nested in v2 discovery");
+
+            assert_eq!(
+                scale["responseKind"],
+                json!({"group": "autoscaling", "version": "v1", "kind": "Scale"})
+            );
+            assert_eq!(scale["verbs"], json!(["get", "patch", "update"]));
+            assert!(resources.iter().all(|resource| {
+                !resource["resource"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains('/')
+            }));
+        }
     }
 
     #[test]

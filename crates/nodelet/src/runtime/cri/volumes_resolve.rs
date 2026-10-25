@@ -49,9 +49,12 @@ impl CriRuntime {
                 let optional = cm.optional.unwrap_or(false);
                 match Api::<ConfigMap>::namespaced(self.client.clone(), &id.namespace).get(name).await {
                     Ok(obj) => {
-                        if let Err(e) = write_volume_dir(&vol_dir, obj.data, obj.binary_data.map(|m| {
-                            m.into_iter().map(|(k, v)| (k, v.0)).collect()
-                        })) {
+                        if let Err(e) = write_projected_keys(
+                            &vol_dir,
+                            obj.data,
+                            obj.binary_data.map(|m| m.into_iter().map(|(k, v)| (k, v.0)).collect()),
+                            cm.items.as_deref(),
+                        ) {
                             warn!(volume = %v.name, configmap = %name, error = ?e, "failed to materialize ConfigMap volume");
                             continue;
                         }
@@ -71,7 +74,7 @@ impl CriRuntime {
                 match Api::<Secret>::namespaced(self.client.clone(), &id.namespace).get(name).await {
                     Ok(obj) => {
                         let bin = obj.data.map(|m| m.into_iter().map(|(k, v)| (k, v.0)).collect());
-                        if let Err(e) = write_volume_dir(&vol_dir, obj.string_data, bin) {
+                        if let Err(e) = write_projected_keys(&vol_dir, obj.string_data, bin, sec.items.as_deref()) {
                             warn!(volume = %v.name, secret = %name, error = ?e, "failed to materialize Secret volume");
                             continue;
                         }
@@ -344,7 +347,7 @@ impl CriRuntime {
         id: &PodId,
         projected: &k8s_openapi::api::core::v1::ProjectedVolumeSource,
     ) -> Result<()> {
-        for source in projected.sources.as_deref().unwrap_or(&[]) {
+        for (source_index, source) in projected.sources.as_deref().unwrap_or(&[]).iter().enumerate() {
             if let Some(cm) = &source.config_map {
                 let optional = cm.optional.unwrap_or(false);
                 match Api::<ConfigMap>::namespaced(self.client.clone(), &id.namespace).get(&cm.name).await {
@@ -412,6 +415,9 @@ impl CriRuntime {
                         );
                     }
                 }
+            } else if let Some(pod_certificate) = &source.pod_certificate {
+                self.write_pod_certificate_projection(dir, pod, id, source_index, pod_certificate)
+                    .await?;
             } else if source.cluster_trust_bundle.is_some() {
                 warn!(
                     pod = %format!("{}/{}", id.namespace, id.name),

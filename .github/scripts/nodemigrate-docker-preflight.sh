@@ -92,6 +92,10 @@ awk '$1 == "nameserver" { print "  " $2 }' "$UPSTREAM_RESOLV_CONF"
 echo "Loading kernel modules on the Docker host for privileged node containers"
 sudo modprobe overlay
 sudo modprobe br_netfilter
+echo "Raising the Docker host inotify instance limit for five nested kubelets"
+sudo sysctl --write fs.inotify.max_user_instances=1024
+[[ "$(< /proc/sys/fs/inotify/max_user_instances)" -ge 1024 ]] \
+    || fail "Docker host inotify instance limit is below 1024"
 docker network create --driver bridge "$NETWORK" >/dev/null
 
 echo "Creating five privileged systemd node containers on Docker network $NETWORK"
@@ -108,6 +112,7 @@ for node in "${NODES[@]}"; do
         --network-alias "$node" \
         --privileged \
         --cgroupns=private \
+        --ulimit nofile=1048576:1048576 \
         --tmpfs /run:rw,nosuid,nodev,mode=0755 \
         --tmpfs /run/lock:rw,nosuid,nodev,mode=0755 \
         --volume /boot:/boot:ro \
@@ -460,13 +465,67 @@ read -r -a join_args <<<"$join_command"
     || fail "kubeadm returned an unexpected join command: $join_command"
 
 echo "Joining cp-2 and cp-3 to the stacked-etcd control plane"
+for node in cp-1 cp-2 cp-3; do
+    container="$(node_container "$node")"
+    echo "Node resource limits for $node:"
+    docker exec "$container" bash -ec '
+        printf "open-file soft/hard: "
+        ulimit -Sn; ulimit -Hn
+        printf "inotify instances/watches: "
+        cat /proc/sys/fs/inotify/max_user_instances /proc/sys/fs/inotify/max_user_watches | paste -sd / -
+        printf "system file handles (allocated/free/max): "
+        cat /proc/sys/fs/file-nr | tr "\\n" " "
+        printf "\\n"
+    '
+done
+control_plane_version="$(docker exec "$cp1" kubeadm version -o short)"
+etcd_image="$(docker exec "$cp1" kubeadm config images list \
+    --kubernetes-version "$control_plane_version" | awk '/\/etcd:/ { print; exit }')"
+[[ -n "$etcd_image" ]] || fail "kubeadm did not report the etcd image for $control_plane_version"
+echo "Pre-pulling kubeadm etcd image $etcd_image on joining control-plane nodes"
+for node in cp-2 cp-3; do
+    docker exec "$(node_container "$node")" ctr -n k8s.io images pull "$etcd_image"
+done
+
 for node in cp-2 cp-3; do
     node_ip="$(node_ip "$node")"
-    docker exec "$(node_container "$node")" "${join_args[@]}" \
+    if ! docker exec "$(node_container "$node")" "${join_args[@]}" \
         --control-plane \
         --certificate-key "$certificate_key" \
         --apiserver-advertise-address="$node_ip" \
-        --cri-socket=unix:///run/containerd/containerd.sock
+        --cri-socket=unix:///run/containerd/containerd.sock; then
+        echo "$node kubeadm control-plane join failed; collecting cluster diagnostics"
+        collect_cluster_diagnostics
+        exit 1
+    fi
+    if [[ "$node" == cp-2 ]]; then
+        echo "Waiting for cp-2 etcd and API server static Pods to become Ready before joining cp-3"
+        if ! docker exec "$cp1" bash -ec '
+            export KUBECONFIG=/etc/kubernetes/admin.conf
+            wait_for_ready_pod() {
+                local name="$1" deadline=$((SECONDS + 300)) pod_json
+                while (( SECONDS < deadline )); do
+                    pod_json="$(kubectl get pod "$name" -n kube-system -o json 2>/dev/null || true)"
+                    if [[ -n "$pod_json" ]] && jq -e "any(.status.conditions[]?; .type == \"Ready\" and .status == \"True\")" \
+                        <<<"$pod_json" >/dev/null; then
+                        echo "Pod $name exists and is Ready"
+                        return 0
+                    fi
+                    sleep 2
+                done
+                echo "Pod $name did not become Ready within 5 minutes" >&2
+                kubectl get pod "$name" -n kube-system -o yaml >&2 || true
+                return 1
+            }
+            wait_for_ready_pod etcd-cp-2
+            wait_for_ready_pod kube-apiserver-cp-2
+            kubectl get --raw="/readyz?verbose" | grep -F "[+]etcd ok"
+        '; then
+            echo "cp-2 did not join a healthy stacked-etcd control plane; collecting diagnostics"
+            collect_cluster_diagnostics
+            exit 1
+        fi
+    fi
 done
 
 echo "Joining worker-1 and worker-2 to the upstream cluster"

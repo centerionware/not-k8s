@@ -1,5 +1,19 @@
 use super::*;
 
+fn spawn_pod_sandbox_request<F, T>(
+    request: F,
+    ensure_guard: tokio::sync::OwnedMutexGuard<()>,
+) -> tokio::task::JoinHandle<(T, tokio::sync::OwnedMutexGuard<()>)>
+where
+    F: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::spawn(async move {
+        let response = request.await;
+        (response, ensure_guard)
+    })
+}
+
 /// Identity extracted from a Pod object.
 pub(crate) struct PodId {
     pub(crate) namespace: String,
@@ -425,7 +439,8 @@ impl CriRuntime {
         pod_sc: Option<&PodSecurityContext>,
         port_mappings: Vec<PortMapping>,
         privileged: bool,
-    ) -> Result<String> {
+        ensure_guard: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<(String, tokio::sync::OwnedMutexGuard<()>)> {
         let mut rt = self.rt.clone();
         // spec.hostUsers: false (round 25) — allocate this pod an exclusive
         // host UID/GID range (keyed by pod uid, stable across reconciles/
@@ -458,11 +473,23 @@ impl CriRuntime {
             cgroup_parent = %linux.cgroup_parent,
             "creating pod sandbox with CRI cgroup parent"
         );
-        let resp = rt
-            .run_pod_sandbox(RunPodSandboxRequest { config: Some(config), runtime_handler })
-            .await?
-            .into_inner();
-        Ok(resp.pod_sandbox_id)
+        // The Pod reconcile has a 30-second timeout so a slow CRI call cannot
+        // hold the watch worker indefinitely. Dropping a tonic RunPodSandbox
+        // future when that timeout fires can leave containerd's sandbox-name
+        // reservation behind. Keep both the request and the per-Pod lifecycle
+        // guard in a detached task: a later reconcile waits for this exact
+        // request to finish, then discovers its result through CRI before it
+        // can issue another create for the same Pod UID/name.
+        let request = RunPodSandboxRequest {
+            config: Some(config),
+            runtime_handler,
+        };
+        let request_future = async move { rt.run_pod_sandbox(request).await };
+        let (response, ensure_guard) = spawn_pod_sandbox_request(request_future, ensure_guard)
+            .await
+            .context("waiting for the in-flight CRI RunPodSandbox request")?;
+        let sandbox_id = response?.into_inner().pod_sandbox_id;
+        Ok((sandbox_id, ensure_guard))
     }
 
     /// Resolve `spec.runtimeClassName` to a CRI runtime handler name (e.g.
@@ -526,6 +553,20 @@ pub(crate) fn select_pod_sandbox(
         .map(|(sandbox, uid)| (sandbox.id, sandbox.state, uid))
 }
 
+/// Return all sandboxes for a Pod that must be removed before a stale Pod is
+/// recreated. The selected sandbox triggers the recreation decision, but all
+/// candidates can reserve the CRI-generated name.
+pub(crate) fn stale_sandboxes_to_remove(
+    sandboxes: Vec<v1::PodSandbox>,
+    selected_id: &str,
+) -> Result<Vec<v1::PodSandbox>> {
+    anyhow::ensure!(
+        sandboxes.iter().any(|sandbox| sandbox.id == selected_id),
+        "selected stale Pod sandbox {selected_id} disappeared before cleanup"
+    );
+    Ok(sandboxes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,5 +586,45 @@ mod tests {
         assert!(sandbox_matches_pod(&sandbox, "kube-system", "coredns-abc"));
         assert!(!sandbox_matches_pod(&sandbox, "default", "coredns-abc"));
         assert!(!sandbox_matches_pod(&sandbox, "kube-system", "coredns-other"));
+    }
+
+    #[test]
+    fn stale_recreation_cleans_every_source_and_target_sandbox() {
+        let sandbox = |id: &str| v1::PodSandbox {
+            id: id.to_string(),
+            ..Default::default()
+        };
+        let stale = stale_sandboxes_to_remove(
+            vec![sandbox("source-runtime"), sandbox("target-runtime")],
+            "target-runtime",
+        )
+        .unwrap();
+
+        assert_eq!(
+            stale.iter().map(|sandbox| sandbox.id.as_str()).collect::<Vec<_>>(),
+            ["source-runtime", "target-runtime"]
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_reconcile_keeps_pod_lock_until_sandbox_request_finishes() {
+        let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        let guard = lock.clone().lock_owned().await;
+        let (finish_request, request_finished) = tokio::sync::oneshot::channel();
+        let task = spawn_pod_sandbox_request(
+            async move {
+                request_finished.await.expect("request completion signal");
+            },
+            guard,
+        );
+
+        // Dropping the timed-out reconcile detaches the RPC task, which still
+        // owns the per-Pod lock and prevents a second same-name CRI request.
+        drop(task);
+        assert!(lock.try_lock().is_err());
+        finish_request.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), lock.lock())
+            .await
+            .expect("detached CRI request to finish and release the Pod lock");
     }
 }

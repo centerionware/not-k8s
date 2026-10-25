@@ -64,6 +64,20 @@ grep -Fq 'lifecycle=controller-generated-rollout-history' <<< "$output" || {
     exit 1
 }
 
+cat > "$temporary_directory/source-objects.jsonl" <<'OBJECTS'
+{"identity":{"apiGroup":"apps","kind":"ReplicaSet","name":"sample-1234","namespace":"test"},"sha256":"source","fields":{"/metadata/annotations/deployment.kubernetes.io~1desired-replicas":"one","/metadata/annotations/deployment.kubernetes.io~1max-replicas":"three","/metadata/labels":"same"}}
+OBJECTS
+cat > "$temporary_directory/target-objects.jsonl" <<'OBJECTS'
+{"identity":{"apiGroup":"apps","kind":"ReplicaSet","name":"sample-1234","namespace":"test"},"sha256":"target","fields":{"/metadata/annotations/deployment.kubernetes.io~1desired-replicas":"three","/metadata/annotations/deployment.kubernetes.io~1max-replicas":"five","/metadata/labels":"same"}}
+OBJECTS
+NODEMIGRATE_INTEGRATION_LIBRARY=true bash -c '
+  source "$1/.github/scripts/nodemigrate-integration.sh"
+  assert_migratable_api_objects_unchanged "$2/source-objects.jsonl" "$2/target-objects.jsonl" source returned
+' _ "$ROOT" "$temporary_directory"
+
+cat > "$temporary_directory/source-objects.jsonl" <<'OBJECTS'
+{"identity":{"apiGroup":"apps","kind":"Deployment","name":"sample","namespace":"test"},"sha256":"same","fields":{"/spec/replicas":"same"}}
+OBJECTS
 cat > "$temporary_directory/target-objects.jsonl" <<'OBJECTS'
 {"identity":{"apiGroup":"apps","kind":"Deployment","name":"sample","namespace":"test"},"sha256":"changed","fields":{"/spec/replicas":"changed"}}
 {"identity":{"apiGroup":"apps","kind":"ReplicaSet","name":"target-runtime-1234","namespace":"kube-system"},"sha256":"target-only","lifecycleClass":"controller-generated-rollout-history"}

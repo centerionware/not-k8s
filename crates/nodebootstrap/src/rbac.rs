@@ -131,7 +131,9 @@
 //! opens; they do not broaden either component's write permissions.
 
 use anyhow::{Context, Result};
-use k8s_openapi::api::authorization::v1::{ResourceAttributes, SubjectAccessReview, SubjectAccessReviewSpec};
+use k8s_openapi::api::authorization::v1::{
+    NonResourceAttributes, ResourceAttributes, SubjectAccessReview, SubjectAccessReviewSpec,
+};
 use k8s_openapi::api::rbac::v1::ClusterRole;
 use kube::api::{Api, PostParams};
 
@@ -166,13 +168,13 @@ const CONTROLLER_SA_NAMES: &[&str] = &[
     "ephemeral-volume-controller",
     "certificate-controller",
     "disruption-controller",
+    "horizontal-pod-autoscaler",
 ];
 
-/// `(sa_name, apiGroup, resource)` -- Finding #4's `patch` verb supplement.
-/// One entry per `.patch()`/`.patch_status()` call site found in
-/// `crates/nodecontroller/src/controllers/*.rs`, traced to the exact
-/// `Api<T>` (and, for `patch_status`, the `/status` subresource) each call
-/// targets. Controllers with no entry here (`service-account-controller`,
+/// `(sa_name, apiGroup, resource)` -- narrow controller write supplements.
+/// Entries cover `.patch()`/`.patch_status()` call sites and the HPA's Scale
+/// subresource reads, traced to the exact `Api<T>` each call targets.
+/// Controllers with no entry here (`service-account-controller`,
 /// `namespace-controller`, `generic-garbage-collector`, `ttl-after-
 /// finished-controller`, `attachdetach-controller`) have no `.patch()`
 /// call in their own file -- nothing to grant.
@@ -182,6 +184,11 @@ const CONTROLLER_PATCH_GRANTS: &[(&str, &str, &str)] = &[
     ("daemon-set-controller", "apps", "daemonsets/status"),
     ("endpointslice-controller", "discovery.k8s.io", "endpointslices"),
     ("disruption-controller", "policy", "poddisruptionbudgets/status"),
+    ("horizontal-pod-autoscaler", "autoscaling", "horizontalpodautoscalers/status"),
+    ("horizontal-pod-autoscaler", "apps", "deployments/scale"),
+    ("horizontal-pod-autoscaler", "apps", "replicasets/scale"),
+    ("horizontal-pod-autoscaler", "apps", "statefulsets/scale"),
+    ("horizontal-pod-autoscaler", "", "replicationcontrollers/scale"),
     ("node-controller", "", "nodes"),
     ("resource-claim-controller", "", "pods/status"),
     ("persistent-volume-binder", "", "persistentvolumes"),
@@ -250,6 +257,10 @@ const NODECONTROLLER_READ_GRANTS: &[(&str, &str)] = &[
     ("certificates.k8s.io", "certificatesigningrequests"),
     ("coordination.k8s.io", "leases"),
     ("policy", "poddisruptionbudgets"),
+    ("autoscaling", "horizontalpodautoscalers"),
+    ("metrics.k8s.io", "pods"),
+    ("custom.metrics.k8s.io", "*"),
+    ("external.metrics.k8s.io", "*"),
     ("storage.k8s.io", "storageclasses"),
     ("storage.k8s.io", "volumeattachments"),
     ("resource.k8s.io", "resourceclaimtemplates"),
@@ -270,6 +281,18 @@ fn base_read_checks() -> impl Iterator<Item = (&'static str, &'static str, &'sta
                 .iter()
                 .map(|&(group, resource)| ("system:kube-controller-manager", group, resource)),
         )
+}
+
+/// HPA scale discovery and other controller API mappings use Kubernetes' normal
+/// discovery endpoints. The upstream bootstrap role is resource-focused for
+/// this identity, so grant only the paths needed to discover core and named
+/// API groups.
+fn control_plane_discovery_checks() -> [(&'static str, &'static str); 3] {
+    [
+        ("system:kube-controller-manager", "/apis"),
+        ("system:kube-controller-manager", "/api/v1"),
+        ("system:kube-controller-manager", "/apis/apps/v1"),
+    ]
 }
 
 /// Supplements (does not replace) the built-in bootstrap roles -- see the
@@ -296,6 +319,9 @@ fn supplemental_grants() -> String {
             )
         })
         .collect();
+    let control_plane_discovery_rules = r#"- nonResourceURLs: ["/api", "/api/*", "/apis", "/apis/*"]
+  verbs: ["get"]
+"#;
     // Finding #4: bind each impersonated SA to the real, already-existing
     // `system:controller:<name>` ClusterRole by name -- not re-deriving its
     // rules -- under a binding name of this module's own, so this applies
@@ -322,9 +348,9 @@ subjects:
             )
         })
         .collect();
-    // Finding #4's actual fix: one ClusterRole+Binding per SA that appears
-    // in CONTROLLER_PATCH_GRANTS, one rule per (apiGroup, resource) entry
-    // for that SA.
+    // One ClusterRole+Binding per SA that appears in CONTROLLER_PATCH_GRANTS.
+    // Scale subresources need both get and patch for the HPA path; all other
+    // entries remain patch-only.
     let patch_grants: String = CONTROLLER_SA_NAMES
         .iter()
         .filter_map(|sa| {
@@ -332,8 +358,13 @@ subjects:
                 .iter()
                 .filter(|(entry_sa, _, _)| entry_sa == sa)
                 .map(|(_, group, resource)| {
+                    let verbs = if resource.ends_with("/scale") {
+                        "get, patch"
+                    } else {
+                        "patch"
+                    };
                     format!(
-                        "- apiGroups: [\"{group}\"]\n  resources: [\"{resource}\"]\n  verbs: [\"patch\"]\n"
+                        "- apiGroups: [\"{group}\"]\n  resources: [\"{resource}\"]\n  verbs: [{verbs}]\n"
                     )
                 })
                 .collect();
@@ -378,6 +409,25 @@ metadata:
   name: nodebootstrap:nodecontroller-watches
 rules:
 {controller_read_rules}---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nodebootstrap:control-plane-discovery
+rules:
+{control_plane_discovery_rules}---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodebootstrap:control-plane-discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nodebootstrap:control-plane-discovery
+subjects:
+- kind: User
+  name: system:kube-controller-manager
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -528,6 +578,24 @@ globalDefault: false
 description: " system-cluster-critical"
 ---
 "#;
+    // kube-apiserver's RBAC bootstrap policy creates this namespaced role so
+    // aggregated API servers can read only the delegated-auth configuration.
+    let extension_auth_reader_role = r#"
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: extension-apiserver-authentication-reader
+  namespace: kube-system
+  labels:
+    kubernetes.io/bootstrapping: rbac-defaults
+    rbac.authorization.k8s.io/autoupdate: "true"
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["extension-apiserver-authentication"]
+  verbs: ["get", "list", "watch"]
+---
+"#;
     let controller_roles: String = CONTROLLER_SA_NAMES
         .iter()
         .map(|name| {
@@ -548,7 +616,7 @@ rules:
         })
         .collect();
     format!(
-        r#"{system_priority_classes}
+        r#"{system_priority_classes}{extension_auth_reader_role}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -641,7 +709,7 @@ kind: ClusterRole
 metadata:
   name: system:discovery
 rules:
-- nonResourceURLs: ["/api", "/api/*", "/apis", "/apis/*", "/openapi", "/openapi/*", "/version", "/healthz", "/readyz", "/livez"]
+- nonResourceURLs: ["/api", "/api/*", "/apis", "/apis/*", "/openapi", "/openapi/*", "/version", "/version/", "/healthz", "/readyz", "/livez"]
   verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -670,7 +738,7 @@ kind: ClusterRole
 metadata:
   name: system:monitoring
 rules:
-- nonResourceURLs: ["/metrics", "/metrics/slis", "/livez", "/readyz", "/healthz", "/livez/*", "/readyz/*", "/healthz/*"]
+- nonResourceURLs: ["/metrics", "/metrics/slis", "/livez", "/readyz", "/healthz", "/livez/*", "/readyz/*", "/healthz/*", "/flagz", "/statusz"]
   verbs: ["get"]
 - apiGroups: [""]
   resources: ["nodes/metrics"]
@@ -816,7 +884,41 @@ fn verify_supplemental_grants(kubeconfig: &std::path::Path) -> Result<()> {
                 "RBAC authorizer never accepted watch permission for {identity} on {display_resource}"
             );
         }
-        tracing::info!("supplemental control-plane watch permissions accepted by the apiserver");
+        for (identity, path) in control_plane_discovery_checks() {
+            let mut authorized = false;
+            for _ in 0..50 {
+                let review = reviews
+                    .create(
+                        &PostParams::default(),
+                        &SubjectAccessReview {
+                            spec: SubjectAccessReviewSpec {
+                                user: Some(identity.to_string()),
+                                non_resource_attributes: Some(NonResourceAttributes {
+                                    path: Some(path.to_string()),
+                                    verb: Some("get".to_string()),
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .with_context(|| format!("checking RBAC for {identity} on {path}"))?;
+                if review.status.as_ref().is_some_and(|status| status.allowed) {
+                    authorized = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            anyhow::ensure!(
+                authorized,
+                "RBAC authorizer never accepted get permission for {identity} on {path}"
+            );
+        }
+        tracing::info!(
+            "supplemental control-plane watch and discovery permissions accepted by the apiserver"
+        );
         Ok(())
     })
 }
@@ -842,7 +944,10 @@ fn verify_bootstrap_rbac(kubeconfig: &std::path::Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{nodeapiserver_bootstrap, should_apply_nodeapiserver_bootstrap};
+    use super::{
+        control_plane_discovery_checks, nodeapiserver_bootstrap,
+        should_apply_nodeapiserver_bootstrap, supplemental_grants,
+    };
 
     #[test]
     fn nodeapiserver_bootstrap_contains_the_static_identities() {
@@ -858,6 +963,8 @@ mod tests {
             "name: system:discovery",
             "name: \"system:controller:replicaset-controller\"",
             "name: system:public-info-viewer",
+            "name: extension-apiserver-authentication-reader",
+            "resourceNames: [\"extension-apiserver-authentication\"]",
             "name: system:monitoring",
             "name: nodebootstrap:public-info-viewer",
             "name: system:unauthenticated",
@@ -881,5 +988,23 @@ mod tests {
             crate::config::Target::Upstream,
             false
         ));
+    }
+
+    #[test]
+    fn supplemental_policy_allows_control_plane_api_discovery() {
+        let manifest = supplemental_grants();
+        assert!(manifest.contains("name: nodebootstrap:control-plane-discovery"));
+        assert!(
+            manifest.contains("nonResourceURLs: [\"/api\", \"/api/*\", \"/apis\", \"/apis/*\"]")
+        );
+        assert!(manifest.contains("name: system:kube-controller-manager"));
+        assert_eq!(
+            control_plane_discovery_checks(),
+            [
+                ("system:kube-controller-manager", "/apis"),
+                ("system:kube-controller-manager", "/api/v1"),
+                ("system:kube-controller-manager", "/apis/apps/v1"),
+            ]
+        );
     }
 }

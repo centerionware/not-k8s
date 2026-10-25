@@ -98,6 +98,7 @@ async fn watch_response_body_streams_the_replay_then_live_events() {
     let body = watch_response_body(
         replay,
         rx,
+        Vec::new(),
         "Namespace".to_string(),
         "v1".to_string(),
         Vec::new(),
@@ -136,6 +137,7 @@ async fn watch_response_body_honors_bookmark_negotiation_and_timeout() {
     let body = watch_response_body(
         vec![bookmark.clone()],
         rx,
+        Vec::new(),
         "Namespace".to_string(),
         "v1".to_string(),
         Vec::new(),
@@ -160,6 +162,7 @@ async fn watch_response_body_honors_bookmark_negotiation_and_timeout() {
     let body = watch_response_body(
         Vec::new(),
         rx,
+        Vec::new(),
         "Namespace".to_string(),
         "v1".to_string(),
         Vec::new(),
@@ -202,6 +205,7 @@ async fn watch_response_body_sends_streaming_list_initial_events_end_bookmark() 
     let body = watch_response_body_with_initial_events(
         Vec::new(),
         rx,
+        Vec::new(),
         "Namespace".to_string(),
         "v1".to_string(),
         Vec::new(),
@@ -289,6 +293,7 @@ async fn watch_body_with_idle_guard_streams_and_tracks_frames() {
     let body = watch_response_body(
         replay,
         rx,
+        Vec::new(),
         "Namespace".to_string(),
         "v1".to_string(),
         Vec::new(),

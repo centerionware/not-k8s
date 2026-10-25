@@ -9,6 +9,22 @@ command -v jq >/dev/null 2>&1 || {
     exit 2
 }
 
+selected_addon_objects='{"items":[
+  {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"metrics-server","namespace":"kube-system"}},
+  {"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"nodeactivator-services"}},
+  {"apiVersion":"certificates.k8s.io/v1","kind":"PodCertificateRequest","metadata":{"name":"pod-a","namespace":"kube-system"},"spec":{"signerName":"nodeactivator.notk8s.io/serving"}}
+]}'
+selected_normalized="$(jq -c '.items[]' <<< "$selected_addon_objects" \
+    | NODEMIGRATE_METRICS_SERVER=true NODEMIGRATE_NODEACTIVATOR_IMAGE=registry.example/nodeactivator:v1 jq -cS -f "$FILTER")"
+[[ -z "$selected_normalized" ]] || {
+    echo "selected optional addon objects were included in source parity snapshots" >&2
+    exit 1
+}
+[[ "$(jq -cS -f "$FILTER" <<< '{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"metrics-server","namespace":"kube-system"}}')" != null ]] || {
+    echo "metrics-server Deployment was normalized away when its addon was not selected" >&2
+    exit 1
+}
+
 source_application="$(jq -cn '{items:[
   {apiVersion:"v1",kind:"ConfigMap",metadata:{name:"kube-root-ca.crt",namespace:"migration-apps",annotations:{"kubernetes.io/description":"source CA"}},data:{"ca.crt":"source-ca"}},
   {apiVersion:"apps/v1",kind:"StatefulSet",metadata:{name:"database",namespace:"migration-apps"},spec:{volumeClaimTemplates:[{apiVersion:"v1",kind:"PersistentVolumeClaim",metadata:{name:"data"},spec:{accessModes:["ReadWriteOnce"],resources:{requests:{storage:"1Gi"}}}}]}}
@@ -23,6 +39,40 @@ target_application="$(jq -cn '{items:[
 }
 jq -e 'all(.[]; .kind != "ConfigMap" or .name != "kube-root-ca.crt") and .[0].spec.volumeClaimTemplates[0].spec.resources.requests.storage == "1Gi"' \
     <<< "$(jq -cS -f "$APPLICATION_FILTER" <<< "$target_application")" >/dev/null
+
+source_hpa_application='{"items":[
+  {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"autoscaled","namespace":"migration-apps"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"autoscaled"}}}},
+  {"apiVersion":"autoscaling/v2","kind":"HorizontalPodAutoscaler","metadata":{"name":"autoscaled","namespace":"migration-apps"},"spec":{"scaleTargetRef":{"apiVersion":"apps/v1","kind":"Deployment","name":"autoscaled"},"minReplicas":0,"maxReplicas":3,"metrics":[{"type":"Resource","resource":{"name":"cpu","target":{"type":"Utilization","averageUtilization":50}}}]}}
+]} '
+target_hpa_application="${source_hpa_application/\"replicas\":1/\"replicas\":3}"
+[[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$source_hpa_application")" == "$(jq -cS -f "$APPLICATION_FILTER" <<< "$target_hpa_application")" ]] || {
+    echo "HPA-controlled Deployment replica changes altered the semantic fixture snapshot" >&2
+    exit 1
+}
+jq -e 'any(.[]; .kind == "HorizontalPodAutoscaler" and .spec.minReplicas == 0 and .spec.maxReplicas == 3)' \
+    <<< "$(jq -cS -f "$APPLICATION_FILTER" <<< "$target_hpa_application")" >/dev/null || {
+    echo "semantic fixture snapshot omitted the HPA policy" >&2
+    exit 1
+}
+changed_hpa_application="${target_hpa_application/\"maxReplicas\":3/\"maxReplicas\":4}"
+[[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$source_hpa_application")" != "$(jq -cS -f "$APPLICATION_FILTER" <<< "$changed_hpa_application")" ]] || {
+    echo "semantic fixture snapshot normalized away an HPA policy change" >&2
+    exit 1
+}
+without_hpa_application='{"items":[{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"autoscaled","namespace":"migration-apps"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"autoscaled"}}}}]}'
+changed_without_hpa_application="${without_hpa_application/\"replicas\":1/\"replicas\":3}"
+[[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$without_hpa_application")" != "$(jq -cS -f "$APPLICATION_FILTER" <<< "$changed_without_hpa_application")" ]] || {
+    echo "standalone Deployment desired replica changes were normalized away" >&2
+    exit 1
+}
+
+hpa_replicaset_source='{"items":[{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"autoscaled","namespace":"migration-apps"},"spec":{"replicas":1}},{"apiVersion":"autoscaling/v2","kind":"HorizontalPodAutoscaler","metadata":{"name":"autoscaled","namespace":"migration-apps"},"spec":{"scaleTargetRef":{"apiVersion":"apps/v1","kind":"Deployment","name":"autoscaled"},"minReplicas":0,"maxReplicas":3}},{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"autoscaled-abc","namespace":"migration-apps","ownerReferences":[{"apiVersion":"apps/v1","kind":"Deployment","name":"autoscaled","controller":true}],"annotations":{"deployment.kubernetes.io/desired-replicas":"1","deployment.kubernetes.io/max-replicas":"3"}},"spec":{"replicas":1}}]}'
+hpa_replicaset_target="${hpa_replicaset_source/\"desired-replicas\":\"1\"/\"desired-replicas\":\"3\"}"
+hpa_replicaset_target="${hpa_replicaset_target/\"max-replicas\":\"3\"/\"max-replicas\":\"4\"}"
+[[ "$(jq -cS -f "$APPLICATION_FILTER" <<< "$hpa_replicaset_source")" == "$(jq -cS -f "$APPLICATION_FILTER" <<< "$hpa_replicaset_target")" ]] || {
+    echo "HPA-managed ReplicaSet annotations altered the semantic fixture snapshot" >&2
+    exit 1
+}
 
 source_rc='{"items":[{"apiVersion":"v1","kind":"ReplicationController","metadata":{"name":"rc","namespace":"apps"},"spec":{"replicas":1,"selector":{"app":"rc"},"template":{"metadata":{"labels":{"app":"rc"}},"spec":{"containers":[{"name":"check","image":"busybox"}]}}}}]}'
 target_rc='{"items":[{"apiVersion":"v1","kind":"ReplicationController","metadata":{"name":"rc","namespace":"apps"},"spec":{"replicas":1,"selector":{"app":"rc"},"minReadySeconds":0,"template":{"metadata":{"labels":{"app":"rc"}},"spec":{"containers":[{"name":"check","image":"busybox"}]}}}}]}'

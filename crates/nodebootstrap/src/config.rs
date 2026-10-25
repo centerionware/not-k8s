@@ -5,6 +5,9 @@
 
 use anyhow::{Context, Result};
 
+pub const DEFAULT_NODEACTIVATOR_IMAGE: &str =
+    "ghcr.io/centerionware/not-k8s/nodeactivator:latest";
+
 const WITHOUT_FLANNEL_MARKER: &str = "without-flannel";
 const ADVERTISE_ADDRESS_MARKER: &str = "advertise-address";
 pub(crate) const DEFAULT_SERVICE_CIDR: &str = "10.43.0.0/16";
@@ -99,6 +102,10 @@ pub struct Config {
     pub skip_manifests: bool,
     /// Do not install or configure the in-cluster CoreDNS service.
     pub disable_dns: bool,
+    /// Install the upstream metrics-server addon in the cluster.
+    pub install_metrics_server: bool,
+    /// Optional image reference enabling the HTTP scale-from-zero activator.
+    pub nodeactivator_image: Option<String>,
     /// Remove nodebootstrap-managed services, files, and tracked packages.
     pub uninstall: bool,
     /// Mirrors `bootstrap-source.sh`'s `--proxy=none` -- skip installing
@@ -512,6 +519,9 @@ impl Config {
             skip_service_reconciler: flag("NODEBOOTSTRAP_SKIP_SERVICE_RECONCILER"),
             skip_manifests: flag("NODEBOOTSTRAP_SKIP_MANIFESTS"),
             disable_dns: flag("NODEBOOTSTRAP_DISABLE_DNS"),
+            install_metrics_server: flag("NODEBOOTSTRAP_METRICS_SERVER"),
+            nodeactivator_image: std::env::var("NODEBOOTSTRAP_NODEACTIVATOR_IMAGE")
+                .ok().filter(|value| !value.is_empty()),
             uninstall: flag("NODEBOOTSTRAP_UNINSTALL"),
             skip_nodeproxy: std::env::var("NODEBOOTSTRAP_PROXY").as_deref() == Ok("none") || control_plane,
             skip_nodelet: flag("NODEBOOTSTRAP_SKIP_NODELET") || control_plane,

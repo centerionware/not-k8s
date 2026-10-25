@@ -34,7 +34,7 @@ use serde_json::Value;
 
 use crate::{
     detect::{Installation, K3sDatastore},
-    request::Distribution,
+    request::{Distribution, MigrationRequest},
 };
 
 // These object kinds are not durable API inputs for the replacement:
@@ -52,6 +52,7 @@ const SKIP_KINDS: &[&str] = &[
     "Node",
     "NodeMetrics",
     "PodMetrics",
+    "PodCertificateRequest",
     "VolumeAttachment",
 ];
 
@@ -162,6 +163,8 @@ enum SkipReason {
     CiliumIdentityReconciliation,
     CiliumNodeReconciliation,
     NodebootstrapRuntimeRbac,
+    EphemeralPodCertificateRequest,
+    DestinationAddonReconciliation,
 }
 
 impl SkipReason {
@@ -204,6 +207,34 @@ impl SkipReason {
             Self::NodebootstrapRuntimeRbac => {
                 "nodebootstrap recreates this runtime-owned RBAC policy on the destination"
             }
+            Self::EphemeralPodCertificateRequest => {
+                "kubelet and signer controllers recreate this short-lived certificate request"
+            }
+            Self::DestinationAddonReconciliation => {
+                "the destination distribution recreates its selected system add-on"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ExportPolicy {
+    skip_metrics_server: bool,
+    skip_nodeactivator: bool,
+}
+
+impl ExportPolicy {
+    fn for_migration(source: &Installation, request: &MigrationRequest) -> Self {
+        let source_is_nodestore = source.distribution == Distribution::Nodestore;
+        Self {
+            // A selected target addon is installed by nodebootstrap. When
+            // exporting from nodestore, addon state is also owned by that
+            // distribution and must not be replayed into the retained
+            // upstream/K3s control plane during a return migration.
+            skip_metrics_server: source_is_nodestore || request.metrics_server,
+            skip_nodeactivator: source_is_nodestore
+                || request.nodeactivator
+                || request.nodeactivator_image.is_some(),
         }
     }
 }
@@ -2172,8 +2203,13 @@ impl KubeApi {
         })
     }
 
-    pub fn export(&self, installation: &Installation) -> Result<Export> {
+    pub fn export(
+        &self,
+        installation: &Installation,
+        request: &MigrationRequest,
+    ) -> Result<Export> {
         self.ready()?;
+        let export_policy = ExportPolicy::for_migration(installation, request);
         let node_name = installation_node_name(installation);
         let (runtime, client) = self.connected()?;
         let (objects, labels, node_states) = runtime.block_on(async {
@@ -2257,7 +2293,9 @@ impl KubeApi {
                                 let mut value = serde_json::to_value(object)
                                     .context("serializing Kubernetes object")?;
                                 preserve_discovered_type_meta(&mut value, &resource)?;
-                                if let Some(reason) = object_skip_reason(&value) {
+                                if let Some(reason) =
+                                    object_skip_reason_with_policy(&value, export_policy)
+                                {
                                     *summary.skipped_objects.entry(reason).or_default() += 1;
                                 } else {
                                     summary.migrated_objects += 1;
@@ -4487,6 +4525,191 @@ fn find_compatible_resource(
     None
 }
 
+/// Convert API-removed HPA representations into the stable representation
+/// served by current Kubernetes releases. Other kinds continue through the
+/// normal discovery-based version selection path.
+fn convert_hpa_api_version(value: &Value, destination_api_version: &str) -> Result<Value> {
+    if value.get("kind").and_then(Value::as_str) != Some("HorizontalPodAutoscaler")
+        || value.get("apiVersion").and_then(Value::as_str) == Some(destination_api_version)
+    {
+        return Ok(value.clone());
+    }
+    ensure!(
+        destination_api_version == "autoscaling/v2",
+        "cannot convert HorizontalPodAutoscaler to unsupported destination API {destination_api_version}"
+    );
+    let source_api_version = value
+        .get("apiVersion")
+        .and_then(Value::as_str)
+        .context("HorizontalPodAutoscaler has no apiVersion")?;
+    let mut converted = value.clone();
+    match source_api_version {
+        "autoscaling/v1" => convert_hpa_v1_spec(&mut converted)?,
+        "autoscaling/v2beta1" => convert_hpa_v2beta1_spec(&mut converted)?,
+        // v2beta2 already used the stable MetricTarget, MetricIdentifier,
+        // and describedObject shapes; only the removed version needs to
+        // change on the wire.
+        "autoscaling/v2beta2" => {}
+        _ => bail!("cannot convert unsupported HPA API version {source_api_version} to autoscaling/v2"),
+    }
+    converted["apiVersion"] = Value::String(destination_api_version.to_string());
+    Ok(converted)
+}
+
+fn convert_hpa_v1_spec(object: &mut Value) -> Result<()> {
+    let Some(spec) = object.pointer_mut("/spec").and_then(Value::as_object_mut) else {
+        bail!("autoscaling/v1 HorizontalPodAutoscaler has no spec object")
+    };
+    if let Some(target) = spec.remove("targetCPUUtilizationPercentage") {
+        let target = target
+            .as_i64()
+            .context("HPA spec.targetCPUUtilizationPercentage must be an integer")?;
+        spec.insert(
+            "metrics".to_string(),
+            serde_json::json!([{
+                "type": "Resource",
+                "resource": {
+                    "name": "cpu",
+                    "target": {
+                        "type": "Utilization",
+                        "averageUtilization": target
+                    }
+                }
+            }]),
+        );
+    }
+    Ok(())
+}
+
+fn convert_hpa_v2beta1_spec(object: &mut Value) -> Result<()> {
+    let Some(metrics) = object
+        .pointer_mut("/spec/metrics")
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(());
+    };
+    for metric in metrics {
+        let metric_type = metric
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .context("autoscaling/v2beta1 HPA metric has no type")?;
+        match metric_type.as_str() {
+            "Resource" | "ContainerResource" => {
+                let field = if metric_type == "Resource" {
+                    "resource"
+                } else {
+                    "containerResource"
+                };
+                let source = metric
+                    .get_mut(field)
+                    .and_then(Value::as_object_mut)
+                    .with_context(|| {
+                        format!(
+                            "autoscaling/v2beta1 {metric_type} HPA metric has no {field} object"
+                        )
+                    })?;
+                let target = legacy_metric_target(
+                    source,
+                    "targetAverageUtilization",
+                    "targetAverageValue",
+                    None,
+                )?;
+                source.insert("target".to_string(), target);
+            }
+            "Pods" => {
+                let source = metric
+                    .get_mut("pods")
+                    .and_then(Value::as_object_mut)
+                    .context("autoscaling/v2beta1 Pods HPA metric has no pods object")?;
+                let name = take_required_string(source, "metricName", "Pods metricName")?;
+                let selector = source.remove("selector");
+                let average = source
+                    .remove("targetAverageValue")
+                    .context("autoscaling/v2beta1 Pods metric has no targetAverageValue")?;
+                source.insert("metric".to_string(), metric_identifier(name, selector));
+                source.insert(
+                    "target".to_string(),
+                    serde_json::json!({"type":"AverageValue", "averageValue":average}),
+                );
+            }
+            "Object" => {
+                let source = metric
+                    .get_mut("object")
+                    .and_then(Value::as_object_mut)
+                    .context("autoscaling/v2beta1 Object HPA metric has no object")?;
+                let described_object = source
+                    .remove("target")
+                    .context("autoscaling/v2beta1 Object metric has no target object")?;
+                let name = take_required_string(source, "metricName", "Object metricName")?;
+                let selector = source.remove("selector");
+                let target = legacy_metric_target(source, "", "averageValue", Some("targetValue"))?;
+                source.insert("describedObject".to_string(), described_object);
+                source.insert("metric".to_string(), metric_identifier(name, selector));
+                source.insert("target".to_string(), target);
+            }
+            "External" => {
+                let source = metric
+                    .get_mut("external")
+                    .and_then(Value::as_object_mut)
+                    .context("autoscaling/v2beta1 External HPA metric has no external object")?;
+                let name = take_required_string(source, "metricName", "External metricName")?;
+                let selector = source.remove("metricSelector");
+                let target =
+                    legacy_metric_target(source, "", "targetAverageValue", Some("targetValue"))?;
+                source.insert("metric".to_string(), metric_identifier(name, selector));
+                source.insert("target".to_string(), target);
+            }
+            other => bail!("unsupported autoscaling/v2beta1 HPA metric type {other}"),
+        }
+    }
+    Ok(())
+}
+
+fn take_required_string(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+    description: &str,
+) -> Result<String> {
+    object
+        .remove(key)
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .with_context(|| format!("autoscaling/v2beta1 HPA has no {description}"))
+}
+
+fn metric_identifier(name: String, selector: Option<Value>) -> Value {
+    let mut identifier = serde_json::Map::from_iter([("name".to_string(), Value::String(name))]);
+    if let Some(selector) = selector {
+        identifier.insert("selector".to_string(), selector);
+    }
+    Value::Object(identifier)
+}
+
+fn legacy_metric_target(
+    source: &mut serde_json::Map<String, Value>,
+    utilization_key: &str,
+    average_key: &str,
+    value_key: Option<&str>,
+) -> Result<Value> {
+    if !utilization_key.is_empty() {
+        if let Some(utilization) = source.remove(utilization_key) {
+            return Ok(serde_json::json!({
+                "type": "Utilization",
+                "averageUtilization": utilization
+            }));
+        }
+    }
+    if let Some(average) = source.remove(average_key) {
+        return Ok(serde_json::json!({"type":"AverageValue", "averageValue":average}));
+    }
+    if let Some(value_key) = value_key {
+        if let Some(value) = source.remove(value_key) {
+            return Ok(serde_json::json!({"type":"Value", "value":value}));
+        }
+    }
+    bail!("autoscaling/v2beta1 HPA metric has no recognized target value")
+}
+
 fn preserve_discovered_type_meta(value: &mut Value, resource: &ApiResource) -> Result<()> {
     let object = value
         .as_object_mut()
@@ -4533,13 +4756,22 @@ async fn apply_object(
         capabilities.supports_operation(verbs::GET),
         "destination does not allow reading existing {kind} objects before migration"
     );
-    let mut apply_value = value.clone();
+    let mut apply_value = convert_hpa_api_version(value, &resource.api_version)
+        .context("converting HorizontalPodAutoscaler for the destination API")?;
     let source_was_running = apply_value
         .get("_nodemigrateSourceWasRunning")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let hpa_scaled_to_zero = apply_value
+        .get("_nodemigrateHpaScaledToZero")
+        .filter(|condition| {
+            condition.get("type").and_then(Value::as_str) == Some("ScaledToZero")
+                && condition.get("status").and_then(Value::as_str) == Some("True")
+        })
+        .cloned();
     if let Some(object) = apply_value.as_object_mut() {
         object.remove("_nodemigrateSourceWasRunning");
+        object.remove("_nodemigrateHpaScaledToZero");
     }
     let ephemeral_containers = take_pod_ephemeral_containers(&mut apply_value)
         .context("preparing Pod ephemeral containers for migration")?;
@@ -4727,6 +4959,13 @@ async fn apply_object(
         };
         match result {
             Ok(applied) => {
+                if let Some(condition) = &hpa_scaled_to_zero {
+                    restore_hpa_scaled_to_zero(&api, name, condition)
+                        .await
+                        .with_context(|| {
+                            format!("restoring HPA scale-to-zero ownership state for {name}")
+                        })?;
+                }
                 if let Some(ephemeral_containers) = &ephemeral_containers {
                     return restore_pod_ephemeral_containers(&api, name, ephemeral_containers)
                         .await
@@ -4748,6 +4987,52 @@ async fn apply_object(
         }
     }
     bail!("destination kept changing {type_meta}/{kind} {name} during migration")
+}
+
+async fn restore_hpa_scaled_to_zero(
+    api: &Api<DynamicObject>,
+    name: &str,
+    condition: &Value,
+) -> Result<()> {
+    const WRITE_ATTEMPTS: usize = 3;
+    for attempt in 0..WRITE_ATTEMPTS {
+        let current = api
+            .get(name)
+            .await
+            .context("reading destination HPA status before restoring scale-to-zero state")?;
+        let mut conditions = current
+            .data
+            .pointer("/status/conditions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(existing) = conditions.iter_mut().find(|existing| {
+            existing.get("type").and_then(Value::as_str) == Some("ScaledToZero")
+        }) {
+            *existing = condition.clone();
+        } else {
+            conditions.push(condition.clone());
+        }
+        let resource_version = current.metadata.resource_version.as_deref();
+        let mut patch = serde_json::json!({"status": {"conditions": conditions}});
+        if let Some(resource_version) = resource_version {
+            patch["metadata"] = serde_json::json!({"resourceVersion": resource_version});
+        }
+        match api
+            .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(kube::Error::Api(response))
+                if response.code == 409 && attempt + 1 < WRITE_ATTEMPTS =>
+            {
+                // The HPA controller may have updated status concurrently.
+                // Re-read and merge the ownership condition into fresh state.
+            }
+            Err(error) => return Err(error).context("patching destination HPA status"),
+        }
+    }
+    bail!("destination HPA {name} kept changing while restoring its zero-state condition")
 }
 
 fn preserves_destination_k3s_node_password_secret(
@@ -5129,6 +5414,7 @@ fn skip_kind_reason(kind: &str) -> Option<SkipReason> {
         "Event" => SkipReason::EphemeralEvents,
         "Node" => SkipReason::NodeReregistration,
         "NodeMetrics" | "PodMetrics" => SkipReason::LiveMetrics,
+        "PodCertificateRequest" => SkipReason::EphemeralPodCertificateRequest,
         "VolumeAttachment" => SkipReason::CsiReattachment,
         _ => return None,
     })
@@ -5268,6 +5554,98 @@ fn object_skip_reason(object: &Value) -> Option<SkipReason> {
     None
 }
 
+fn destination_addon_skip_reason(
+    object: &Value,
+    policy: ExportPolicy,
+) -> Option<SkipReason> {
+    let kind = object.get("kind").and_then(Value::as_str)?;
+    let name = object.pointer("/metadata/name").and_then(Value::as_str)?;
+    let namespace = object
+        .pointer("/metadata/namespace")
+        .and_then(Value::as_str);
+    let api_group = object
+        .get("apiVersion")
+        .and_then(Value::as_str)
+        .and_then(|version| version.split_once('/').map(|(group, _)| group));
+
+    let metrics_server_resource = policy.skip_metrics_server
+        && ((namespace == Some("kube-system")
+            && matches!(
+                kind,
+                "ServiceAccount" | "Service" | "Deployment" | "ConfigMap" | "Secret" | "Role" | "RoleBinding"
+            )
+            && matches!(
+                name,
+                "metrics-server" | "metrics-server-kubelet-ca" | "metrics-server-auth-reader"
+            ))
+            || (api_group == Some("rbac.authorization.k8s.io")
+                && matches!(kind, "ClusterRole" | "ClusterRoleBinding")
+                && matches!(
+                    name,
+                    "system:metrics-server" | "metrics-server:system:auth-delegator"
+                ))
+            || (kind == "APIService" && name == "v1beta1.metrics.k8s.io")
+            || (namespace == Some("kube-system")
+                && kind == "ReplicaSet"
+                && controller_deployment_owner_is(object, "metrics-server")));
+    if metrics_server_resource {
+        return Some(SkipReason::DestinationAddonReconciliation);
+    }
+
+    let nodeactivator_resource = policy.skip_nodeactivator
+        && ((namespace == Some("kube-system")
+            && matches!(
+                kind,
+                "ServiceAccount" | "Service" | "Deployment" | "Secret" | "Role" | "RoleBinding"
+            )
+            && matches!(
+                name,
+                "nodeactivator"
+                    | "nodeactivator-cert-signer"
+                    | "nodeactivator-signer-ca"
+                    | "nodeactivator-metrics"
+            ))
+            || (api_group == Some("rbac.authorization.k8s.io")
+                && matches!(kind, "ClusterRole" | "ClusterRoleBinding")
+                && matches!(
+                    name,
+                    "nodeactivator"
+                        | "nodeactivator-services"
+                        | "nodeactivator-auth-delegator"
+                        | "nodeactivator-cert-signer"
+                        | "nodeactivator-cert-signer-nodes"
+                ))
+            || (kind == "APIService" && name == "v1beta1.external.metrics.k8s.io")
+            || (namespace == Some("kube-system")
+                && kind == "ReplicaSet"
+                && (controller_deployment_owner_is(object, "nodeactivator")
+                    || controller_deployment_owner_is(object, "nodeactivator-cert-signer"))));
+    nodeactivator_resource.then_some(SkipReason::DestinationAddonReconciliation)
+}
+
+fn controller_deployment_owner_is(object: &Value, deployment_name: &str) -> bool {
+    object
+        .pointer("/metadata/ownerReferences")
+        .and_then(Value::as_array)
+        .is_some_and(|owners| {
+            owners.iter().any(|owner| {
+                owner.get("controller").and_then(Value::as_bool) == Some(true)
+                    && owner.get("kind").and_then(Value::as_str) == Some("Deployment")
+                    && owner.get("name").and_then(Value::as_str) == Some(deployment_name)
+            })
+        })
+}
+
+fn object_skip_reason_with_policy(
+    object: &Value,
+    policy: ExportPolicy,
+) -> Option<SkipReason> {
+    if let Some(reason) = object_skip_reason(object) {
+        return Some(reason);
+    }
+    destination_addon_skip_reason(object, policy)
+}
+
 fn skip_object(object: &Value) -> bool {
     object_skip_reason(object).is_some()
 }
@@ -5287,6 +5665,23 @@ fn sanitize(mut object: Value) -> Option<SanitizedObject> {
         // can be recreated and run again; apply_object strips it before API
         // writes.
         object["_nodemigrateSourceWasRunning"] = Value::Bool(true);
+    }
+    if is_hpa(&object) {
+        if let Some(condition) = object
+            .pointer("/status/conditions")
+            .and_then(Value::as_array)
+            .and_then(|conditions| {
+                conditions.iter().find(|condition| {
+                    condition.get("type").and_then(Value::as_str) == Some("ScaledToZero")
+                        && condition.get("status").and_then(Value::as_str) == Some("True")
+                })
+            })
+        {
+            // Unlike computed HPA metrics/counts, this condition records
+            // controller ownership of replicas=0. Kubernetes 1.37 keeps an
+            // HPA from waking a workload that was manually paused at zero.
+            object["_nodemigrateHpaScaledToZero"] = condition.clone();
+        }
     }
     object.as_object_mut()?.remove("status");
     let metadata = object.get_mut("metadata")?.as_object_mut()?;
@@ -5308,6 +5703,14 @@ fn sanitize(mut object: Value) -> Option<SanitizedObject> {
         value: object,
         source_uid,
     })
+}
+
+fn is_hpa(object: &Value) -> bool {
+    object.get("kind").and_then(Value::as_str) == Some("HorizontalPodAutoscaler")
+        && object
+            .get("apiVersion")
+            .and_then(Value::as_str)
+            .is_some_and(|version| version.starts_with("autoscaling/"))
 }
 
 fn write_export_manifest(
@@ -5462,7 +5865,7 @@ fn export_directory() -> Result<PathBuf> {
 mod tests {
     use super::{
         can_preserve_existing_crd, crd_metadata_merge_patch, crd_schema_matches,
-        custom_resource_gvks, is_running_standalone_nonrestartable_pod,
+        custom_resource_gvks, convert_hpa_api_version, is_running_standalone_nonrestartable_pod,
         controller_manager_without_election_is_ready,
         is_source_custom_resource, kubeconfig_root_ca,
         kubernetes_service_route, namespace_ca_bundle_matches, node_is_ready_replacement,
@@ -5470,7 +5873,8 @@ mod tests {
         node_readiness_summary,
         container_ids_for_sandbox, is_local_cilium_envoy_pod, node_pod_uids_requiring_cni,
         pod_sandbox_ids_for_pod_name, pod_sandbox_ids_for_uids,
-        node_uid_has_been_replaced, object_skip_reason, object_type_label,
+        node_uid_has_been_replaced, object_skip_reason, object_skip_reason_with_policy,
+        object_type_label,
         owner_reference_repair_patch, parse_cilium_kube_proxy_replacement,
         pod_for_migration_restart,
         persistent_host_paths, pod_status_is_terminal_or_exited, prepare_initial_import_object,
@@ -5480,7 +5884,8 @@ mod tests {
         service_account_token_secret_value, skip_kind_reason, skip_object, snapshot_k3s_cni_paths,
         summarize_import_failures, take_pod_ephemeral_containers, write_export_manifest,
         remove_cilium_socket_lb_pins, run_with_cilium_flag_restore, ApiResource,
-        CiliumAgentProgress, DynamicObject, Export, ExportedObject, KubeApi, NodeSchedulingState,
+        CiliumAgentProgress, DynamicObject, Export, ExportPolicy, ExportedObject, KubeApi,
+        NodeSchedulingState,
         CiliumServiceRouteProgress, ControllerManagerLeaseProgress, SkipReason,
         CILIUM_AGENT_READY_STABILITY,
         CILIUM_SERVICE_ROUTE_READY_STABILITY,
@@ -6559,6 +6964,170 @@ current-context: test
     }
 
     #[test]
+    fn migration_export_preserves_only_hpa_owned_scale_to_zero_state() {
+        let hpa = sanitize(serde_json::json!({
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": "queue-worker", "namespace": "apps"},
+            "spec": {
+                "scaleTargetRef": {
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "name": "queue-worker"
+                },
+                "minReplicas": 0,
+                "maxReplicas": 8,
+                "metrics": [{
+                    "type": "External",
+                    "external": {
+                        "metric": {"name": "queue_depth"},
+                        "target": {"type": "Value", "value": "1"}
+                    }
+                }]
+            },
+            "status": {
+                "currentReplicas": 0,
+                "desiredReplicas": 0,
+                "currentMetrics": [{
+                    "type": "External",
+                    "external": {"current": {"value": "0"}}
+                }],
+                "conditions": [
+                    {"type": "AbleToScale", "status": "True", "reason": "ReadyForNewScale"},
+                    {
+                        "type": "ScaledToZero",
+                        "status": "True",
+                        "reason": "ScaledToZero",
+                        "message": "HPA owns the zero replica state"
+                    }
+                ]
+            }
+        }))
+        .expect("HPA should be exported");
+
+        assert!(hpa.value.get("status").is_none());
+        assert_eq!(hpa.value["spec"]["minReplicas"], 0);
+        assert_eq!(
+            hpa.value["_nodemigrateHpaScaledToZero"]["type"],
+            "ScaledToZero"
+        );
+        assert_eq!(
+            hpa.value["_nodemigrateHpaScaledToZero"]["status"],
+            "True"
+        );
+
+        let manually_paused = sanitize(serde_json::json!({
+            "apiVersion": "autoscaling/v2",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": "manual-zero", "namespace": "apps"},
+            "spec": {"minReplicas": 0, "maxReplicas": 8},
+            "status": {
+                "desiredReplicas": 0,
+                "conditions": [{"type": "ScalingActive", "status": "True"}]
+            }
+        }))
+        .expect("manually paused HPA should be exported");
+        assert!(manually_paused
+            .value
+            .get("_nodemigrateHpaScaledToZero")
+            .is_none());
+    }
+
+    #[test]
+    fn converts_legacy_hpa_v1_cpu_target_to_stable_metrics_api() {
+        let source = serde_json::json!({
+            "apiVersion": "autoscaling/v1",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": "web", "namespace": "apps"},
+            "spec": {
+                "minReplicas": 1,
+                "maxReplicas": 8,
+                "targetCPUUtilizationPercentage": 65,
+                "scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "web"}
+            }
+        });
+
+        let converted = convert_hpa_api_version(&source, "autoscaling/v2").unwrap();
+
+        assert_eq!(converted["apiVersion"], "autoscaling/v2");
+        assert_eq!(converted["spec"]["minReplicas"], 1);
+        assert_eq!(converted["spec"]["maxReplicas"], 8);
+        assert!(converted["spec"].get("targetCPUUtilizationPercentage").is_none());
+        assert_eq!(converted["spec"]["metrics"][0]["resource"]["name"], "cpu");
+        assert_eq!(converted["spec"]["metrics"][0]["resource"]["target"]["type"], "Utilization");
+        assert_eq!(converted["spec"]["metrics"][0]["resource"]["target"]["averageUtilization"], 65);
+    }
+
+    #[test]
+    fn converts_legacy_hpa_v2beta1_metric_sources_to_stable_metrics_api() {
+        let source = serde_json::json!({
+            "apiVersion": "autoscaling/v2beta1",
+            "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": "queue-worker", "namespace": "apps"},
+            "spec": {
+                "scaleTargetRef": {"apiVersion": "apps/v1", "kind": "Deployment", "name": "worker"},
+                "minReplicas": 0,
+                "maxReplicas": 12,
+                "metrics": [
+                    {"type":"Resource", "resource":{"name":"cpu", "targetAverageUtilization":70}},
+                    {"type":"ContainerResource", "containerResource":{"name":"cpu", "container":"worker", "targetAverageValue":"200m"}},
+                    {"type":"Pods", "pods":{"metricName":"requests_per_second", "selector":{"matchLabels":{"queue":"jobs"}}, "targetAverageValue":"5"}},
+                    {"type":"Object", "object":{"target":{"apiVersion":"networking.k8s.io/v1", "kind":"Ingress", "name":"front"}, "metricName":"requests_per_second", "selector":{"matchLabels":{"route":"front"}}, "targetValue":"100"}},
+                    {"type":"External", "external":{"metricName":"queue_depth", "metricSelector":{"matchLabels":{"queue":"jobs"}}, "targetAverageValue":"3"}}
+                ]
+            }
+        });
+
+        let converted = convert_hpa_api_version(&source, "autoscaling/v2").unwrap();
+        let metrics = converted["spec"]["metrics"].as_array().unwrap();
+
+        assert_eq!(converted["apiVersion"], "autoscaling/v2");
+        assert_eq!(converted["spec"]["minReplicas"], 0);
+        assert_eq!(metrics[0]["resource"]["target"]["type"], "Utilization");
+        assert_eq!(metrics[0]["resource"]["target"]["averageUtilization"], 70);
+        assert_eq!(
+            metrics[1]["containerResource"]["target"]["averageValue"],
+            "200m"
+        );
+        assert_eq!(metrics[2]["pods"]["metric"]["name"], "requests_per_second");
+        assert_eq!(metrics[2]["pods"]["metric"]["selector"]["matchLabels"]["queue"], "jobs");
+        assert_eq!(metrics[2]["pods"]["target"]["type"], "AverageValue");
+        assert_eq!(metrics[3]["object"]["describedObject"]["name"], "front");
+        assert_eq!(metrics[3]["object"]["metric"]["selector"]["matchLabels"]["route"], "front");
+        assert_eq!(metrics[3]["object"]["target"]["type"], "Value");
+        assert_eq!(metrics[3]["object"]["target"]["value"], "100");
+        assert_eq!(metrics[4]["external"]["metric"]["name"], "queue_depth");
+        assert_eq!(
+            metrics[4]["external"]["metric"]["selector"]["matchLabels"]["queue"],
+            "jobs"
+        );
+        assert_eq!(metrics[4]["external"]["target"]["type"], "AverageValue");
+        assert_eq!(metrics[4]["external"]["target"]["averageValue"], "3");
+    }
+
+    #[test]
+    fn relabels_hpa_v2beta2_without_rewriting_stable_metric_shapes() {
+        let source = serde_json::json!({
+            "apiVersion":"autoscaling/v2beta2",
+            "kind":"HorizontalPodAutoscaler",
+            "metadata":{"name":"worker","namespace":"apps"},
+            "spec":{"metrics":[{"type":"External","external":{"metric":{"name":"queue_depth"},"target":{"type":"AverageValue","averageValue":"2"}}}]}
+        });
+
+        let converted = convert_hpa_api_version(&source, "autoscaling/v2").unwrap();
+
+        assert_eq!(converted["apiVersion"], "autoscaling/v2");
+        assert_eq!(
+            converted["spec"]["metrics"][0]["external"]["target"]["averageValue"],
+            "2"
+        );
+        assert_eq!(
+            converted["spec"]["metrics"][0]["external"]["metric"]["name"],
+            "queue_depth"
+        );
+    }
+
+    #[test]
     fn migration_export_preserves_pv_reclaim_policy_and_pvc_binding() {
         let pv = sanitize(serde_json::json!({
             "apiVersion": "v1",
@@ -7172,12 +7741,81 @@ current-context: test
             ("Node", SkipReason::NodeReregistration),
             ("NodeMetrics", SkipReason::LiveMetrics),
             ("PodMetrics", SkipReason::LiveMetrics),
+            (
+                "PodCertificateRequest",
+                SkipReason::EphemeralPodCertificateRequest,
+            ),
             ("VolumeAttachment", SkipReason::CsiReattachment),
         ] {
             assert_eq!(skip_kind_reason(kind), Some(expected));
             assert!(!expected.description().is_empty());
         }
         assert_eq!(skip_kind_reason("Deployment"), None);
+    }
+
+    #[test]
+    fn migration_export_recreates_selected_system_addons_on_destination() {
+        let metrics_deployment = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": "metrics-server", "namespace": "kube-system"}
+        });
+        let metrics_policy = ExportPolicy {
+            skip_metrics_server: true,
+            skip_nodeactivator: false,
+        };
+        assert_eq!(
+            object_skip_reason_with_policy(&metrics_deployment, metrics_policy),
+            Some(SkipReason::DestinationAddonReconciliation)
+        );
+        assert_eq!(object_skip_reason(&metrics_deployment), None);
+
+        let nodeactivator_service = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"name": "nodeactivator", "namespace": "kube-system"}
+        });
+        let nodeactivator_policy = ExportPolicy {
+            skip_metrics_server: false,
+            skip_nodeactivator: true,
+        };
+        assert_eq!(
+            object_skip_reason_with_policy(&nodeactivator_service, nodeactivator_policy),
+            Some(SkipReason::DestinationAddonReconciliation)
+        );
+        assert_eq!(
+            object_skip_reason_with_policy(&nodeactivator_service, metrics_policy),
+            None
+        );
+
+        let nodeactivator_replica_set = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "ReplicaSet",
+            "metadata": {
+                "name": "nodeactivator-123456",
+                "namespace": "kube-system",
+                "ownerReferences": [{
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "name": "nodeactivator",
+                    "controller": true
+                }]
+            }
+        });
+        assert_eq!(
+            object_skip_reason_with_policy(&nodeactivator_replica_set, nodeactivator_policy),
+            Some(SkipReason::DestinationAddonReconciliation)
+        );
+
+        let certificate_request = serde_json::json!({
+            "apiVersion": "certificates.k8s.io/v1alpha1",
+            "kind": "PodCertificateRequest",
+            "metadata": {"name": "pod-credential", "namespace": "kube-system"}
+        });
+        assert_eq!(
+            object_skip_reason(&certificate_request),
+            Some(SkipReason::EphemeralPodCertificateRequest)
+        );
     }
 
     #[test]

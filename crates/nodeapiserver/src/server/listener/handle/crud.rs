@@ -72,7 +72,13 @@ macro_rules! handle_crud {
                     if body_bytes.is_empty() {
                         (None, None)
                     } else {
-                        let decoded = decode_virtual_request(&body_bytes, content_type.as_deref(), "", "v1", "DeleteOptions");
+                        let decoded = decode_virtual_request(
+                            &body_bytes,
+                            content_type.as_deref(),
+                            &$info.api_group,
+                            &$info.api_version,
+                            "DeleteOptions",
+                        );
                         match decoded {
                             Ok(value) => (None, Some(value)),
                             Err(error) => return Ok(json_response(StatusCode::BAD_REQUEST, &bad_request_status(&$path_str, &error))),

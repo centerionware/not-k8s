@@ -578,7 +578,7 @@ are implemented and e2e-verified.
   legacy kubeadm bootstrap-token flow, low value now that projected SA
   tokens are the default join mechanism.
 
-## J. Autoscaling & disruption — Tier 2 — **disruption-controller implemented; HPA scoped out**
+## J. Autoscaling & disruption — Tier 2 — **disruption-controller and HPA implemented**
 
 - `disruption-controller` (`crates/nodecontroller/src/controllers/disruption.rs`,
   **implemented**): keeps `PodDisruptionBudget.status`
@@ -594,14 +594,22 @@ are implemented and e2e-verified.
   niceties nothing in this project reads); a PDB with neither
   `minAvailable` nor `maxUnavailable` set (invalid per upstream's own
   validation, not re-validated here) fails open rather than closed.
-- `horizontalpodautoscaler-controller` (**scoped out**): needs a live
-  metrics API (`metrics-server` or equivalent) to be useful at all, and
-  unlike Groups G/H's CSI/DRA reference drivers, nothing in this project's
-  e2e infrastructure installs one — there is no real infrastructure to
-  verify an actual scaling decision against, the same "no infrastructure
-  to prove it against" reasoning `device-taint-eviction-controller`
-  above uses. Revisit if `deploy/lib/e2e-full-setup.sh` ever grows a
-  metrics-server leg.
+- `horizontalpodautoscaler-controller`: reconciles `autoscaling/v2` metrics
+  through `metrics.k8s.io`, `custom.metrics.k8s.io`, and
+  `external.metrics.k8s.io`, then writes the target's standard Scale
+  subresource and HPA status. It supports all five metric source types,
+  multiple-metric maximum recommendations, HPA min/max bounds, configurable
+  direction-specific tolerances, stabilization, and scale rate policies.
+  Kubernetes 1.37 scale-to-zero uses the standard `ScaledToZero` condition and requires an
+  Object or External metric in the HPA spec. A target must start above zero;
+  the HPA can wake it later only after recording `ScaledToZero=True`, while a
+  manually scaled zero remains paused. The complete upstream
+  readiness/missing-sample algorithm remains an implementation gap. This
+  controller does not buffer Service requests. That behavior must come from
+  an independently deployed addon Pod that exposes standard
+  external metrics and keeps traffic on a standard Service path. The migration
+  fixture installs metrics-server and exercises CPU scale-up/scale-down across
+  source, not-k8s, and return.
 
 ## Explicitly out of scope
 
