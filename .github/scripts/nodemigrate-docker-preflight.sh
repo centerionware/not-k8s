@@ -484,8 +484,23 @@ for node in cp-2 cp-3; do
         echo "Waiting for cp-2 etcd and API server static Pods to become Ready before joining cp-3"
         if ! docker exec "$cp1" bash -ec '
             export KUBECONFIG=/etc/kubernetes/admin.conf
-            kubectl wait --for=condition=Ready pod/etcd-cp-2 -n kube-system --timeout=5m
-            kubectl wait --for=condition=Ready pod/kube-apiserver-cp-2 -n kube-system --timeout=5m
+            wait_for_ready_pod() {
+                local name="$1" deadline=$((SECONDS + 300)) pod_json
+                while (( SECONDS < deadline )); do
+                    pod_json="$(kubectl get pod "$name" -n kube-system -o json 2>/dev/null || true)"
+                    if [[ -n "$pod_json" ]] && jq -e "any(.status.conditions[]?; .type == \"Ready\" and .status == \"True\")" \
+                        <<<"$pod_json" >/dev/null; then
+                        echo "Pod $name exists and is Ready"
+                        return 0
+                    fi
+                    sleep 2
+                done
+                echo "Pod $name did not become Ready within 5 minutes" >&2
+                kubectl get pod "$name" -n kube-system -o yaml >&2 || true
+                return 1
+            }
+            wait_for_ready_pod etcd-cp-2
+            wait_for_ready_pod kube-apiserver-cp-2
             kubectl get --raw="/readyz?verbose" | grep -F "[+]etcd ok"
         '; then
             echo "cp-2 did not join a healthy stacked-etcd control plane; collecting diagnostics"
