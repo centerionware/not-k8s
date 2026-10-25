@@ -82,58 +82,62 @@ jobs:
       - name: Setup toolchain
         uses: ./.github/actions/setup-toolchain
       - name: Run unit tests
-        # Under sudo for the same reason release.yml's own test step is:
         # nodeproxy's svc.rs nft_check() tests open real netlink/nftables
         # sockets to validate generated ruleset syntax, which needs
-        # CAP_NET_ADMIN. sudo -E preserves PATH/CARGO_HOME/RUSTUP_HOME
-        # that setup-toolchain put in $GITHUB_ENV/$GITHUB_PATH.
+        # CAP_NET_ADMIN. The hosted runner drops inherited values through
+        # sudo, so pass the runner-installed Rust paths and toolchain explicitly.
         run: |
           set -e
-          sudo -E env "PATH=$PATH" cargo test -p nodelet
-          sudo -E env "PATH=$PATH" cargo test -p nodelet --features cri
+          as_runner_rust() {
+            sudo env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" \
+              "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
+              "RUSTUP_TOOLCHAIN=stable" "$@"
+          }
+          as_runner_rust cargo test -p nodelet
+          as_runner_rust cargo test -p nodelet --features cri
           # Guarded so this workflow is correct on any ref, including one
           # where the nodeproxy crate doesn't exist yet. Without it, a
           # dispatch against a branch predating the split fails on a
           # package cargo has never heard of.
           if [[ -d crates/nodeproxy ]]; then
-            sudo -E env "PATH=$PATH" cargo test -p nodeproxy
+            as_runner_rust cargo test -p nodeproxy
           else
             echo "crates/nodeproxy not present on this ref — skipping its tests."
           fi
           if [[ -d crates/nodestore ]]; then
-            sudo -E env "PATH=$PATH" cargo test -p nodestore
+            as_runner_rust cargo test -p nodestore
           else
             echo "crates/nodestore not present on this ref — skipping its tests."
           fi
           if [[ -d crates/nodescheduler ]]; then
-            sudo -E env "PATH=$PATH" cargo test -p nodescheduler
+            as_runner_rust cargo test -p nodescheduler
           else
             echo "crates/nodescheduler not present on this ref — skipping its tests."
           fi
           if [[ -d crates/node-leaderelection ]]; then
-            sudo -E env "PATH=$PATH" cargo test -p node-leaderelection
+            as_runner_rust cargo test -p node-leaderelection
           else
             echo "crates/node-leaderelection not present on this ref — skipping its tests."
           fi
           if [[ -d crates/nodecontroller ]]; then
-            sudo -E env "PATH=$PATH" cargo test -p nodecontroller
+            as_runner_rust cargo test -p nodecontroller
           else
             echo "crates/nodecontroller not present on this ref — skipping its tests."
           fi
           if [[ -d crates/nodeapiserver ]]; then
-            sudo -E env "PATH=$PATH" cargo test -p nodeapiserver
+            as_runner_rust cargo test -p nodeapiserver
           else
             echo "crates/nodeapiserver not present on this ref — skipping its tests."
           fi
           # Same guard, same reason: the combined-binary crate postdates
           # all of the above.
           if [[ -d crates/notk8s ]]; then
-            sudo -E env "PATH=$PATH" cargo test -p notk8s
+            as_runner_rust cargo test -p notk8s
           else
             echo "crates/notk8s not present on this ref — skipping its tests."
           fi
           if [[ -d crates/nodemigrate ]]; then
-            sudo -E env "PATH=$PATH" cargo test -p nodemigrate
+            as_runner_rust cargo test -p nodemigrate
           else
             echo "crates/nodemigrate not present on this ref — skipping its tests."
           fi
