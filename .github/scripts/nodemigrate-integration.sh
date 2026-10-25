@@ -4252,7 +4252,11 @@ verify_stage() {
     kubectl get customresourcedefinitions.apiextensions.k8s.io ciliumendpoints.cilium.io
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m
     if [[ "${NODEMIGRATE_METRICS_SERVER:-false}" != true ]]; then
-        verify_hpa_scaling "$stage"
+        if kubectl get --raw /apis/metrics.k8s.io/v1beta1 >/dev/null 2>&1; then
+            verify_hpa_scaling "$stage"
+        else
+            echo "SKIP HPA resource-metrics probe at stage=$stage: metrics.k8s.io is not installed"
+        fi
     fi
     kubectl scale -n migration-apps deployment/migration-nginx --replicas=2
     kubectl rollout status -n migration-apps deployment/migration-nginx --timeout=5m

@@ -34,7 +34,7 @@ use serde_json::Value;
 
 use crate::{
     detect::{Installation, K3sDatastore},
-    request::Distribution,
+    request::{Distribution, MigrationRequest},
 };
 
 // These object kinds are not durable API inputs for the replacement:
@@ -52,6 +52,7 @@ const SKIP_KINDS: &[&str] = &[
     "Node",
     "NodeMetrics",
     "PodMetrics",
+    "PodCertificateRequest",
     "VolumeAttachment",
 ];
 
@@ -162,6 +163,8 @@ enum SkipReason {
     CiliumIdentityReconciliation,
     CiliumNodeReconciliation,
     NodebootstrapRuntimeRbac,
+    EphemeralPodCertificateRequest,
+    DestinationAddonReconciliation,
 }
 
 impl SkipReason {
@@ -204,6 +207,34 @@ impl SkipReason {
             Self::NodebootstrapRuntimeRbac => {
                 "nodebootstrap recreates this runtime-owned RBAC policy on the destination"
             }
+            Self::EphemeralPodCertificateRequest => {
+                "kubelet and signer controllers recreate this short-lived certificate request"
+            }
+            Self::DestinationAddonReconciliation => {
+                "the destination distribution recreates its selected system add-on"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ExportPolicy {
+    skip_metrics_server: bool,
+    skip_nodeactivator: bool,
+}
+
+impl ExportPolicy {
+    fn for_migration(source: &Installation, request: &MigrationRequest) -> Self {
+        let source_is_nodestore = source.distribution == Distribution::Nodestore;
+        Self {
+            // A selected target addon is installed by nodebootstrap. When
+            // exporting from nodestore, addon state is also owned by that
+            // distribution and must not be replayed into the retained
+            // upstream/K3s control plane during a return migration.
+            skip_metrics_server: source_is_nodestore || request.metrics_server,
+            skip_nodeactivator: source_is_nodestore
+                || request.nodeactivator
+                || request.nodeactivator_image.is_some(),
         }
     }
 }
@@ -2172,8 +2203,13 @@ impl KubeApi {
         })
     }
 
-    pub fn export(&self, installation: &Installation) -> Result<Export> {
+    pub fn export(
+        &self,
+        installation: &Installation,
+        request: &MigrationRequest,
+    ) -> Result<Export> {
         self.ready()?;
+        let export_policy = ExportPolicy::for_migration(installation, request);
         let node_name = installation_node_name(installation);
         let (runtime, client) = self.connected()?;
         let (objects, labels, node_states) = runtime.block_on(async {
@@ -2257,7 +2293,9 @@ impl KubeApi {
                                 let mut value = serde_json::to_value(object)
                                     .context("serializing Kubernetes object")?;
                                 preserve_discovered_type_meta(&mut value, &resource)?;
-                                if let Some(reason) = object_skip_reason(&value) {
+                                if let Some(reason) =
+                                    object_skip_reason_with_policy(&value, export_policy)
+                                {
                                     *summary.skipped_objects.entry(reason).or_default() += 1;
                                 } else {
                                     summary.migrated_objects += 1;
@@ -5376,6 +5414,7 @@ fn skip_kind_reason(kind: &str) -> Option<SkipReason> {
         "Event" => SkipReason::EphemeralEvents,
         "Node" => SkipReason::NodeReregistration,
         "NodeMetrics" | "PodMetrics" => SkipReason::LiveMetrics,
+        "PodCertificateRequest" => SkipReason::EphemeralPodCertificateRequest,
         "VolumeAttachment" => SkipReason::CsiReattachment,
         _ => return None,
     })
@@ -5513,6 +5552,98 @@ fn object_skip_reason(object: &Value) -> Option<SkipReason> {
         }
     }
     None
+}
+
+fn destination_addon_skip_reason(
+    object: &Value,
+    policy: ExportPolicy,
+) -> Option<SkipReason> {
+    let kind = object.get("kind").and_then(Value::as_str)?;
+    let name = object.pointer("/metadata/name").and_then(Value::as_str)?;
+    let namespace = object
+        .pointer("/metadata/namespace")
+        .and_then(Value::as_str);
+    let api_group = object
+        .get("apiVersion")
+        .and_then(Value::as_str)
+        .and_then(|version| version.split_once('/').map(|(group, _)| group));
+
+    let metrics_server_resource = policy.skip_metrics_server
+        && ((namespace == Some("kube-system")
+            && matches!(
+                kind,
+                "ServiceAccount" | "Service" | "Deployment" | "ConfigMap" | "Secret" | "Role" | "RoleBinding"
+            )
+            && matches!(
+                name,
+                "metrics-server" | "metrics-server-kubelet-ca" | "metrics-server-auth-reader"
+            ))
+            || (api_group == Some("rbac.authorization.k8s.io")
+                && matches!(kind, "ClusterRole" | "ClusterRoleBinding")
+                && matches!(
+                    name,
+                    "system:metrics-server" | "metrics-server:system:auth-delegator"
+                ))
+            || (kind == "APIService" && name == "v1beta1.metrics.k8s.io")
+            || (namespace == Some("kube-system")
+                && kind == "ReplicaSet"
+                && controller_deployment_owner_is(object, "metrics-server")));
+    if metrics_server_resource {
+        return Some(SkipReason::DestinationAddonReconciliation);
+    }
+
+    let nodeactivator_resource = policy.skip_nodeactivator
+        && ((namespace == Some("kube-system")
+            && matches!(
+                kind,
+                "ServiceAccount" | "Service" | "Deployment" | "Secret" | "Role" | "RoleBinding"
+            )
+            && matches!(
+                name,
+                "nodeactivator"
+                    | "nodeactivator-cert-signer"
+                    | "nodeactivator-signer-ca"
+                    | "nodeactivator-metrics"
+            ))
+            || (api_group == Some("rbac.authorization.k8s.io")
+                && matches!(kind, "ClusterRole" | "ClusterRoleBinding")
+                && matches!(
+                    name,
+                    "nodeactivator"
+                        | "nodeactivator-services"
+                        | "nodeactivator-auth-delegator"
+                        | "nodeactivator-cert-signer"
+                        | "nodeactivator-cert-signer-nodes"
+                ))
+            || (kind == "APIService" && name == "v1beta1.external.metrics.k8s.io")
+            || (namespace == Some("kube-system")
+                && kind == "ReplicaSet"
+                && (controller_deployment_owner_is(object, "nodeactivator")
+                    || controller_deployment_owner_is(object, "nodeactivator-cert-signer"))));
+    nodeactivator_resource.then_some(SkipReason::DestinationAddonReconciliation)
+}
+
+fn controller_deployment_owner_is(object: &Value, deployment_name: &str) -> bool {
+    object
+        .pointer("/metadata/ownerReferences")
+        .and_then(Value::as_array)
+        .is_some_and(|owners| {
+            owners.iter().any(|owner| {
+                owner.get("controller").and_then(Value::as_bool) == Some(true)
+                    && owner.get("kind").and_then(Value::as_str) == Some("Deployment")
+                    && owner.get("name").and_then(Value::as_str) == Some(deployment_name)
+            })
+        })
+}
+
+fn object_skip_reason_with_policy(
+    object: &Value,
+    policy: ExportPolicy,
+) -> Option<SkipReason> {
+    if let Some(reason) = object_skip_reason(object) {
+        return Some(reason);
+    }
+    destination_addon_skip_reason(object, policy)
 }
 
 fn skip_object(object: &Value) -> bool {
@@ -7608,12 +7739,81 @@ current-context: test
             ("Node", SkipReason::NodeReregistration),
             ("NodeMetrics", SkipReason::LiveMetrics),
             ("PodMetrics", SkipReason::LiveMetrics),
+            (
+                "PodCertificateRequest",
+                SkipReason::EphemeralPodCertificateRequest,
+            ),
             ("VolumeAttachment", SkipReason::CsiReattachment),
         ] {
             assert_eq!(skip_kind_reason(kind), Some(expected));
             assert!(!expected.description().is_empty());
         }
         assert_eq!(skip_kind_reason("Deployment"), None);
+    }
+
+    #[test]
+    fn migration_export_recreates_selected_system_addons_on_destination() {
+        let metrics_deployment = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": "metrics-server", "namespace": "kube-system"}
+        });
+        let metrics_policy = ExportPolicy {
+            skip_metrics_server: true,
+            skip_nodeactivator: false,
+        };
+        assert_eq!(
+            object_skip_reason_with_policy(&metrics_deployment, metrics_policy),
+            Some(SkipReason::DestinationAddonReconciliation)
+        );
+        assert_eq!(object_skip_reason(&metrics_deployment), None);
+
+        let nodeactivator_service = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"name": "nodeactivator", "namespace": "kube-system"}
+        });
+        let nodeactivator_policy = ExportPolicy {
+            skip_metrics_server: false,
+            skip_nodeactivator: true,
+        };
+        assert_eq!(
+            object_skip_reason_with_policy(&nodeactivator_service, nodeactivator_policy),
+            Some(SkipReason::DestinationAddonReconciliation)
+        );
+        assert_eq!(
+            object_skip_reason_with_policy(&nodeactivator_service, metrics_policy),
+            None
+        );
+
+        let nodeactivator_replica_set = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "ReplicaSet",
+            "metadata": {
+                "name": "nodeactivator-123456",
+                "namespace": "kube-system",
+                "ownerReferences": [{
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "name": "nodeactivator",
+                    "controller": true
+                }]
+            }
+        });
+        assert_eq!(
+            object_skip_reason_with_policy(&nodeactivator_replica_set, nodeactivator_policy),
+            Some(SkipReason::DestinationAddonReconciliation)
+        );
+
+        let certificate_request = serde_json::json!({
+            "apiVersion": "certificates.k8s.io/v1alpha1",
+            "kind": "PodCertificateRequest",
+            "metadata": {"name": "pod-credential", "namespace": "kube-system"}
+        });
+        assert_eq!(
+            object_skip_reason(&certificate_request),
+            Some(SkipReason::EphemeralPodCertificateRequest)
+        );
     }
 
     #[test]

@@ -278,7 +278,7 @@ fn migrate_to_nodestore(
     eprintln!("nodemigrate: Service routing owner will be {proxy_owner}");
 
     if let Some(api) = &source_api {
-        export = Some(api.export(source)?);
+        export = Some(api.export(source, request)?);
     }
     let mut export = export.context("source API export was not prepared")?;
     prepare_migration_pki(&mut bootstrap, source, &export)?;
@@ -995,7 +995,7 @@ fn migrate_to_existing(
     if export.is_none() {
         export = source_api
             .as_ref()
-            .map(|source_api| source_api.export(source))
+            .map(|source_api| source_api.export(source, request))
             .transpose()?;
     }
     let needs_host_path_snapshot = request.skip_api_export && !request.stage_target;
