@@ -35,6 +35,18 @@ fn hpa_is_scaled_to_zero(hpa: &HorizontalPodAutoscaler) -> bool {
     })
 }
 
+fn hpa_is_not_scaled_to_zero(hpa: &HorizontalPodAutoscaler) -> bool {
+    hpa.status.as_ref().is_some_and(|status| {
+        status.conditions.as_ref().is_some_and(|conditions| {
+            conditions.iter().any(|condition| {
+                condition.type_ == "ScaledToZero"
+                    && condition.status == "False"
+                    && condition.reason.as_deref() == Some("NotScaledToZero")
+            })
+        })
+    })
+}
+
 fn unsupported_flow_environment(reason: impl Into<String>) -> anyhow::Error {
     let reason = reason.into();
     if std::env::var_os("NODEBOOTSTRAP_E2E_REQUIRE_SCALE_TO_ZERO").is_some() {
@@ -213,6 +225,17 @@ pub(super) async fn hpa_scale_to_zero_activator_full_flow(context: &E2eContext) 
                         .unwrap_or_default()
                         > 0)
                 }
+            },
+        )
+        .await?;
+
+    context
+        .wait_until(
+            "the HPA to clear its scaled-to-zero condition after activation",
+            Duration::from_secs(90),
+            || {
+                let hpas = hpas.clone();
+                async move { Ok(hpa_is_not_scaled_to_zero(&hpas.get("backend").await?)) }
             },
         )
         .await?;

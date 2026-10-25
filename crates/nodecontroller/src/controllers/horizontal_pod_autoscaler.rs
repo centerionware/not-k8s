@@ -987,6 +987,37 @@ fn is_hpa_owned_zero_state(
             .any(|condition| condition.type_ == "ScaledToZero" && condition.status == "True")
 }
 
+fn scaled_to_zero_condition(
+    desired_replicas: i32,
+    previous: Option<&HorizontalPodAutoscalerCondition>,
+    now: &k8s_openapi::apimachinery::pkg::apis::meta::v1::Time,
+) -> HorizontalPodAutoscalerCondition {
+    let (status, reason, message) = if desired_replicas == 0 {
+        (
+            "True",
+            "ScaledToZero",
+            "the HPA controller scaled the workload to zero",
+        )
+    } else {
+        (
+            "False",
+            "NotScaledToZero",
+            "the HPA controller did not scale the workload to zero",
+        )
+    };
+    let transition_time = previous
+        .filter(|condition| condition.status == status)
+        .and_then(|condition| condition.last_transition_time.clone())
+        .unwrap_or_else(|| now.clone());
+    HorizontalPodAutoscalerCondition {
+        type_: "ScaledToZero".to_string(),
+        status: status.to_string(),
+        reason: Some(reason.to_string()),
+        message: Some(message.to_string()),
+        last_transition_time: Some(transition_time),
+    }
+}
+
 async fn reconcile_hpa(
     client: &Client,
     base_client: &Client,
@@ -1266,31 +1297,10 @@ async fn reconcile_hpa(
                     conditions.push(value);
                 }
             }
-            let scaled_to_zero_status = if desired == 0 { "True" } else { "False" };
-            let scaled_to_zero_reason = if desired == 0 {
-                "ScaledToZero"
-            } else {
-                "ScaledAboveZero"
-            };
-            let scaled_to_zero_message = if desired == 0 {
-                "the HPA scaled the target to zero replicas"
-            } else {
-                "the target has a non-zero desired replica count"
-            };
             let previous = conditions
                 .iter()
                 .find(|condition| condition.type_ == "ScaledToZero");
-            let transition_time = previous
-                .filter(|condition| condition.status == scaled_to_zero_status)
-                .and_then(|condition| condition.last_transition_time.clone())
-                .unwrap_or_else(|| now.clone());
-            let scaled_to_zero_condition = HorizontalPodAutoscalerCondition {
-                type_: "ScaledToZero".to_string(),
-                status: scaled_to_zero_status.to_string(),
-                reason: Some(scaled_to_zero_reason.to_string()),
-                message: Some(scaled_to_zero_message.to_string()),
-                last_transition_time: Some(transition_time),
-            };
+            let scaled_to_zero_condition = scaled_to_zero_condition(desired, previous, &now);
             if let Some(slot) = conditions
                 .iter_mut()
                 .find(|condition| condition.type_ == "ScaledToZero")
@@ -1445,7 +1455,9 @@ pub async fn run(client: Client, _cfg: &crate::config::Config) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{desired_replicas, stabilized_recommendation, target_api_group};
+    use super::{
+        desired_replicas, scaled_to_zero_condition, stabilized_recommendation, target_api_group,
+    };
     use std::collections::HashMap;
     use std::time::Duration;
     use tokio::time::Instant;
@@ -1494,6 +1506,28 @@ mod tests {
         assert!(!is_hpa_owned_zero_state(0, &[condition("False")]));
         assert!(is_hpa_owned_zero_state(0, &[condition("True")]));
         assert!(!is_hpa_owned_zero_state(1, &[condition("True")]));
+    }
+
+    #[test]
+    fn scaled_to_zero_status_matches_kubernetes_condition_reasons() {
+        let now = k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+            k8s_openapi::jiff::Timestamp::now(),
+        );
+        let scaled_down = scaled_to_zero_condition(0, None, &now);
+        assert_eq!(scaled_down.status, "True");
+        assert_eq!(scaled_down.reason.as_deref(), Some("ScaledToZero"));
+        assert_eq!(
+            scaled_down.message.as_deref(),
+            Some("the HPA controller scaled the workload to zero")
+        );
+
+        let scaled_up = scaled_to_zero_condition(1, Some(&scaled_down), &now);
+        assert_eq!(scaled_up.status, "False");
+        assert_eq!(scaled_up.reason.as_deref(), Some("NotScaledToZero"));
+        assert_eq!(
+            scaled_up.message.as_deref(),
+            Some("the HPA controller did not scale the workload to zero")
+        );
     }
 
     #[test]
