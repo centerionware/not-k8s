@@ -10,6 +10,11 @@ on:
         required: false
         default: ''
         type: string
+      publish_activator_image:
+        description: Publish the container image for the selected existing release tag
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -28,6 +33,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Freeze version
         id: version
@@ -498,7 +504,7 @@ jobs:
             -f content="$content" -f sha="$sha" -f branch=version >/dev/null
   publish-activator:
     needs: [publish-release, release-identity]
-    if: ${{ inputs.reuse_release_tag == '' && needs.publish-release.outputs.published == 'true' }}
+    if: ${{ !cancelled() && needs.release-identity.result == 'success' && needs.publish-release.outputs.published == 'true' && (inputs.reuse_release_tag == '' || inputs.publish_activator_image) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -506,12 +512,14 @@ jobs:
       packages: write
     env:
       RELEASE_VERSION: ${{ needs.release-identity.outputs.version }}
+      RELEASE_TAG: ${{ needs.release-identity.outputs.tag }}
+      REUSE_RELEASE_TAG: ${{ inputs.reuse_release_tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repo
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.release-identity.outputs.tag }}
           persist-credentials: false
       - name: Login to GHCR
         run: |
@@ -523,13 +531,24 @@ jobs:
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}/nodeactivator"
+          latest_release="$(gh release list --limit 1 --json tagName --jq '.[0].tagName')"
           docker buildx create --use
+          if [[ -n "$REUSE_RELEASE_TAG" ]] && docker buildx imagetools inspect "$image:$RELEASE_VERSION" >/dev/null 2>&1; then
+            if [[ "$RELEASE_TAG" == "$latest_release" ]]; then
+              docker buildx imagetools create --tag "$image:latest" "$image:$RELEASE_VERSION"
+            fi
+            echo "$image:$RELEASE_VERSION already exists; leaving the release image unchanged"
+            exit 0
+          fi
+          tags=(--tag "$image:$RELEASE_VERSION")
+          if [[ -z "$REUSE_RELEASE_TAG" || "$RELEASE_TAG" == "$latest_release" ]]; then
+            tags+=(--tag "$image:latest")
+          fi
           docker buildx build --push \
             --platform linux/amd64,linux/arm64 \
             --file addons/nodeactivator/Dockerfile \
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-            --tag "$image:$RELEASE_VERSION" \
-            --tag "$image:latest" .
+            "${tags[@]}" .
 
   cleanup-release-artifacts:
     needs: [build-release, publish-release]
