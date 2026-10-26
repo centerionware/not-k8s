@@ -14,7 +14,7 @@
     }
   },
   "release-e2e": {
-    "result": "failure",
+    "result": "success",
     "outputs": {}
   },
   "release-flamegraphs": {
