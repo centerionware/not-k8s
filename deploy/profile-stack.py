@@ -126,7 +126,47 @@ class Workload:
         service = {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "profile-server"},
                    "spec": {"selector": {"app": "profile-server"}, "ports": [{"port": 8080, "targetPort": 8080}]}}
         self.kubectl("apply", "-f", "-", body={"apiVersion": "v1", "kind": "List", "items": [server, service]})
-        self.kubectl("rollout", "status", "deployment/profile-server", "--timeout=180s", timeout=190, request_timeout="0")
+        self.wait_for_deployment("profile-server", timeout=180)
+
+    def wait_for_deployment(self, name, timeout):
+        deadline = time.monotonic() + timeout
+        latest = {}
+        while True:
+            deployment = json.loads(self.kubectl(
+                "get", "deployment", name, "-o", "json", timeout=15, request_timeout="10s"))
+            metadata = deployment.get("metadata", {})
+            spec = deployment.get("spec", {})
+            status = deployment.get("status", {})
+            generation = int(metadata.get("generation", 0))
+            observed_generation = int(status.get("observedGeneration", 0))
+            configured_replicas = spec.get("replicas")
+            desired = 1 if configured_replicas is None else int(configured_replicas)
+            total = int(status.get("replicas", 0))
+            updated = int(status.get("updatedReplicas", 0))
+            available = int(status.get("availableReplicas", 0))
+            latest = {
+                "generation": generation,
+                "observedGeneration": observed_generation,
+                "desiredReplicas": desired,
+                "replicas": total,
+                "updatedReplicas": updated,
+                "availableReplicas": available,
+            }
+            progressing = next((condition for condition in status.get("conditions", [])
+                                if condition.get("type") == "Progressing"), {})
+            if progressing.get("reason") == "ProgressDeadlineExceeded":
+                raise RuntimeError(
+                    f"deployment/{name} exceeded its progress deadline: "
+                    f"{json.dumps(latest, sort_keys=True)}")
+            remaining = deadline - time.monotonic()
+            if (observed_generation >= generation and updated >= desired
+                    and total <= updated and available >= updated and remaining >= 0):
+                return
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"deployment/{name} did not converge within {timeout}s: "
+                    f"{json.dumps(latest, sort_keys=True)}")
+            time.sleep(min(1, remaining))
 
     def start_client(self):
         interval = "0.05" if self.preset == "heavy" else "0.2"
@@ -154,7 +194,7 @@ class Workload:
             burst = 5 if self.preset == "heavy" else 1
             self.kubectl("scale", "deployment/profile-server", f"--replicas={self.replicas + burst * int(extra)}")
             if self.preset == "heavy":
-                self.kubectl("rollout", "status", "deployment/profile-server", "--timeout=90s", timeout=100, request_timeout="0")
+                self.wait_for_deployment("profile-server", timeout=90)
             extra = not extra
 
     def job_worker(self):
@@ -282,6 +322,7 @@ def run(args):
         # Inspect before namespace deletion triggers GC and destroys the
         # evidence. Diagnostic errors must not replace the workload failure.
         for filename, command in (
+            ("failure-deployment.json", ("get", "deployment/profile-server", "-o", "json")),
             ("failure-pods.json", ("get", "pods", "-o", "json")),
             ("failure-events.json", ("get", "events", "-o", "json")),
             ("failure-client.txt", ("describe", "pod/profile-client")),
