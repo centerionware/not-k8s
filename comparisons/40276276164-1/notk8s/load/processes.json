@@ -1,0 +1,47 @@
+{
+  "nodestore@2421": {
+    "pid": 2421,
+    "exe": "/var/lib/nodebootstrap/toolchain/bin/notk8s",
+    "start_ticks": "2612"
+  },
+  "nodeapiserver@2795": {
+    "pid": 2795,
+    "exe": "/var/lib/nodebootstrap/toolchain/bin/notk8s",
+    "start_ticks": "3143"
+  },
+  "nodescheduler@4122": {
+    "pid": 4122,
+    "exe": "/var/lib/nodebootstrap/toolchain/bin/notk8s",
+    "start_ticks": "5208"
+  },
+  "nodecontroller@3858": {
+    "pid": 3858,
+    "exe": "/var/lib/nodebootstrap/toolchain/bin/notk8s",
+    "start_ticks": "4962"
+  },
+  "nodelet@3209": {
+    "pid": 3209,
+    "exe": "/var/lib/nodebootstrap/toolchain/bin/notk8s",
+    "start_ticks": "4224"
+  },
+  "nodeproxy@4323": {
+    "pid": 4323,
+    "exe": "/var/lib/nodebootstrap/toolchain/bin/notk8s",
+    "start_ticks": "6653"
+  },
+  "containerd@2257": {
+    "pid": 2257,
+    "exe": "/usr/bin/containerd",
+    "start_ticks": "2558"
+  },
+  "flanneld@3368": {
+    "pid": 3368,
+    "exe": "/var/lib/nodebootstrap/toolchain/bin/flanneld",
+    "start_ticks": "4579"
+  },
+  "coredns@3931": {
+    "pid": 3931,
+    "exe": "/coredns",
+    "start_ticks": "5106"
+  }
+}
