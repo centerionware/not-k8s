@@ -14,11 +14,11 @@
     }
   },
   "release-e2e": {
-    "result": "failure",
+    "result": "success",
     "outputs": {}
   },
   "release-flamegraphs": {
-    "result": "success",
+    "result": "failure",
     "outputs": {}
   },
   "cleanup-profile-artifact": {
