@@ -43,7 +43,7 @@ runs:
           { echo "source_sha=$(git rev-parse HEAD)"; echo 'build_profile=release'; rustc -Vv; sha256sum target/release/notk8s Cargo.lock; } >> ../profile-data/metadata.txt
           binary="$PWD/target/release/notk8s"
         fi
-        sudo -E env NOTK8S_COMBINED_PREBUILT="$binary" NOTK8S_BUILD_LAYOUT=combined \
+        sudo -E env "KUBECONFIG=$KUBECONFIG" NOTK8S_COMBINED_PREBUILT="$binary" NOTK8S_BUILD_LAYOUT=combined \
           "$binary" nodebootstrap --layout=combined --apiserver=nodeapiserver --datastore=nodestore --scheduler=nodescheduler --controller-manager=nodecontroller --proxy=nodeproxy
         sudo chmod 644 "$KUBECONFIG"
     - name: Install upstream
@@ -61,7 +61,7 @@ runs:
         # All legs warm up with the same small ready Deployment before idle.
         args=(--backend "$PROFILE_BACKEND" --components "$PROFILE_COMPONENTS" --workload "$PROFILE_WORKLOAD" --metrics-only --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data")
         if [[ "$PROFILE_WHOLE" == true ]]; then args+=(--whole-stack); fi
-        sudo -E env "PATH=$PATH" python3 deploy/profile-stack.py "${args[@]}"
+        sudo -E env "PATH=$PATH" "KUBECONFIG=$KUBECONFIG" python3 deploy/profile-stack.py "${args[@]}"
         sudo chown -R "$(id -u):$(id -g)" profile-data
     - name: Failure diagnostics
       if: failure()
