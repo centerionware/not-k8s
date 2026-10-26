@@ -2,8 +2,8 @@
   "publish-release": {
     "result": "success",
     "outputs": {
-      "published": "true",
-      "tag": "v0.9.0"
+      "tag": "v0.9.0",
+      "published": "true"
     }
   },
   "prepare-validation": {
