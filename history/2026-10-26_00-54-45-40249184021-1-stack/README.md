@@ -1,0 +1,103 @@
+# Stack CPU profile
+
+- Source: `286dba19eee628a13ad8b326fe062bee860cc6a6`
+- Run: https://github.com/centerionware/not-k8s/actions/runs/40249184021
+- Build: profiling; capture result: capture=failure,render=success
+- Workload: heavy (see workload-config.json for parameters)
+- Complete compressed bundle: 97068441 bytes; parts are below GitHub's per-file limit.
+
+This is one single-node diagnostic sample, not conformance, a release performance
+ratio, or a statistical benchmark. Six runtime PIDs are sampled together. The
+bootstrap applet is captured separately. The load generator and perf share the
+host. Inspect workload errors and restart checks before interpreting CPU numbers.
+
+The archive includes raw perf data, decoded stacks, per-process CPU/RSS/PSS series,
+workload operations, symbolized executable, build identity, and diagnostics.
+An empty folded-stack file is reported as no samples, not zero CPU usage.
+Exact min/mean/max values are in [charts/summary.csv](charts/summary.csv).
+Memory units are MiB; CPU is percent of one logical CPU. Chart whiskers show
+the observed range, not a confidence interval.
+
+Download all parts and SHA256SUMS into an empty directory, then:
+
+```sh
+sha256sum -c SHA256SUMS
+cat profile.tar.gz.part-* | tar -xz
+```
+
+Use the included matching executable with `perf report --symfs` if re-analyzing
+on another host. The bundle retains the original absolute executable layout under
+`symfs/`; rendered SVGs and text reports need no symbol setup.
+
+## Browseable files
+
+- [bootstrap/flamegraph.svg](bootstrap/flamegraph.svg)
+- [idle/nodeapiserver/SUMMARY.txt](idle/nodeapiserver/SUMMARY.txt)
+- [idle/nodeapiserver/flamegraph.svg](idle/nodeapiserver/flamegraph.svg)
+- [idle/nodecontroller/SUMMARY.txt](idle/nodecontroller/SUMMARY.txt)
+- [idle/nodecontroller/flamegraph.svg](idle/nodecontroller/flamegraph.svg)
+- [idle/nodelet/SUMMARY.txt](idle/nodelet/SUMMARY.txt)
+- [idle/nodelet/flamegraph.svg](idle/nodelet/flamegraph.svg)
+- [idle/nodeproxy/SUMMARY.txt](idle/nodeproxy/SUMMARY.txt)
+- [idle/nodeproxy/no-samples.txt](idle/nodeproxy/no-samples.txt)
+- [idle/nodescheduler/SUMMARY.txt](idle/nodescheduler/SUMMARY.txt)
+- [idle/nodescheduler/no-samples.txt](idle/nodescheduler/no-samples.txt)
+- [idle/nodestore/SUMMARY.txt](idle/nodestore/SUMMARY.txt)
+- [idle/nodestore/flamegraph.svg](idle/nodestore/flamegraph.svg)
+- [idle/timeseries.csv](idle/timeseries.csv)
+- [load/nodeapiserver/SUMMARY.txt](load/nodeapiserver/SUMMARY.txt)
+- [load/nodeapiserver/flamegraph.svg](load/nodeapiserver/flamegraph.svg)
+- [load/nodecontroller/SUMMARY.txt](load/nodecontroller/SUMMARY.txt)
+- [load/nodecontroller/flamegraph.svg](load/nodecontroller/flamegraph.svg)
+- [load/nodelet/SUMMARY.txt](load/nodelet/SUMMARY.txt)
+- [load/nodelet/flamegraph.svg](load/nodelet/flamegraph.svg)
+- [load/nodeproxy/SUMMARY.txt](load/nodeproxy/SUMMARY.txt)
+- [load/nodeproxy/no-samples.txt](load/nodeproxy/no-samples.txt)
+- [load/nodescheduler/SUMMARY.txt](load/nodescheduler/SUMMARY.txt)
+- [load/nodescheduler/flamegraph.svg](load/nodescheduler/flamegraph.svg)
+- [load/nodestore/SUMMARY.txt](load/nodestore/SUMMARY.txt)
+- [load/nodestore/flamegraph.svg](load/nodestore/flamegraph.svg)
+- [load/timeseries.csv](load/timeseries.csv)
+
+## Charts and flame graphs
+
+### bootstrap/flamegraph.svg
+
+![bootstrap/flamegraph.svg](bootstrap/flamegraph.svg)
+
+### idle/nodeapiserver/flamegraph.svg
+
+![idle/nodeapiserver/flamegraph.svg](idle/nodeapiserver/flamegraph.svg)
+
+### idle/nodecontroller/flamegraph.svg
+
+![idle/nodecontroller/flamegraph.svg](idle/nodecontroller/flamegraph.svg)
+
+### idle/nodelet/flamegraph.svg
+
+![idle/nodelet/flamegraph.svg](idle/nodelet/flamegraph.svg)
+
+### idle/nodestore/flamegraph.svg
+
+![idle/nodestore/flamegraph.svg](idle/nodestore/flamegraph.svg)
+
+### load/nodeapiserver/flamegraph.svg
+
+![load/nodeapiserver/flamegraph.svg](load/nodeapiserver/flamegraph.svg)
+
+### load/nodecontroller/flamegraph.svg
+
+![load/nodecontroller/flamegraph.svg](load/nodecontroller/flamegraph.svg)
+
+### load/nodelet/flamegraph.svg
+
+![load/nodelet/flamegraph.svg](load/nodelet/flamegraph.svg)
+
+### load/nodescheduler/flamegraph.svg
+
+![load/nodescheduler/flamegraph.svg](load/nodescheduler/flamegraph.svg)
+
+### load/nodestore/flamegraph.svg
+
+![load/nodestore/flamegraph.svg](load/nodestore/flamegraph.svg)
+
