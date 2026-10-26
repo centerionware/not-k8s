@@ -1,0 +1,19 @@
+Oct 26 00:02:24 runnervmr9t6g systemd[1]: Started nodescheduler.service - nodescheduler -- not-k8s scheduler (kube-scheduler replacement).
+Oct 26 00:02:24 runnervmr9t6g sh[3795]: 2026-10-26T00:02:24.916946Z  INFO nodescheduler configuration profiles=["default-scheduler"] extenders=0 parallelism=16 percentage_of_nodes_to_score=0 leader_elect=true lease=kube-system/kube-scheduler holder=unknown_3795 topology_defaulting=SystemDefaulting scoring_strategy=LeastAllocated
+Oct 26 00:02:24 runnervmr9t6g sh[3795]: 2026-10-26T00:02:24.923480Z  INFO acquired leadership; this instance is now scheduling lease=kube-scheduler identity=unknown_3795
+Oct 26 00:02:24 runnervmr9t6g sh[3795]: 2026-10-26T00:02:24.923532Z  INFO starting scheduler profiles=["default-scheduler"] resources=[Pod, AssignedPod, UnschedulablePod, Node, Namespace, PersistentVolume, PersistentVolumeClaim, CsiNode, CsiDriver, CsiStorageCapacity, VolumeAttachment, StorageClass, ResourceClaim, ResourceSlice, DeviceClass]
+Oct 26 00:02:24 runnervmr9t6g sh[3795]: 2026-10-26T00:02:24.944635Z  INFO queued for scheduling pod=kube-system/coredns-75fe076a84f46064-blhxk
+Oct 26 00:02:24 runnervmr9t6g sh[3795]: 2026-10-26T00:02:24.944684Z  INFO pod watch (re)listed pods=1 swept=0
+Oct 26 00:02:24 runnervmr9t6g sh[3795]: 2026-10-26T00:02:24.944739Z  INFO unschedulable pod=kube-system/coredns-75fe076a84f46064-blhxk reason=no nodes available to schedule pods nominated_node=None
+Oct 26 00:02:24 runnervmr9t6g sh[3795]: 2026-10-26T00:02:24.946157Z  INFO node watch (re)listed nodes=1 swept=0
+Oct 26 00:02:25 runnervmr9t6g sh[3795]: 2026-10-26T00:02:25.947505Z  INFO scheduled pod=kube-system/coredns-75fe076a84f46064-blhxk node=runnervmr9t6g
+Oct 26 00:02:31 runnervmr9t6g systemd[1]: Stopping nodescheduler.service - nodescheduler -- not-k8s scheduler (kube-scheduler replacement)...
+Oct 26 00:02:31 runnervmr9t6g systemd[1]: nodescheduler.service: Deactivated successfully.
+Oct 26 00:02:31 runnervmr9t6g systemd[1]: Stopped nodescheduler.service - nodescheduler -- not-k8s scheduler (kube-scheduler replacement).
+Oct 26 00:02:31 runnervmr9t6g systemd[1]: Started nodescheduler.service - nodescheduler -- not-k8s scheduler (kube-scheduler replacement).
+Oct 26 00:02:31 runnervmr9t6g sh[4459]: 2026-10-26T00:02:31.349473Z  INFO nodescheduler configuration profiles=["default-scheduler"] extenders=0 parallelism=16 percentage_of_nodes_to_score=0 leader_elect=true lease=kube-system/kube-scheduler holder=unknown_4459 topology_defaulting=SystemDefaulting scoring_strategy=LeastAllocated
+Oct 26 00:02:31 runnervmr9t6g sh[4459]: 2026-10-26T00:02:31.352450Z  INFO another scheduler holds the lease; standing by (this instance watches nothing and schedules nothing until it takes over) lease=kube-scheduler
+Oct 26 00:02:47 runnervmr9t6g sh[4459]: 2026-10-26T00:02:47.373550Z  INFO acquired leadership; this instance is now scheduling lease=kube-scheduler identity=unknown_4459
+Oct 26 00:02:47 runnervmr9t6g sh[4459]: 2026-10-26T00:02:47.373610Z  INFO starting scheduler profiles=["default-scheduler"] resources=[Pod, AssignedPod, UnschedulablePod, Node, Namespace, PersistentVolume, PersistentVolumeClaim, CsiNode, CsiDriver, CsiStorageCapacity, VolumeAttachment, StorageClass, ResourceClaim, ResourceSlice, DeviceClass]
+Oct 26 00:02:47 runnervmr9t6g sh[4459]: 2026-10-26T00:02:47.388737Z  INFO node watch (re)listed nodes=1 swept=0
+Oct 26 00:02:47 runnervmr9t6g sh[4459]: 2026-10-26T00:02:47.390610Z  INFO pod watch (re)listed pods=2 swept=0

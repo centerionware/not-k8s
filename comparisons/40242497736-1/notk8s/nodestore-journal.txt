@@ -1,0 +1,8 @@
+Oct 26 00:02:02 runnervmr9t6g systemd[1]: Started nodestore.service - nodestore -- not-k8s datastore (etcd v3 API over sqlite).
+Oct 26 00:02:02 runnervmr9t6g sh[2658]: 2026-10-26T00:02:02.093476Z  INFO nodestore configuration listen=127.0.0.1:2379 data_dir=/var/lib/nodestore compact_interval_secs=300 compact_retain_revisions=10000
+Oct 26 00:02:02 runnervmr9t6g sh[2658]: 2026-10-26T00:02:02.097128Z  INFO datastore opened db=/var/lib/nodestore/state.db revision=1 member_id=1
+Oct 26 00:02:02 runnervmr9t6g sh[2658]: 2026-10-26T00:02:02.097292Z  INFO generating TLS material (none configured) domain=Client dir=/var/lib/nodestore/pki/client
+Oct 26 00:02:02 runnervmr9t6g sh[2658]: 2026-10-26T00:02:02.097728Z  INFO client API requires TLS with a client certificate ca=/var/lib/nodestore/pki/client/ca.crt
+Oct 26 00:02:02 runnervmr9t6g sh[2658]: 2026-10-26T00:02:02.097745Z  INFO a client certificate for kube-apiserver is available cert=/var/lib/nodestore/pki/client/client.crt key=/var/lib/nodestore/pki/client/client.key
+Oct 26 00:02:02 runnervmr9t6g sh[2658]: 2026-10-26T00:02:02.097842Z  INFO serving the etcd v3 API addr=127.0.0.1:2379
+Oct 26 00:02:32 runnervmr9t6g sh[2658]: 2026-10-26T00:02:32.098924Z  INFO nodestore: Range call tally (debugging counters for #562) total_range_calls=1137 window_secs=30 top_by_resource=apiservices=171, clusterroles=164, clusterrolebindings=161, customresourcedefinitions=77, namespaces=64, pods=37, resourcequotas=33, leases=30, endpointslices=26, services=22

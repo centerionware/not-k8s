@@ -1,0 +1,31 @@
+Oct 26 00:02:19 runnervmr9t6g systemd[1]: Started nodelet.service - nodelet -- not-k8s node agent (kubelet replacement).
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.488556Z  INFO starting nodelet node=runnervmr9t6g runtime=Cri cpu=4 memory_bytes=16759443456 max_pods=110
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.489237Z  INFO initializing pod runtime
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.489252Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.489375Z  INFO connecting to CRI endpoint endpoint=unix:///run/containerd/containerd.sock
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.489389Z  INFO opening CRI socket endpoint="unix:///run/containerd/containerd.sock"
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.489588Z  INFO CRI socket connected; checking runtime version endpoint="unix:///run/containerd/containerd.sock"
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.490933Z  INFO CRI runtime version check finished runtime_name=containerd
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.496805Z  INFO discovered CRI cgroup driver cgroup_driver=Cgroupfs
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.497896Z  INFO CRI startup checks finished runtime_handler_count=2
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.497975Z  INFO connected to CRI endpoint endpoint=unix:///run/containerd/containerd.sock
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.498021Z  INFO pod runtime initialized
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.498294Z  INFO plugin registry: watching for CSI driver / device plugin registrations paths=["/var/lib/nodelet/plugins_registry", "/var/lib/kubelet/plugins_registry"]
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.544042Z  INFO registering node image_count=0 runtime_handler_count=2
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.544069Z  INFO node registration request starting node=runnervmr9t6g operation="apply Node"
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.548419Z  INFO node registration request starting node=runnervmr9t6g operation="push Node status"
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.551536Z  INFO node registration request starting node=runnervmr9t6g operation="renew Lease"
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.554898Z  INFO node registered and Ready node=runnervmr9t6g
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.562932Z  INFO waiting for CoreDNS to become ready before reconciling workloads
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.562954Z  INFO PodResources API: listening path=/var/lib/nodelet/pod-resources/kubelet.sock
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.563352Z  INFO kubelet-style HTTP(S) server listening (containerLogs/exec/attach/portForward) addr=0.0.0.0:10250
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.564905Z  WARN CoreDNS is not ready; workload reconciliation is paused
+Oct 26 00:02:19 runnervmr9t6g sh[3422]: 2026-10-26T00:02:19.594595Z  INFO CRI startup inventory queued for reconciliation pod_count=0
+Oct 26 00:02:27 runnervmr9t6g sh[3422]: 2026-10-26T00:02:27.582747Z  INFO creating pod sandbox with CRI cgroup parent pod=kube-system/nodebootstrap-cni-seed uid=4745148e-97f8-4a2a-af4b-575fd15bc6f1 cgroup_parent=/kubepods/besteffort
+Oct 26 00:02:29 runnervmr9t6g sh[3422]: 2026-10-26T00:02:29.012701Z  INFO CreateContainer succeeded namespace=kube-system pod=nodebootstrap-cni-seed container=seed container_id=4b020b15da771966346f3e1a7f3d9c4b17945e91f58bce58ff876e4ad6e14ffe
+Oct 26 00:02:29 runnervmr9t6g sh[3422]: 2026-10-26T00:02:29.049301Z  INFO StartContainer succeeded namespace=kube-system pod=nodebootstrap-cni-seed container=seed container_id=4b020b15da771966346f3e1a7f3d9c4b17945e91f58bce58ff876e4ad6e14ffe
+Oct 26 00:02:29 runnervmr9t6g sh[3422]: 2026-10-26T00:02:29.063752Z  INFO creating pod sandbox with CRI cgroup parent pod=kube-system/coredns-75fe076a84f46064-blhxk uid=ef984f4f-9b05-478f-b7c7-9e3d971c3ac2 cgroup_parent=/kubepods/burstable
+Oct 26 00:02:30 runnervmr9t6g sh[3422]: 2026-10-26T00:02:30.027612Z  INFO CreateContainer succeeded namespace=kube-system pod=coredns-75fe076a84f46064-blhxk container=coredns container_id=cfbf30aa3f31c029e8d2bb3c59d45589a0083970b27adad8fa043892bd6c130b
+Oct 26 00:02:30 runnervmr9t6g sh[3422]: 2026-10-26T00:02:30.059642Z  INFO StartContainer succeeded namespace=kube-system pod=coredns-75fe076a84f46064-blhxk container=coredns container_id=cfbf30aa3f31c029e8d2bb3c59d45589a0083970b27adad8fa043892bd6c130b
+Oct 26 00:02:31 runnervmr9t6g sh[3422]: 2026-10-26T00:02:31.064736Z  INFO starting Pod teardown pod=kube-system/nodebootstrap-cni-seed uid=4745148e-97f8-4a2a-af4b-575fd15bc6f1 deletion_timestamp=Some(Time(2026-10-26T00:02:27Z))
+Oct 26 00:02:34 runnervmr9t6g sh[3422]: 2026-10-26T00:02:34.067540Z  WARN readiness probe reached its failure threshold pod=kube-system/coredns-75fe076a84f46064-blhxk container=coredns probe=Http { path: "/ready", port: 8181, https: false, host: None, headers: [] } failure=HTTP probe 10.42.0.3:8181/ready returned status 503

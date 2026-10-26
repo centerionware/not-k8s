@@ -1,0 +1,2 @@
+Oct 26 00:02:46 runnervmr9t6g systemd[1]: Started nodeproxy.service - nodeproxy -- not-k8s Service routing (kube-proxy replacement).
+Oct 26 00:02:46 runnervmr9t6g sh[4682]: 2026-10-26T00:02:46.264791Z  INFO service proxy watching Services + EndpointSlices (nftables backend) ip_family=V4 lb_method=RoundRobin fib=true numgen=true jhash=true

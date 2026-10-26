@@ -1,0 +1,7 @@
+kubectl ('delete', 'namespace', 'nk-profile-4779-18e1eb6a4d33409c', '--ignore-not-found', '--wait=false'): E1026 00:02:48.747074    4812 memcache.go:265] "Unhandled Error" err="couldn't get current server API group list: Get \"http://localhost:8080/api?timeout=30s\": dial tcp [::1]:8080: connect: connection refused"
+E1026 00:02:48.747504    4812 memcache.go:265] "Unhandled Error" err="couldn't get current server API group list: Get \"http://localhost:8080/api?timeout=30s\": dial tcp [::1]:8080: connect: connection refused"
+E1026 00:02:48.748966    4812 memcache.go:265] "Unhandled Error" err="couldn't get current server API group list: Get \"http://localhost:8080/api?timeout=30s\": dial tcp [::1]:8080: connect: connection refused"
+E1026 00:02:48.749409    4812 memcache.go:265] "Unhandled Error" err="couldn't get current server API group list: Get \"http://localhost:8080/api?timeout=30s\": dial tcp [::1]:8080: connect: connection refused"
+E1026 00:02:48.750873    4812 memcache.go:265] "Unhandled Error" err="couldn't get current server API group list: Get \"http://localhost:8080/api?timeout=30s\": dial tcp [::1]:8080: connect: connection refused"
+The connection to the server localhost:8080 was refused - did you specify the right host or port?
+
