@@ -1,0 +1,16 @@
+Oct 26 07:31:57 runnervmr9t6g systemd[1]: Started nodelet.service - nodelet -- not-k8s node agent (kubelet replacement).
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.223099Z  INFO starting nodelet node=runnervmr9t6g runtime=Cri cpu=4 memory_bytes=16759443456 max_pods=110
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.223700Z  INFO initializing pod runtime
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.223714Z  INFO using CRI runtime (containerd) endpoint=unix:///run/containerd/containerd.sock
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.223846Z  INFO connecting to CRI endpoint endpoint=unix:///run/containerd/containerd.sock
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.223857Z  INFO opening CRI socket endpoint="unix:///run/containerd/containerd.sock"
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.224015Z  INFO CRI socket connected; checking runtime version endpoint="unix:///run/containerd/containerd.sock"
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.226803Z  INFO CRI runtime version check finished runtime_name=containerd
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.230972Z  INFO discovered CRI cgroup driver cgroup_driver=Cgroupfs
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.231692Z  INFO CRI startup checks finished runtime_handler_count=2
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.231761Z  INFO connected to CRI endpoint endpoint=unix:///run/containerd/containerd.sock
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.231772Z  INFO pod runtime initialized
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.232134Z  INFO plugin registry: watching for CSI driver / device plugin registrations paths=["/var/lib/nodelet/plugins_registry", "/var/lib/kubelet/plugins_registry"]
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.237118Z  INFO registering node image_count=0 runtime_handler_count=2
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.237136Z  INFO node registration request starting node=runnervmr9t6g operation="apply Node"
+Oct 26 07:31:57 runnervmr9t6g sh[3219]: 2026-10-26T07:31:57.266974Z  INFO CRI startup inventory queued for reconciliation pod_count=0
