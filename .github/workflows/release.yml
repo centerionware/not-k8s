@@ -363,7 +363,6 @@ jobs:
   publish-release:
     permissions:
       contents: write
-      pull-requests: write
     outputs:
       tag: v${{ steps.version.outputs.version }}
       published: ${{ steps.publish.outputs.published }}
@@ -497,94 +496,6 @@ jobs:
           gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/VERSION" \
             -f message="chore(release): advance version to $next" \
             -f content="$content" -f sha="$sha" -f branch=version >/dev/null
-      - name: Update install docs
-        if: inputs.reuse_release_tag == ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          published_tag="$(gh release view "v$VERSION" --json tagName --jq .tagName)"
-          published_version="${published_tag#v}"
-          [[ "$published_version" == "$VERSION" ]]
-
-          # The README deliberately uses the moving latest-release URL with a
-          # VERSION placeholder. It does not need a per-release commit, and
-          # attempting to parse it as a versioned URL makes publication fail.
-          if grep -Fqx 'wget https://github.com/centerionware/not-k8s/releases/latest/download/notk8s-VERSION-linux-aarch64-release' README.md; then
-            echo 'README uses the latest-release installer URL'
-            exit 0
-          fi
-
-          old_version="$(sed -nE 's#^wget https://github.com/centerionware/not-k8s/releases/download/v([0-9]+(\.[0-9]+)+)/notk8s-[0-9]+(\.[0-9]+)+-linux-aarch64-release$#\1#p' README.md | head -n1)"
-          [[ -n "$old_version" ]]
-          if [[ "$old_version" == "$published_version" ]]; then
-            echo "README already points at release $published_version"
-            exit 0
-          fi
-
-          OLD_VERSION="$old_version" NEW_VERSION="$published_version" python3 - <<'PY'
-          import os
-          import re
-          from pathlib import Path
-
-          path = Path("README.md")
-          text = path.read_text()
-          old = os.environ["OLD_VERSION"]
-          new = os.environ["NEW_VERSION"]
-          pattern = re.compile(
-              rf"(wget https://github\.com/centerionware/not-k8s/releases/download/v)"
-              rf"{re.escape(old)}(/notk8s-){re.escape(old)}"
-              rf"(-linux-aarch64-release)"
-          )
-          updated, replacements = pattern.subn(
-              lambda match: f"{match.group(1)}{new}{match.group(2)}{new}{match.group(3)}",
-              text,
-              count=1,
-          )
-          if replacements != 1:
-              raise SystemExit(
-                  f"expected one README install command for release {old}, found {replacements}"
-              )
-          path.write_text(updated)
-          PY
-
-          git diff --check
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md
-          git commit -m "docs: update README install version to $published_version"
-          branch="release/install-docs-v$published_version"
-          open_pr="$(gh pr list --state open --head "$branch" --json number --jq '.[0].number // empty')"
-          if [[ -n "$open_pr" ]]; then
-            echo "README update is already proposed in PR #$open_pr"
-            exit 0
-          fi
-
-          closed_pr="$(gh pr list --state closed --head "$branch" --json number,mergedAt --jq '[.[] | select(.mergedAt == null)][0].number // empty')"
-          if [[ -n "$closed_pr" ]]; then
-            gh pr reopen "$closed_pr"
-            exit 0
-          fi
-
-          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-            git fetch origin "$branch"
-            git switch --create "$branch" --track "origin/$branch"
-            if ! grep -Fqx "wget https://github.com/centerionware/not-k8s/releases/download/v$published_version/notk8s-$published_version-linux-aarch64-release" README.md; then
-              echo "existing $branch does not contain the expected README update" >&2
-              exit 1
-            fi
-          else
-            git switch --create "$branch"
-            git push --set-upstream origin "$branch"
-          fi
-
-          gh pr create \
-            --base main \
-            --head "$branch" \
-            --title "docs: update README install version to v$published_version" \
-            --body "Update the aarch64 install example to use the published v$published_version release."
-
   publish-activator:
     needs: [publish-release, release-identity]
     if: ${{ inputs.reuse_release_tag == '' && needs.publish-release.outputs.published == 'true' }}

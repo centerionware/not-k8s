@@ -35,17 +35,20 @@ both: [x86_64](https://github.com/centerionware/not-k8s/tree/profiling-results/l
 It's going to be something like
 
 ```
-wget https://github.com/centerionware/not-k8s/releases/download/v0.8.0/notk8s-0.8.0-linux-aarch64-release
-chmod +x notk8s-0.8.0-linux-aarch64-release
-ln -s ./notk8s-0.8.0-linux-aarch64-release bootstrap
+release_tag="$(curl -fsSL https://api.github.com/repos/centerionware/not-k8s/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')"
+version="${release_tag#v}"
+asset="notk8s-$version-linux-aarch64-release"
+wget "https://github.com/centerionware/not-k8s/releases/download/$release_tag/$asset" -O "$asset"
+chmod +x "$asset"
+ln -s "./$asset" bootstrap
 ./bootstrap
 ```
 
-This example downloads the `v0.8.0` aarch64 release. The release tag includes
-the `v` prefix, while the asset filename uses the bare version (`0.8.0`);
-choose the matching architecture asset when installing on another platform.
-The combined binary dispatches through `argv[0]`, so the `bootstrap` symlink
-and the component names use the same executable.
+This example resolves the latest stable release, whose tag includes the `v`
+prefix while the asset filename uses the bare version. Install `curl`,
+`python3`, and `wget` first, and choose the matching architecture asset on
+another platform. The combined binary dispatches through `argv[0]`, so the
+`bootstrap` symlink and the component names use the same executable.
 
 Common commands after downloading the release binary:
 
