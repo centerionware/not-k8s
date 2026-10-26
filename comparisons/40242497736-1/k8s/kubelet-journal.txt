@@ -1,0 +1,550 @@
+Oct 26 00:02:24 runnervmr9t6g systemd[1]: Started kubelet.service - kubelet: The Kubernetes Node Agent.
+Oct 26 00:02:24 runnervmr9t6g (kubelet)[8155]: kubelet.service: Referenced but unset environment variable evaluates to an empty string: KUBELET_KUBEADM_ARGS
+Oct 26 00:02:24 runnervmr9t6g kubelet[8155]: E1026 00:02:24.088427    8155 run.go:72] "command failed" err="failed to load kubelet config file, path: /var/lib/kubelet/config.yaml, error: failed to load Kubelet config file /var/lib/kubelet/config.yaml, error failed to read kubelet config file \"/var/lib/kubelet/config.yaml\", error: open /var/lib/kubelet/config.yaml: no such file or directory"
+Oct 26 00:02:24 runnervmr9t6g systemd[1]: kubelet.service: Main process exited, code=exited, status=1/FAILURE
+Oct 26 00:02:24 runnervmr9t6g systemd[1]: kubelet.service: Failed with result 'exit-code'.
+Oct 26 00:02:31 runnervmr9t6g systemd[1]: Stopped kubelet.service - kubelet: The Kubernetes Node Agent.
+Oct 26 00:02:32 runnervmr9t6g systemd[1]: Started kubelet.service - kubelet: The Kubernetes Node Agent.
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.157412    8434 server.go:257] "Effective KubeletConfiguration" config=<
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         address: 0.0.0.0
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         apiVersion: kubelet.config.k8s.io/v1beta1
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         authentication:
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           anonymous:
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:             enabled: false
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           webhook:
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:             cacheTTL: 2m0s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:             enabled: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           x509:
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:             clientCAFile: /etc/kubernetes/pki/ca.crt
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         authorization:
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           mode: Webhook
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           webhook:
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:             cacheAuthorizedTTL: 5m0s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:             cacheUnauthorizedTTL: 30s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         cgroupDriver: systemd
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         cgroupsPerQOS: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         clusterDNS:
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         - 10.43.0.10
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         clusterDomain: cluster.local
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         configMapAndSecretChangeDetectionStrategy: Watch
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         containerLogMaxFiles: 5
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         containerLogMaxSize: 10Mi
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         containerLogMaxWorkers: 1
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         containerLogMonitorInterval: 10s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         containerRuntimeEndpoint: unix:///run/containerd/containerd.sock
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         contentType: application/vnd.kubernetes.protobuf
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         cpuCFSQuota: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         cpuCFSQuotaPeriod: 100ms
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         cpuManagerPolicy: none
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         cpuManagerReconcilePeriod: 10s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         crashLoopBackOff:
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           maxContainerRestartPeriod: 5m0s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         enableControllerAttachDetach: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         enableDebugFlagsHandler: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         enableDebuggingHandlers: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         enableProfilingHandler: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         enableServer: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         enableSystemLogHandler: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         enableSystemLogQuery: false
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         enforceNodeAllocatable:
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         - pods
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         eventBurst: 100
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         eventRecordQPS: 50
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         evictionHard:
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           imagefs.available: 15%
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           imagefs.inodesFree: 5%
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           memory.available: 100Mi
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           nodefs.available: 10%
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           nodefs.inodesFree: 5%
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         evictionPressureTransitionPeriod: 5m0s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         failCgroupV1: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         failSwapOn: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         fileCheckFrequency: 20s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         hairpinMode: promiscuous-bridge
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         healthzBindAddress: 127.0.0.1
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         healthzPort: 10248
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         httpCheckFrequency: 20s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         imageGCHighThresholdPercent: 85
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         imageGCLowThresholdPercent: 80
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         imageMaximumGCAge: 0s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         imageMinimumGCAge: 2m0s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         imagePullCredentialsVerificationPolicy: NeverVerifyPreloadedImages
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         iptablesDropBit: 15
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         iptablesMasqueradeBit: 14
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         kind: KubeletConfiguration
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         kubeAPIBurst: 100
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         kubeAPIQPS: 50
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         localStorageCapacityIsolation: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         logging:
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           flushFrequency: 5s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           format: text
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           options:
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:             json:
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:               infoBufferSize: "0"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:             text:
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:               infoBufferSize: "0"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:           verbosity: 0
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         makeIPTablesUtilChains: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         maxOpenFiles: 1000000
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         maxPods: 110
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         memoryManagerPolicy: None
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         memoryReservationPolicy: None
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         memorySwap: {}
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         mergeDefaultEvictionSettings: false
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         nodeLeaseDurationSeconds: 40
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         nodeStatusMaxImages: 50
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         nodeStatusReportFrequency: 5m0s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         nodeStatusUpdateFrequency: 10s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         oomScoreAdj: -999
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         podLogsDir: /var/log/pods
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         podPidsLimit: -1
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         port: 10250
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         registerNode: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         registryBurst: 10
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         registryPullQPS: 5
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         resolvConf: /run/systemd/resolve/resolv.conf
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         rotateCertificates: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         runtimeRequestTimeout: 2m0s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         seccompDefault: false
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         serializeImagePulls: true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         shutdownGracePeriod: 0s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         shutdownGracePeriodCriticalPods: 0s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         staticPodPath: /etc/kubernetes/manifests
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         streamingConnectionIdleTimeout: 4h0m0s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         syncFrequency: 1m0s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         topologyManagerPolicy: none
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         topologyManagerScope: container
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         volumePluginDir: /usr/libexec/kubernetes/kubelet-plugins/volume/exec/
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:         volumeStatsAggPeriod: 1m0s
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]:  >
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.345721    8434 server.go:545] "Kubelet version" kubeletVersion="v1.37.1"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.345758    8434 server.go:547] "Golang settings" GOGC="" GOMAXPROCS="" GOTRACEBACK=""
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.345778    8434 watchdog_linux.go:94] "Systemd watchdog is not enabled"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.345788    8434 watchdog_linux.go:137] "Systemd watchdog is not enabled or the interval is invalid, so health checking will not be started."
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.346181    8434 server.go:1036] "Client rotation is on, will bootstrap in background"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.350697    8434 certificate_manager.go:605] "Failed while requesting a signed certificate from the control plane" err="cannot create certificate signing request: Post \"https://10.1.0.117:6443/apis/certificates.k8s.io/v1/certificatesigningrequests\": dial tcp 10.1.0.117:6443: connect: connection refused" logger="kubernetes.io/kube-apiserver-client-kubelet.UnhandledError"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.352043    8434 dynamic_cafile_content.go:161] "Starting controller" name="client-ca-bundle::/etc/kubernetes/pki/ca.crt"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.355306    8434 server.go:1502] "Using cgroup driver setting received from the CRI runtime" cgroupDriver="systemd"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.368212    8434 server.go:858] "--cgroups-per-qos enabled, but --cgroup-root was not specified.  Defaulting to /"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.368484    8434 container_manager_linux.go:273] "Container manager verified user specified cgroup-root exists" cgroupRoot=[]
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.368506    8434 container_manager_linux.go:278] "Creating Container Manager object based on Node Config" nodeConfig={"NodeName":"runnervmr9t6g","RuntimeCgroupsName":"","SystemCgroupsName":"","KubeletCgroupsName":"","KubeletOOMScoreAdj":-999,"ContainerRuntime":"","CgroupsPerQOS":true,"CgroupRoot":"/","CgroupDriver":"systemd","KubeletRootDir":"/var/lib/kubelet","ProtectKernelDefaults":false,"KubeReservedCgroupName":"","SystemReservedCgroupName":"","ReservedSystemCPUs":{},"EnforceNodeAllocatable":{"pods":{}},"KubeReserved":null,"SystemReserved":null,"HardEvictionThresholds":[{"Signal":"imagefs.inodesFree","Operator":"LessThan","Value":{"Quantity":null,"Percentage":0.05},"GracePeriod":0,"MinReclaim":null},{"Signal":"memory.available","Operator":"LessThan","Value":{"Quantity":"100Mi","Percentage":0},"GracePeriod":0,"MinReclaim":null},{"Signal":"nodefs.available","Operator":"LessThan","Value":{"Quantity":null,"Percentage":0.1},"GracePeriod":0,"MinReclaim":null},{"Signal":"nodefs.inodesFree","Operator":"LessThan","Value":{"Quantity":null,"Percentage":0.05},"GracePeriod":0,"MinReclaim":null},{"Signal":"imagefs.available","Operator":"LessThan","Value":{"Quantity":null,"Percentage":0.15},"GracePeriod":0,"MinReclaim":null}],"QOSReserved":{},"CPUManagerPolicy":"none","CPUManagerPolicyOptions":null,"TopologyManagerScope":"container","CPUManagerReconcilePeriod":10000000000,"MemoryManagerPolicy":"None","MemoryManagerReservedMemory":null,"MemoryReservationPolicy":"None","MemoryThrottlingFactor":null,"PodPidsLimit":-1,"EnforceCPULimits":true,"CPUCFSQuotaPeriod":100000000,"TopologyManagerPolicy":"none","TopologyManagerPolicyOptions":null,"CgroupVersion":2}
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.368697    8434 topology_manager.go:183] "Creating topology manager with none policy"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.368706    8434 container_manager_linux.go:310] "Creating device plugin manager"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.368818    8434 container_manager_linux.go:319] "Creating Dynamic Resource Allocation (DRA) manager"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.370400    8434 state_mem.go:45] "Initialized" logger="CPUManager state memory"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.370590    8434 kubelet.go:512] "Attempting to sync node with API server"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.370604    8434 kubelet.go:389] "Adding static pod path" path="/etc/kubernetes/manifests"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.370643    8434 kubelet.go:400] "Adding apiserver pod source"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.370675    8434 apiserver.go:41] "Waiting for node sync before watching apiserver pods"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.371446    8434 kuberuntime_manager.go:315] "Container runtime initialized" containerRuntime="containerd" version="v2.4.1" apiVersion="v1"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.372536    8434 kubelet.go:1011] "ClusterTrustBundle informer will be started eventually once a trust bundle is requested"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.372678    8434 podcertificatemanager.go:340] "podcertificate.IssuingManager starting up"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: W1026 00:02:32.372689    8434 probe.go:275] Flexvolume plugin directory at /usr/libexec/kubernetes/kubelet-plugins/volume/exec/ does not exist. Recreating.
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.374922    8434 server.go:1336] "Started kubelet"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.375306    8434 server.go:196] "Starting to listen" address="0.0.0.0" port=10250
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.376403    8434 ratelimit.go:56] "Setting rate limiting for endpoint" service="podresources" qps=100 burstTokens=10
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.376451    8434 server_v1.go:49] "podresources" method="list" useActivePods=true
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.376644    8434 server.go:267] "Starting to serve the podresources API" endpoint="unix:/var/lib/kubelet/pod-resources/kubelet.sock"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.377036    8434 server.go:293] "Starting to serve the pods API" endpoint="unix:/var/lib/kubelet/pods-api/pods-api.sock"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.377212    8434 server.go:365] "Adding debug handlers to kubelet server"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.377930    8434 fs_resource_analyzer.go:69] "Starting FS ResourceAnalyzer"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.378309    8434 event.go:374] "Unable to write event (may retry after sleeping)" err="Post \"https://10.1.0.117:6443/api/v1/namespaces/default/events\": dial tcp 10.1.0.117:6443: connect: connection refused" event="&Event{ObjectMeta:{runnervmr9t6g.18e1eb668e304246  default    0 0001-01-01 00:00:00 +0000 UTC <nil> <nil> map[] map[] [] [] []},InvolvedObject:ObjectReference{Kind:Node,Namespace:,Name:runnervmr9t6g,UID:,APIVersion:v1,ResourceVersion:,FieldPath:,},Reason:Starting,Message:Starting kubelet.,Source:EventSource{Component:kubelet,Host:runnervmr9t6g,},FirstTimestamp:2026-10-26 00:02:32.374886982 +0000 UTC m=+0.244334151,LastTimestamp:2026-10-26 00:02:32.374886982 +0000 UTC m=+0.244334151,Count:1,Type:Normal,EventTime:0001-01-01 00:00:00 +0000 UTC,Series:nil,Action:,Related:nil,ReportingController:kubelet,ReportingInstance:runnervmr9t6g,}"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.378861    8434 dynamic_serving_content.go:135] "Starting controller" name="kubelet-server-cert-files::/var/lib/kubelet/pki/kubelet.crt::/var/lib/kubelet/pki/kubelet.key"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.378995    8434 tlsconfig.go:243] "Starting DynamicServingCertificateController"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.379177    8434 volume_manager.go:331] "Starting Kubelet Volume Manager"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.379321    8434 desired_state_of_world_populator.go:146] "Desired state populator starts to run"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.379737    8434 kubelet_node_status.go:396] "Error getting the current node from lister" err="node \"runnervmr9t6g\" not found"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.379998    8434 reconciler.go:29] "Reconciler: start to sync state"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.380014    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.380312    8434 controller.go:208] "Failed to ensure lease exists, will retry" err="Get \"https://10.1.0.117:6443/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases/runnervmr9t6g?timeout=10s\": dial tcp 10.1.0.117:6443: connect: connection refused" interval="200ms"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.380932    8434 factory.go:222] Registration of the systemd container factory successfully
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.381082    8434 factory.go:220] Registration of the crio container factory failed: Get "http://%2Fvar%2Frun%2Fcrio%2Fcrio.sock/info": dial unix /var/run/crio/crio.sock: connect: no such file or directory
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.382970    8434 factory.go:222] Registration of the containerd container factory successfully
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.384451    8434 kubelet.go:1754] "Image garbage collection failed once. Stats initialization may not have completed yet" err="invalid capacity 0 on image filesystem"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.393553    8434 cpu_manager.go:239] "Starting" policy="none"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.393564    8434 cpu_manager.go:240] "Reconciling" reconcilePeriod="10s"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.393578    8434 state_mem.go:45] "Initialized" logger="CPUManager state checkpoint.CPUManager state memory"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.393586    8434 state_checkpoint.go:191] "trying to load v4 CPU manager checkpoint" logger="CPUManager state checkpoint"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.401862    8434 policy_none.go:51] "Start"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.401885    8434 memory_manager.go:209] "Starting memorymanager" policy="None"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.401896    8434 state_mem.go:39] "Initializing new in-memory state store" logger="Memory Manager state checkpoint"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.402540    8434 policy_none.go:47] "Start"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.431288    8434 manager.go:550] "Failed to read data from checkpoint" err="checkpoint is not found" checkpoint="kubelet_internal_checkpoint"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.431462    8434 eviction_manager.go:193] "Eviction manager: starting control loop"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.431479    8434 container_log_manager.go:146] "Initializing container log rotate workers" workers=1 monitorPeriod="10s"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.431682    8434 plugin_manager.go:121] "Starting Kubelet Plugin Manager"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.432872    8434 eviction_manager.go:280] "eviction manager: failed to check if we have separate container filesystem. Ignoring." err="no imagefs label for configured runtime"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.432985    8434 eviction_manager.go:305] "Eviction manager: failed to get summary stats" err="failed to get node info: node \"runnervmr9t6g\" not found"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.449170    8434 kubelet_network_linux.go:53] "Initialized iptables rules." protocol="IPv4"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.450587    8434 kubelet_network_linux.go:53] "Initialized iptables rules." protocol="IPv6"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.450637    8434 status_manager.go:283] "Starting to sync pod status with apiserver"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.450666    8434 kubelet.go:2673] "Starting kubelet main sync loop"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.450843    8434 kubelet.go:2697] "Skipping pod synchronization" err="PLEG is not healthy: pleg has yet to be successful"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.480449    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.532387    8434 kubelet_node_status.go:75] "Attempting to register node" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.532754    8434 kubelet_node_status.go:108] "Unable to register node with API server" err="Post \"https://10.1.0.117:6443/api/v1/nodes\": dial tcp 10.1.0.117:6443: connect: connection refused" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.553937    8434 server.go:177] "Pod update broadcasted" podUID="5a15d2581c52e2d7cb90e909d80ffb65" type="ADDED"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.557054    8434 server.go:177] "Pod update broadcasted" podUID="0b140aede71c7a9448988a7a90484ece" type="ADDED"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.558261    8434 server.go:177] "Pod update broadcasted" podUID="0d04392a05fa6b713293429b9d4a393c" type="ADDED"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.559501    8434 server.go:177] "Pod update broadcasted" podUID="6a66f61a6bb0091e80e5b260f750125f" type="ADDED"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.574025    8434 kubelet.go:3575] "No need to create a mirror pod, since failed to get node info from the cluster" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.580800    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.580865    8434 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kubeconfig\" (UniqueName: \"kubernetes.io/host-path/5a15d2581c52e2d7cb90e909d80ffb65-kubeconfig\") pod \"kube-scheduler-runnervmr9t6g\" (UID: \"5a15d2581c52e2d7cb90e909d80ffb65\") " pod="kube-system/kube-scheduler-runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.580889    8434 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"etcd-data\" (UniqueName: \"kubernetes.io/host-path/0b140aede71c7a9448988a7a90484ece-etcd-data\") pod \"etcd-runnervmr9t6g\" (UID: \"0b140aede71c7a9448988a7a90484ece\") " pod="kube-system/etcd-runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.580919    8434 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"ca-certs\" (UniqueName: \"kubernetes.io/host-path/0d04392a05fa6b713293429b9d4a393c-ca-certs\") pod \"kube-apiserver-runnervmr9t6g\" (UID: \"0d04392a05fa6b713293429b9d4a393c\") " pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.580944    8434 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"etc-ca-certificates\" (UniqueName: \"kubernetes.io/host-path/0d04392a05fa6b713293429b9d4a393c-etc-ca-certificates\") pod \"kube-apiserver-runnervmr9t6g\" (UID: \"0d04392a05fa6b713293429b9d4a393c\") " pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.580985    8434 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"k8s-certs\" (UniqueName: \"kubernetes.io/host-path/0d04392a05fa6b713293429b9d4a393c-k8s-certs\") pod \"kube-apiserver-runnervmr9t6g\" (UID: \"0d04392a05fa6b713293429b9d4a393c\") " pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.581003    8434 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"usr-local-share-ca-certificates\" (UniqueName: \"kubernetes.io/host-path/0d04392a05fa6b713293429b9d4a393c-usr-local-share-ca-certificates\") pod \"kube-apiserver-runnervmr9t6g\" (UID: \"0d04392a05fa6b713293429b9d4a393c\") " pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.581030    8434 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"usr-share-ca-certificates\" (UniqueName: \"kubernetes.io/host-path/0d04392a05fa6b713293429b9d4a393c-usr-share-ca-certificates\") pod \"kube-apiserver-runnervmr9t6g\" (UID: \"0d04392a05fa6b713293429b9d4a393c\") " pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.581064    8434 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"ca-certs\" (UniqueName: \"kubernetes.io/host-path/6a66f61a6bb0091e80e5b260f750125f-ca-certs\") pod \"kube-controller-manager-runnervmr9t6g\" (UID: \"6a66f61a6bb0091e80e5b260f750125f\") " pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.581091    8434 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"etcd-certs\" (UniqueName: \"kubernetes.io/host-path/0b140aede71c7a9448988a7a90484ece-etcd-certs\") pod \"etcd-runnervmr9t6g\" (UID: \"0b140aede71c7a9448988a7a90484ece\") " pod="kube-system/etcd-runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.581110    8434 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"etc-ca-certificates\" (UniqueName: \"kubernetes.io/host-path/6a66f61a6bb0091e80e5b260f750125f-etc-ca-certificates\") pod \"kube-controller-manager-runnervmr9t6g\" (UID: \"6a66f61a6bb0091e80e5b260f750125f\") " pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.581120    8434 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"k8s-certs\" (UniqueName: \"kubernetes.io/host-path/6a66f61a6bb0091e80e5b260f750125f-k8s-certs\") pod \"kube-controller-manager-runnervmr9t6g\" (UID: \"6a66f61a6bb0091e80e5b260f750125f\") " pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.581152    8434 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kubeconfig\" (UniqueName: \"kubernetes.io/host-path/6a66f61a6bb0091e80e5b260f750125f-kubeconfig\") pod \"kube-controller-manager-runnervmr9t6g\" (UID: \"6a66f61a6bb0091e80e5b260f750125f\") " pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.581166    8434 controller.go:208] "Failed to ensure lease exists, will retry" err="Get \"https://10.1.0.117:6443/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases/runnervmr9t6g?timeout=10s\": dial tcp 10.1.0.117:6443: connect: connection refused" interval="400ms"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.581176    8434 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"usr-local-share-ca-certificates\" (UniqueName: \"kubernetes.io/host-path/6a66f61a6bb0091e80e5b260f750125f-usr-local-share-ca-certificates\") pod \"kube-controller-manager-runnervmr9t6g\" (UID: \"6a66f61a6bb0091e80e5b260f750125f\") " pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.581211    8434 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"usr-share-ca-certificates\" (UniqueName: \"kubernetes.io/host-path/6a66f61a6bb0091e80e5b260f750125f-usr-share-ca-certificates\") pod \"kube-controller-manager-runnervmr9t6g\" (UID: \"6a66f61a6bb0091e80e5b260f750125f\") " pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.583366    8434 kubelet.go:3575] "No need to create a mirror pod, since failed to get node info from the cluster" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.599428    8434 kubelet.go:3575] "No need to create a mirror pod, since failed to get node info from the cluster" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.602967    8434 kubelet.go:3575] "No need to create a mirror pod, since failed to get node info from the cluster" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.680297    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: I1026 00:02:32.734331    8434 kubelet_node_status.go:75] "Attempting to register node" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.734728    8434 kubelet_node_status.go:108] "Unable to register node with API server" err="Post \"https://10.1.0.117:6443/api/v1/nodes\": dial tcp 10.1.0.117:6443: connect: connection refused" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.781067    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.880250    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.980063    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:32 runnervmr9t6g kubelet[8434]: E1026 00:02:32.986402    8434 controller.go:208] "Failed to ensure lease exists, will retry" err="Get \"https://10.1.0.117:6443/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases/runnervmr9t6g?timeout=10s\": dial tcp 10.1.0.117:6443: connect: connection refused" interval="800ms"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: I1026 00:02:33.049892    8434 server.go:177] "Pod update broadcasted" podUID="6a66f61a6bb0091e80e5b260f750125f" type="MODIFIED"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: I1026 00:02:33.049968    8434 server.go:177] "Pod update broadcasted" podUID="0b140aede71c7a9448988a7a90484ece" type="MODIFIED"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: I1026 00:02:33.050006    8434 server.go:177] "Pod update broadcasted" podUID="0d04392a05fa6b713293429b9d4a393c" type="MODIFIED"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: I1026 00:02:33.050081    8434 server.go:177] "Pod update broadcasted" podUID="5a15d2581c52e2d7cb90e909d80ffb65" type="MODIFIED"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.080964    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: I1026 00:02:33.136074    8434 kubelet_node_status.go:75] "Attempting to register node" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.136761    8434 kubelet_node_status.go:108] "Unable to register node with API server" err="Post \"https://10.1.0.117:6443/api/v1/nodes\": dial tcp 10.1.0.117:6443: connect: connection refused" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.180224    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: I1026 00:02:33.256738    8434 server.go:177] "Pod update broadcasted" podUID="6a66f61a6bb0091e80e5b260f750125f" type="MODIFIED"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.256886    8434 kubelet.go:3575] "No need to create a mirror pod, since failed to get node info from the cluster" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: I1026 00:02:33.262288    8434 server.go:177] "Pod update broadcasted" podUID="5a15d2581c52e2d7cb90e909d80ffb65" type="MODIFIED"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.262746    8434 kubelet.go:3575] "No need to create a mirror pod, since failed to get node info from the cluster" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: I1026 00:02:33.266026    8434 server.go:177] "Pod update broadcasted" podUID="0d04392a05fa6b713293429b9d4a393c" type="MODIFIED"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.266720    8434 kubelet.go:3575] "No need to create a mirror pod, since failed to get node info from the cluster" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: I1026 00:02:33.269367    8434 server.go:177] "Pod update broadcasted" podUID="0b140aede71c7a9448988a7a90484ece" type="MODIFIED"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.269678    8434 kubelet.go:3575] "No need to create a mirror pod, since failed to get node info from the cluster" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.280305    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.380612    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.480240    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.547674    8434 kubelet.go:3575] "No need to create a mirror pod, since failed to get node info from the cluster" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.580841    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.680199    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.694703    8434 kubelet.go:3575] "No need to create a mirror pod, since failed to get node info from the cluster" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.780316    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.880477    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: I1026 00:02:33.938545    8434 kubelet_node_status.go:75] "Attempting to register node" node="runnervmr9t6g"
+Oct 26 00:02:33 runnervmr9t6g kubelet[8434]: E1026 00:02:33.980474    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: E1026 00:02:34.022107    8434 kubelet.go:3575] "No need to create a mirror pod, since failed to get node info from the cluster" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: E1026 00:02:34.080410    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: E1026 00:02:34.180985    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: E1026 00:02:34.280654    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: E1026 00:02:34.380849    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: E1026 00:02:34.480778    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: E1026 00:02:34.580253    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: E1026 00:02:34.680030    8434 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: E1026 00:02:34.684010    8434 nodelease.go:50] "Failed to get node when trying to set owner ref to the node lease" err="nodes \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: I1026 00:02:34.766887    8434 kubelet_node_status.go:78] "Successfully registered node" node="runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: I1026 00:02:34.781771    8434 kubelet.go:3579] "Creating a mirror pod for static pod" pod="kube-system/kube-scheduler-runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: E1026 00:02:34.787659    8434 kubelet.go:3581] "Failed creating a mirror pod" err="pods \"kube-scheduler-runnervmr9t6g\" is forbidden: no PriorityClass with name system-node-critical was found" pod="kube-system/kube-scheduler-runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: I1026 00:02:34.787688    8434 kubelet.go:3579] "Creating a mirror pod for static pod" pod="kube-system/etcd-runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: E1026 00:02:34.789922    8434 kubelet.go:3581] "Failed creating a mirror pod" err="pods \"etcd-runnervmr9t6g\" is forbidden: no PriorityClass with name system-node-critical was found" pod="kube-system/etcd-runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: I1026 00:02:34.789951    8434 kubelet.go:3579] "Creating a mirror pod for static pod" pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: E1026 00:02:34.791502    8434 kubelet.go:3581] "Failed creating a mirror pod" err="pods \"kube-apiserver-runnervmr9t6g\" is forbidden: no PriorityClass with name system-node-critical was found" pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: I1026 00:02:34.791526    8434 kubelet.go:3579] "Creating a mirror pod for static pod" pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:34 runnervmr9t6g kubelet[8434]: E1026 00:02:34.792895    8434 kubelet.go:3581] "Failed creating a mirror pod" err="pods \"kube-controller-manager-runnervmr9t6g\" is forbidden: no PriorityClass with name system-node-critical was found" pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:35 runnervmr9t6g kubelet[8434]: I1026 00:02:35.372630    8434 apiserver.go:51] "Watching apiserver"
+Oct 26 00:02:35 runnervmr9t6g kubelet[8434]: I1026 00:02:35.380301    8434 desired_state_of_world_populator.go:154] "Finished populating initial desired state of world"
+Oct 26 00:02:36 runnervmr9t6g kubelet[8434]: I1026 00:02:36.195073    8434 kubelet.go:3579] "Creating a mirror pod for static pod" pod="kube-system/etcd-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8434]: I1026 00:02:37.024933    8434 podcertificatemanager.go:351] "podcertificate.IssuingManager shut down"
+Oct 26 00:02:37 runnervmr9t6g systemd[1]: Stopping kubelet.service - kubelet: The Kubernetes Node Agent...
+Oct 26 00:02:37 runnervmr9t6g kubelet[8434]: I1026 00:02:37.025494    8434 volume_manager.go:341] "Shutting down Kubelet Volume Manager"
+Oct 26 00:02:37 runnervmr9t6g systemd[1]: kubelet.service: Deactivated successfully.
+Oct 26 00:02:37 runnervmr9t6g systemd[1]: Stopped kubelet.service - kubelet: The Kubernetes Node Agent.
+Oct 26 00:02:37 runnervmr9t6g systemd[1]: Started kubelet.service - kubelet: The Kubernetes Node Agent.
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.075948    8864 server.go:257] "Effective KubeletConfiguration" config=<
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         address: 0.0.0.0
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         apiVersion: kubelet.config.k8s.io/v1beta1
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         authentication:
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           anonymous:
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:             enabled: false
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           webhook:
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:             cacheTTL: 2m0s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:             enabled: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           x509:
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:             clientCAFile: /etc/kubernetes/pki/ca.crt
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         authorization:
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           mode: Webhook
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           webhook:
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:             cacheAuthorizedTTL: 5m0s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:             cacheUnauthorizedTTL: 30s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         cgroupDriver: systemd
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         cgroupsPerQOS: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         clusterDNS:
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         - 10.43.0.10
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         clusterDomain: cluster.local
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         configMapAndSecretChangeDetectionStrategy: Watch
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         containerLogMaxFiles: 5
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         containerLogMaxSize: 10Mi
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         containerLogMaxWorkers: 1
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         containerLogMonitorInterval: 10s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         containerRuntimeEndpoint: unix:///run/containerd/containerd.sock
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         contentType: application/vnd.kubernetes.protobuf
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         cpuCFSQuota: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         cpuCFSQuotaPeriod: 100ms
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         cpuManagerPolicy: none
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         cpuManagerReconcilePeriod: 10s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         crashLoopBackOff:
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           maxContainerRestartPeriod: 5m0s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         enableControllerAttachDetach: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         enableDebugFlagsHandler: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         enableDebuggingHandlers: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         enableProfilingHandler: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         enableServer: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         enableSystemLogHandler: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         enableSystemLogQuery: false
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         enforceNodeAllocatable:
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         - pods
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         eventBurst: 100
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         eventRecordQPS: 50
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         evictionHard:
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           imagefs.available: 15%
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           imagefs.inodesFree: 5%
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           memory.available: 100Mi
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           nodefs.available: 10%
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           nodefs.inodesFree: 5%
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         evictionPressureTransitionPeriod: 5m0s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         failCgroupV1: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         failSwapOn: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         fileCheckFrequency: 20s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         hairpinMode: promiscuous-bridge
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         healthzBindAddress: 127.0.0.1
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         healthzPort: 10248
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         httpCheckFrequency: 20s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         imageGCHighThresholdPercent: 85
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         imageGCLowThresholdPercent: 80
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         imageMaximumGCAge: 0s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         imageMinimumGCAge: 2m0s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         imagePullCredentialsVerificationPolicy: NeverVerifyPreloadedImages
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         iptablesDropBit: 15
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         iptablesMasqueradeBit: 14
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         kind: KubeletConfiguration
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         kubeAPIBurst: 100
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         kubeAPIQPS: 50
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         localStorageCapacityIsolation: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         logging:
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           flushFrequency: 5s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           format: text
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           options:
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:             json:
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:               infoBufferSize: "0"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:             text:
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:               infoBufferSize: "0"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:           verbosity: 0
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         makeIPTablesUtilChains: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         maxOpenFiles: 1000000
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         maxPods: 110
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         memoryManagerPolicy: None
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         memoryReservationPolicy: None
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         memorySwap: {}
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         mergeDefaultEvictionSettings: false
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         nodeLeaseDurationSeconds: 40
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         nodeStatusMaxImages: 50
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         nodeStatusReportFrequency: 5m0s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         nodeStatusUpdateFrequency: 10s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         oomScoreAdj: -999
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         podLogsDir: /var/log/pods
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         podPidsLimit: -1
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         port: 10250
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         registerNode: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         registryBurst: 10
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         registryPullQPS: 5
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         resolvConf: /run/systemd/resolve/resolv.conf
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         rotateCertificates: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         runtimeRequestTimeout: 2m0s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         seccompDefault: false
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         serializeImagePulls: true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         shutdownGracePeriod: 0s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         shutdownGracePeriodCriticalPods: 0s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         staticPodPath: /etc/kubernetes/manifests
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         streamingConnectionIdleTimeout: 4h0m0s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         syncFrequency: 1m0s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         topologyManagerPolicy: none
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         topologyManagerScope: container
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         volumePluginDir: /usr/libexec/kubernetes/kubelet-plugins/volume/exec/
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:         volumeStatsAggPeriod: 1m0s
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]:  >
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.082233    8864 server.go:545] "Kubelet version" kubeletVersion="v1.37.1"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.082267    8864 server.go:547] "Golang settings" GOGC="" GOMAXPROCS="" GOTRACEBACK=""
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.082291    8864 watchdog_linux.go:94] "Systemd watchdog is not enabled"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.082302    8864 watchdog_linux.go:137] "Systemd watchdog is not enabled or the interval is invalid, so health checking will not be started."
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.083316    8864 server.go:1036] "Client rotation is on, will bootstrap in background"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.084474    8864 certificate_store.go:147] "Loading cert/key pair from a file" filePath="/var/lib/kubelet/pki/kubelet-client-current.pem"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.086110    8864 dynamic_cafile_content.go:161] "Starting controller" name="client-ca-bundle::/etc/kubernetes/pki/ca.crt"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.090204    8864 server.go:1502] "Using cgroup driver setting received from the CRI runtime" cgroupDriver="systemd"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.095145    8864 server.go:858] "--cgroups-per-qos enabled, but --cgroup-root was not specified.  Defaulting to /"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.095419    8864 container_manager_linux.go:273] "Container manager verified user specified cgroup-root exists" cgroupRoot=[]
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.095448    8864 container_manager_linux.go:278] "Creating Container Manager object based on Node Config" nodeConfig={"NodeName":"runnervmr9t6g","RuntimeCgroupsName":"","SystemCgroupsName":"","KubeletCgroupsName":"","KubeletOOMScoreAdj":-999,"ContainerRuntime":"","CgroupsPerQOS":true,"CgroupRoot":"/","CgroupDriver":"systemd","KubeletRootDir":"/var/lib/kubelet","ProtectKernelDefaults":false,"KubeReservedCgroupName":"","SystemReservedCgroupName":"","ReservedSystemCPUs":{},"EnforceNodeAllocatable":{"pods":{}},"KubeReserved":null,"SystemReserved":null,"HardEvictionThresholds":[{"Signal":"nodefs.available","Operator":"LessThan","Value":{"Quantity":null,"Percentage":0.1},"GracePeriod":0,"MinReclaim":null},{"Signal":"nodefs.inodesFree","Operator":"LessThan","Value":{"Quantity":null,"Percentage":0.05},"GracePeriod":0,"MinReclaim":null},{"Signal":"imagefs.available","Operator":"LessThan","Value":{"Quantity":null,"Percentage":0.15},"GracePeriod":0,"MinReclaim":null},{"Signal":"imagefs.inodesFree","Operator":"LessThan","Value":{"Quantity":null,"Percentage":0.05},"GracePeriod":0,"MinReclaim":null},{"Signal":"memory.available","Operator":"LessThan","Value":{"Quantity":"100Mi","Percentage":0},"GracePeriod":0,"MinReclaim":null}],"QOSReserved":{},"CPUManagerPolicy":"none","CPUManagerPolicyOptions":null,"TopologyManagerScope":"container","CPUManagerReconcilePeriod":10000000000,"MemoryManagerPolicy":"None","MemoryManagerReservedMemory":null,"MemoryReservationPolicy":"None","MemoryThrottlingFactor":null,"PodPidsLimit":-1,"EnforceCPULimits":true,"CPUCFSQuotaPeriod":100000000,"TopologyManagerPolicy":"none","TopologyManagerPolicyOptions":null,"CgroupVersion":2}
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.095618    8864 topology_manager.go:183] "Creating topology manager with none policy"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.095630    8864 container_manager_linux.go:310] "Creating device plugin manager"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.095654    8864 container_manager_linux.go:319] "Creating Dynamic Resource Allocation (DRA) manager"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.095933    8864 state_mem.go:45] "Initialized" logger="CPUManager state memory"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.096197    8864 kubelet.go:512] "Attempting to sync node with API server"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.096526    8864 kubelet.go:389] "Adding static pod path" path="/etc/kubernetes/manifests"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.096565    8864 kubelet.go:400] "Adding apiserver pod source"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.096747    8864 apiserver.go:41] "Waiting for node sync before watching apiserver pods"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.100874    8864 kuberuntime_manager.go:315] "Container runtime initialized" containerRuntime="containerd" version="v2.4.1" apiVersion="v1"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.102580    8864 kubelet.go:1011] "ClusterTrustBundle informer will be started eventually once a trust bundle is requested"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.105441    8864 podcertificatemanager.go:340] "podcertificate.IssuingManager starting up"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.109560    8864 server.go:1336] "Started kubelet"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.112647    8864 server.go:293] "Starting to serve the pods API" endpoint="unix:/var/lib/kubelet/pods-api/pods-api.sock"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.112910    8864 server.go:196] "Starting to listen" address="0.0.0.0" port=10250
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.113767    8864 fs_resource_analyzer.go:69] "Starting FS ResourceAnalyzer"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.114532    8864 server.go:365] "Adding debug handlers to kubelet server"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.115574    8864 ratelimit.go:56] "Setting rate limiting for endpoint" service="podresources" qps=100 burstTokens=10
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.116449    8864 server_v1.go:49] "podresources" method="list" useActivePods=true
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.116679    8864 server.go:267] "Starting to serve the podresources API" endpoint="unix:/var/lib/kubelet/pod-resources/kubelet.sock"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.118970    8864 dynamic_serving_content.go:135] "Starting controller" name="kubelet-server-cert-files::/var/lib/kubelet/pki/kubelet.crt::/var/lib/kubelet/pki/kubelet.key"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.121106    8864 volume_manager.go:331] "Starting Kubelet Volume Manager"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.121189    8864 desired_state_of_world_populator.go:146] "Desired state populator starts to run"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.121379    8864 reconciler.go:29] "Reconciler: start to sync state"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.122521    8864 tlsconfig.go:243] "Starting DynamicServingCertificateController"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.122781    8864 factory.go:222] Registration of the systemd container factory successfully
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.122870    8864 factory.go:220] Registration of the crio container factory failed: Get "http://%2Fvar%2Frun%2Fcrio%2Fcrio.sock/info": dial unix /var/run/crio/crio.sock: connect: no such file or directory
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.125962    8864 factory.go:222] Registration of the containerd container factory successfully
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.136807    8864 kubelet_network_linux.go:53] "Initialized iptables rules." protocol="IPv4"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.138178    8864 kubelet_network_linux.go:53] "Initialized iptables rules." protocol="IPv6"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.138199    8864 status_manager.go:283] "Starting to sync pod status with apiserver"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.138229    8864 kubelet.go:2673] "Starting kubelet main sync loop"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: E1026 00:02:37.138265    8864 kubelet.go:2697] "Skipping pod synchronization" err="[container runtime status check may not have completed yet, PLEG is not healthy: pleg has yet to be successful]"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.167206    8864 cpu_manager.go:239] "Starting" policy="none"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.167223    8864 cpu_manager.go:240] "Reconciling" reconcilePeriod="10s"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.167245    8864 state_mem.go:45] "Initialized" logger="CPUManager state checkpoint.CPUManager state memory"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.167254    8864 state_checkpoint.go:191] "trying to load v4 CPU manager checkpoint" logger="CPUManager state checkpoint"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.167410    8864 state_mem.go:142] "Updated default CPUSet" logger="CPUManager state checkpoint.CPUManager state memory" cpuSet=""
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.167423    8864 state_mem.go:160] "Updated CPUSet assignments" logger="CPUManager state checkpoint.CPUManager state memory" assignments="{}"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.167436    8864 policy_none.go:51] "Start"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.167453    8864 memory_manager.go:209] "Starting memorymanager" policy="None"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.167466    8864 state_mem.go:39] "Initializing new in-memory state store" logger="Memory Manager state checkpoint"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.167638    8864 state_mem.go:109] "Updated machine memory state" logger="Memory Manager state checkpoint"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.167653    8864 policy_none.go:47] "Start"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: E1026 00:02:37.173553    8864 manager.go:550] "Failed to read data from checkpoint" err="checkpoint is not found" checkpoint="kubelet_internal_checkpoint"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.173687    8864 eviction_manager.go:193] "Eviction manager: starting control loop"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.173701    8864 container_log_manager.go:146] "Initializing container log rotate workers" workers=1 monitorPeriod="10s"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.173931    8864 plugin_manager.go:121] "Starting Kubelet Plugin Manager"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: E1026 00:02:37.174922    8864 eviction_manager.go:280] "eviction manager: failed to check if we have separate container filesystem. Ignoring." err="no imagefs label for configured runtime"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.239743    8864 server.go:177] "Pod update broadcasted" podUID="0b140aede71c7a9448988a7a90484ece" type="ADDED"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.239822    8864 server.go:177] "Pod update broadcasted" podUID="5a15d2581c52e2d7cb90e909d80ffb65" type="ADDED"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.239853    8864 server.go:177] "Pod update broadcasted" podUID="0d04392a05fa6b713293429b9d4a393c" type="ADDED"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.239954    8864 kubelet.go:3579] "Creating a mirror pod for static pod" pod="kube-system/etcd-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.239987    8864 kubelet.go:3579] "Creating a mirror pod for static pod" pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.240167    8864 server.go:177] "Pod update broadcasted" podUID="6a66f61a6bb0091e80e5b260f750125f" type="ADDED"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.240278    8864 kubelet.go:3579] "Creating a mirror pod for static pod" pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.240311    8864 kubelet.go:3579] "Creating a mirror pod for static pod" pod="kube-system/kube-scheduler-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: E1026 00:02:37.248712    8864 kubelet.go:3581] "Failed creating a mirror pod" err="pods \"etcd-runnervmr9t6g\" already exists" pod="kube-system/etcd-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.276685    8864 kubelet_node_status.go:75] "Attempting to register node" node="runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.281441    8864 kubelet_node_status.go:125] "Node was previously registered" node="runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.281511    8864 kubelet_node_status.go:78] "Successfully registered node" node="runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.322532    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"ca-certs\" (UniqueName: \"kubernetes.io/host-path/0d04392a05fa6b713293429b9d4a393c-ca-certs\") pod \"kube-apiserver-runnervmr9t6g\" (UID: \"0d04392a05fa6b713293429b9d4a393c\") " pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.322571    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"usr-local-share-ca-certificates\" (UniqueName: \"kubernetes.io/host-path/0d04392a05fa6b713293429b9d4a393c-usr-local-share-ca-certificates\") pod \"kube-apiserver-runnervmr9t6g\" (UID: \"0d04392a05fa6b713293429b9d4a393c\") " pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.322600    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"usr-share-ca-certificates\" (UniqueName: \"kubernetes.io/host-path/0d04392a05fa6b713293429b9d4a393c-usr-share-ca-certificates\") pod \"kube-apiserver-runnervmr9t6g\" (UID: \"0d04392a05fa6b713293429b9d4a393c\") " pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.322635    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"etc-ca-certificates\" (UniqueName: \"kubernetes.io/host-path/6a66f61a6bb0091e80e5b260f750125f-etc-ca-certificates\") pod \"kube-controller-manager-runnervmr9t6g\" (UID: \"6a66f61a6bb0091e80e5b260f750125f\") " pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.322654    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"k8s-certs\" (UniqueName: \"kubernetes.io/host-path/6a66f61a6bb0091e80e5b260f750125f-k8s-certs\") pod \"kube-controller-manager-runnervmr9t6g\" (UID: \"6a66f61a6bb0091e80e5b260f750125f\") " pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.322672    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"usr-share-ca-certificates\" (UniqueName: \"kubernetes.io/host-path/6a66f61a6bb0091e80e5b260f750125f-usr-share-ca-certificates\") pod \"kube-controller-manager-runnervmr9t6g\" (UID: \"6a66f61a6bb0091e80e5b260f750125f\") " pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.322692    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kubeconfig\" (UniqueName: \"kubernetes.io/host-path/5a15d2581c52e2d7cb90e909d80ffb65-kubeconfig\") pod \"kube-scheduler-runnervmr9t6g\" (UID: \"5a15d2581c52e2d7cb90e909d80ffb65\") " pod="kube-system/kube-scheduler-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.322710    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"etcd-certs\" (UniqueName: \"kubernetes.io/host-path/0b140aede71c7a9448988a7a90484ece-etcd-certs\") pod \"etcd-runnervmr9t6g\" (UID: \"0b140aede71c7a9448988a7a90484ece\") " pod="kube-system/etcd-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.322729    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"etcd-data\" (UniqueName: \"kubernetes.io/host-path/0b140aede71c7a9448988a7a90484ece-etcd-data\") pod \"etcd-runnervmr9t6g\" (UID: \"0b140aede71c7a9448988a7a90484ece\") " pod="kube-system/etcd-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.322762    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"etc-ca-certificates\" (UniqueName: \"kubernetes.io/host-path/0d04392a05fa6b713293429b9d4a393c-etc-ca-certificates\") pod \"kube-apiserver-runnervmr9t6g\" (UID: \"0d04392a05fa6b713293429b9d4a393c\") " pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.322796    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"k8s-certs\" (UniqueName: \"kubernetes.io/host-path/0d04392a05fa6b713293429b9d4a393c-k8s-certs\") pod \"kube-apiserver-runnervmr9t6g\" (UID: \"0d04392a05fa6b713293429b9d4a393c\") " pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.322814    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"ca-certs\" (UniqueName: \"kubernetes.io/host-path/6a66f61a6bb0091e80e5b260f750125f-ca-certs\") pod \"kube-controller-manager-runnervmr9t6g\" (UID: \"6a66f61a6bb0091e80e5b260f750125f\") " pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.322835    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kubeconfig\" (UniqueName: \"kubernetes.io/host-path/6a66f61a6bb0091e80e5b260f750125f-kubeconfig\") pod \"kube-controller-manager-runnervmr9t6g\" (UID: \"6a66f61a6bb0091e80e5b260f750125f\") " pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:37 runnervmr9t6g kubelet[8864]: I1026 00:02:37.322886    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"usr-local-share-ca-certificates\" (UniqueName: \"kubernetes.io/host-path/6a66f61a6bb0091e80e5b260f750125f-usr-local-share-ca-certificates\") pod \"kube-controller-manager-runnervmr9t6g\" (UID: \"6a66f61a6bb0091e80e5b260f750125f\") " pod="kube-system/kube-controller-manager-runnervmr9t6g"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: I1026 00:02:38.097887    8864 apiserver.go:51] "Watching apiserver"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: I1026 00:02:38.122223    8864 desired_state_of_world_populator.go:154] "Finished populating initial desired state of world"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: I1026 00:02:38.151607    8864 server.go:177] "Pod update broadcasted" podUID="0d04392a05fa6b713293429b9d4a393c" type="MODIFIED"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: I1026 00:02:38.151748    8864 kubelet.go:3579] "Creating a mirror pod for static pod" pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: I1026 00:02:38.151960    8864 server.go:177] "Pod update broadcasted" podUID="5a15d2581c52e2d7cb90e909d80ffb65" type="MODIFIED"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: I1026 00:02:38.152063    8864 server.go:177] "Pod update broadcasted" podUID="0b140aede71c7a9448988a7a90484ece" type="MODIFIED"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: I1026 00:02:38.152069    8864 kubelet.go:3579] "Creating a mirror pod for static pod" pod="kube-system/kube-scheduler-runnervmr9t6g"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: I1026 00:02:38.152161    8864 kubelet.go:3579] "Creating a mirror pod for static pod" pod="kube-system/etcd-runnervmr9t6g"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: E1026 00:02:38.157857    8864 kubelet.go:3581] "Failed creating a mirror pod" err="pods \"etcd-runnervmr9t6g\" already exists" pod="kube-system/etcd-runnervmr9t6g"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: E1026 00:02:38.160376    8864 kubelet.go:3581] "Failed creating a mirror pod" err="pods \"kube-scheduler-runnervmr9t6g\" already exists" pod="kube-system/kube-scheduler-runnervmr9t6g"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: E1026 00:02:38.160395    8864 kubelet.go:3581] "Failed creating a mirror pod" err="pods \"kube-apiserver-runnervmr9t6g\" already exists" pod="kube-system/kube-apiserver-runnervmr9t6g"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: I1026 00:02:38.165805    8864 server.go:177] "Pod update broadcasted" podUID="0d04392a05fa6b713293429b9d4a393c" type="MODIFIED"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: I1026 00:02:38.173488    8864 pod_startup_latency_tracker.go:144] "Observed pod startup duration" pod="kube-system/etcd-runnervmr9t6g" podStartSLOduration=2.1734770660000002 podStartE2EDuration="2.173477066s" totalImagesPullingTime="0s" totalInitContainerRuntime="0s" isStatefulPod=true podCreationTimestamp="2026-10-26 00:02:36 +0000 UTC" imagePullSessionsCount=0 imagePullSessionsStartsCount=0 observedRunningTime="2026-10-26 00:02:38.17291751 +0000 UTC m=+1.123640821" watchObservedRunningTime="2026-10-26 00:02:38.173477066 +0000 UTC m=+1.124200367"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: I1026 00:02:38.178795    8864 pod_startup_latency_tracker.go:144] "Observed pod startup duration" pod="kube-system/kube-scheduler-runnervmr9t6g" podStartSLOduration=1.178782331 podStartE2EDuration="1.178782331s" totalImagesPullingTime="0s" totalInitContainerRuntime="0s" isStatefulPod=true podCreationTimestamp="2026-10-26 00:02:37 +0000 UTC" imagePullSessionsCount=0 imagePullSessionsStartsCount=0 observedRunningTime="2026-10-26 00:02:38.178711151 +0000 UTC m=+1.129434462" watchObservedRunningTime="2026-10-26 00:02:38.178782331 +0000 UTC m=+1.129505642"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: I1026 00:02:38.184974    8864 pod_startup_latency_tracker.go:144] "Observed pod startup duration" pod="kube-system/kube-apiserver-runnervmr9t6g" podStartSLOduration=1.184963113 podStartE2EDuration="1.184963113s" totalImagesPullingTime="0s" totalInitContainerRuntime="0s" isStatefulPod=true podCreationTimestamp="2026-10-26 00:02:37 +0000 UTC" imagePullSessionsCount=0 imagePullSessionsStartsCount=0 observedRunningTime="2026-10-26 00:02:38.184539037 +0000 UTC m=+1.135262349" watchObservedRunningTime="2026-10-26 00:02:38.184963113 +0000 UTC m=+1.135686445"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: I1026 00:02:38.190604    8864 pod_startup_latency_tracker.go:144] "Observed pod startup duration" pod="kube-system/kube-controller-manager-runnervmr9t6g" podStartSLOduration=1.190589963 podStartE2EDuration="1.190589963s" totalImagesPullingTime="0s" totalInitContainerRuntime="0s" isStatefulPod=true podCreationTimestamp="2026-10-26 00:02:37 +0000 UTC" imagePullSessionsCount=0 imagePullSessionsStartsCount=0 observedRunningTime="2026-10-26 00:02:38.190273797 +0000 UTC m=+1.140997108" watchObservedRunningTime="2026-10-26 00:02:38.190589963 +0000 UTC m=+1.141313274"
+Oct 26 00:02:38 runnervmr9t6g kubelet[8864]: I1026 00:02:38.399027    8864 server.go:177] "Pod update broadcasted" podUID="0b140aede71c7a9448988a7a90484ece" type="MODIFIED"
+Oct 26 00:02:39 runnervmr9t6g kubelet[8864]: I1026 00:02:39.156416    8864 server.go:177] "Pod update broadcasted" podUID="5a15d2581c52e2d7cb90e909d80ffb65" type="MODIFIED"
+Oct 26 00:02:40 runnervmr9t6g kubelet[8864]: I1026 00:02:40.934762    8864 server.go:177] "Pod update broadcasted" podUID="0d04392a05fa6b713293429b9d4a393c" type="MODIFIED"
+Oct 26 00:02:41 runnervmr9t6g kubelet[8864]: I1026 00:02:41.156158    8864 server.go:177] "Pod update broadcasted" podUID="0d04392a05fa6b713293429b9d4a393c" type="MODIFIED"
+Oct 26 00:02:42 runnervmr9t6g kubelet[8864]: I1026 00:02:42.891006    8864 kuberuntime_manager.go:2315] "Updating runtime config through cri with podcidr" CIDR="10.42.0.0/24"
+Oct 26 00:02:42 runnervmr9t6g kubelet[8864]: I1026 00:02:42.892728    8864 kubelet_network.go:48] "Updating Pod CIDR" originalPodCIDR="" newPodCIDR="10.42.0.0/24"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.000083    8864 server.go:177] "Pod update broadcasted" podUID="8efce4a9-5d4a-4178-aebb-85c50fca3523" type="ADDED"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.002828    8864 server.go:177] "Pod update broadcasted" podUID="ce917636-ec45-45bc-b311-5580e6e94772" type="ADDED"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.065414    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kube-api-access-x5xw5\" (UniqueName: \"kubernetes.io/projected/8efce4a9-5d4a-4178-aebb-85c50fca3523-kube-api-access-x5xw5\") pod \"kube-proxy-gpdx4\" (UID: \"8efce4a9-5d4a-4178-aebb-85c50fca3523\") " pod="kube-system/kube-proxy-gpdx4"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.065453    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"cni-plugin\" (UniqueName: \"kubernetes.io/host-path/ce917636-ec45-45bc-b311-5580e6e94772-cni-plugin\") pod \"kube-flannel-ds-8kzg4\" (UID: \"ce917636-ec45-45bc-b311-5580e6e94772\") " pod="kube-flannel/kube-flannel-ds-8kzg4"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.065472    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"cni\" (UniqueName: \"kubernetes.io/host-path/ce917636-ec45-45bc-b311-5580e6e94772-cni\") pod \"kube-flannel-ds-8kzg4\" (UID: \"ce917636-ec45-45bc-b311-5580e6e94772\") " pod="kube-flannel/kube-flannel-ds-8kzg4"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.065486    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kube-proxy\" (UniqueName: \"kubernetes.io/configmap/8efce4a9-5d4a-4178-aebb-85c50fca3523-kube-proxy\") pod \"kube-proxy-gpdx4\" (UID: \"8efce4a9-5d4a-4178-aebb-85c50fca3523\") " pod="kube-system/kube-proxy-gpdx4"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.065504    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"run\" (UniqueName: \"kubernetes.io/host-path/ce917636-ec45-45bc-b311-5580e6e94772-run\") pod \"kube-flannel-ds-8kzg4\" (UID: \"ce917636-ec45-45bc-b311-5580e6e94772\") " pod="kube-flannel/kube-flannel-ds-8kzg4"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.065524    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"xtables-lock\" (UniqueName: \"kubernetes.io/host-path/8efce4a9-5d4a-4178-aebb-85c50fca3523-xtables-lock\") pod \"kube-proxy-gpdx4\" (UID: \"8efce4a9-5d4a-4178-aebb-85c50fca3523\") " pod="kube-system/kube-proxy-gpdx4"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.065541    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"lib-modules\" (UniqueName: \"kubernetes.io/host-path/8efce4a9-5d4a-4178-aebb-85c50fca3523-lib-modules\") pod \"kube-proxy-gpdx4\" (UID: \"8efce4a9-5d4a-4178-aebb-85c50fca3523\") " pod="kube-system/kube-proxy-gpdx4"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.065559    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"flannel-cfg\" (UniqueName: \"kubernetes.io/configmap/ce917636-ec45-45bc-b311-5580e6e94772-flannel-cfg\") pod \"kube-flannel-ds-8kzg4\" (UID: \"ce917636-ec45-45bc-b311-5580e6e94772\") " pod="kube-flannel/kube-flannel-ds-8kzg4"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.065576    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"xtables-lock\" (UniqueName: \"kubernetes.io/host-path/ce917636-ec45-45bc-b311-5580e6e94772-xtables-lock\") pod \"kube-flannel-ds-8kzg4\" (UID: \"ce917636-ec45-45bc-b311-5580e6e94772\") " pod="kube-flannel/kube-flannel-ds-8kzg4"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.065601    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kube-api-access-h628b\" (UniqueName: \"kubernetes.io/projected/ce917636-ec45-45bc-b311-5580e6e94772-kube-api-access-h628b\") pod \"kube-flannel-ds-8kzg4\" (UID: \"ce917636-ec45-45bc-b311-5580e6e94772\") " pod="kube-flannel/kube-flannel-ds-8kzg4"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.405964    8864 server.go:177] "Pod update broadcasted" podUID="8efce4a9-5d4a-4178-aebb-85c50fca3523" type="MODIFIED"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.430715    8864 server.go:177] "Pod update broadcasted" podUID="ce917636-ec45-45bc-b311-5580e6e94772" type="MODIFIED"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.506463    8864 server.go:177] "Pod update broadcasted" podUID="8efce4a9-5d4a-4178-aebb-85c50fca3523" type="MODIFIED"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.514156    8864 pod_startup_latency_tracker.go:144] "Observed pod startup duration" pod="kube-system/kube-proxy-gpdx4" podStartSLOduration=1.51413557 podStartE2EDuration="1.51413557s" totalImagesPullingTime="0s" totalInitContainerRuntime="0s" isStatefulPod=true podCreationTimestamp="2026-10-26 00:02:43 +0000 UTC" imagePullSessionsCount=0 imagePullSessionsStartsCount=0 observedRunningTime="2026-10-26 00:02:44.513801647 +0000 UTC m=+7.464524958" watchObservedRunningTime="2026-10-26 00:02:44.51413557 +0000 UTC m=+7.464858881"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.557297    8864 server.go:177] "Pod update broadcasted" podUID="5a15d2581c52e2d7cb90e909d80ffb65" type="MODIFIED"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.557536    8864 server.go:177] "Pod update broadcasted" podUID="5a15d2581c52e2d7cb90e909d80ffb65" type="MODIFIED"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.752086    8864 server.go:177] "Pod update broadcasted" podUID="0b140aede71c7a9448988a7a90484ece" type="MODIFIED"
+Oct 26 00:02:44 runnervmr9t6g kubelet[8864]: I1026 00:02:44.752311    8864 server.go:177] "Pod update broadcasted" podUID="0b140aede71c7a9448988a7a90484ece" type="MODIFIED"
+Oct 26 00:02:45 runnervmr9t6g kubelet[8864]: I1026 00:02:45.008203    8864 server.go:177] "Pod update broadcasted" podUID="ce917636-ec45-45bc-b311-5580e6e94772" type="MODIFIED"
+Oct 26 00:02:46 runnervmr9t6g kubelet[8864]: I1026 00:02:46.184851    8864 server.go:177] "Pod update broadcasted" podUID="6a66f61a6bb0091e80e5b260f750125f" type="MODIFIED"
+Oct 26 00:02:46 runnervmr9t6g kubelet[8864]: I1026 00:02:46.185059    8864 server.go:177] "Pod update broadcasted" podUID="6a66f61a6bb0091e80e5b260f750125f" type="MODIFIED"
+Oct 26 00:02:47 runnervmr9t6g kubelet[8864]: W1026 00:02:47.076142    8864 manager.go:1079] Failed to process watch event {EventType:0 Name:/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-podce917636_ec45_45bc_b311_5580e6e94772.slice/cri-containerd-dcc38dfc7596c193b37f9cc09599b66f173866e7d55f1a5e72549e10c15cf01e.scope WatchSource:0}: rpc error: code = DeadlineExceeded desc = context deadline exceeded
+Oct 26 00:02:49 runnervmr9t6g kubelet[8864]: I1026 00:02:49.168367    8864 server.go:177] "Pod update broadcasted" podUID="ce917636-ec45-45bc-b311-5580e6e94772" type="MODIFIED"
+Oct 26 00:02:50 runnervmr9t6g kubelet[8864]: I1026 00:02:50.940192    8864 server.go:177] "Pod update broadcasted" podUID="0d04392a05fa6b713293429b9d4a393c" type="MODIFIED"
+Oct 26 00:02:50 runnervmr9t6g kubelet[8864]: I1026 00:02:50.940401    8864 server.go:177] "Pod update broadcasted" podUID="0d04392a05fa6b713293429b9d4a393c" type="MODIFIED"
+Oct 26 00:02:51 runnervmr9t6g kubelet[8864]: I1026 00:02:51.173777    8864 server.go:177] "Pod update broadcasted" podUID="ce917636-ec45-45bc-b311-5580e6e94772" type="MODIFIED"
+Oct 26 00:02:51 runnervmr9t6g kubelet[8864]: I1026 00:02:51.244781    8864 kubelet_node_status.go:431] "Fast updating node status as it just became ready"
+Oct 26 00:02:51 runnervmr9t6g kubelet[8864]: I1026 00:02:51.721560    8864 server.go:177] "Pod update broadcasted" podUID="3a502437-0fd7-4c8e-87de-b77e4ea90dfa" type="ADDED"
+Oct 26 00:02:51 runnervmr9t6g kubelet[8864]: I1026 00:02:51.723756    8864 server.go:177] "Pod update broadcasted" podUID="fc488576-0187-4190-86dd-8b1b24897cbe" type="ADDED"
+Oct 26 00:02:51 runnervmr9t6g kubelet[8864]: I1026 00:02:51.814238    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"config-volume\" (UniqueName: \"kubernetes.io/configmap/3a502437-0fd7-4c8e-87de-b77e4ea90dfa-config-volume\") pod \"coredns-559f6c778d-tkct5\" (UID: \"3a502437-0fd7-4c8e-87de-b77e4ea90dfa\") " pod="kube-system/coredns-559f6c778d-tkct5"
+Oct 26 00:02:51 runnervmr9t6g kubelet[8864]: I1026 00:02:51.814279    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kube-api-access-26w8t\" (UniqueName: \"kubernetes.io/projected/3a502437-0fd7-4c8e-87de-b77e4ea90dfa-kube-api-access-26w8t\") pod \"coredns-559f6c778d-tkct5\" (UID: \"3a502437-0fd7-4c8e-87de-b77e4ea90dfa\") " pod="kube-system/coredns-559f6c778d-tkct5"
+Oct 26 00:02:51 runnervmr9t6g kubelet[8864]: I1026 00:02:51.814303    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"config-volume\" (UniqueName: \"kubernetes.io/configmap/fc488576-0187-4190-86dd-8b1b24897cbe-config-volume\") pod \"coredns-559f6c778d-m29cp\" (UID: \"fc488576-0187-4190-86dd-8b1b24897cbe\") " pod="kube-system/coredns-559f6c778d-m29cp"
+Oct 26 00:02:51 runnervmr9t6g kubelet[8864]: I1026 00:02:51.814386    8864 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kube-api-access-tl5fx\" (UniqueName: \"kubernetes.io/projected/fc488576-0187-4190-86dd-8b1b24897cbe-kube-api-access-tl5fx\") pod \"coredns-559f6c778d-m29cp\" (UID: \"fc488576-0187-4190-86dd-8b1b24897cbe\") " pod="kube-system/coredns-559f6c778d-m29cp"
+Oct 26 00:02:52 runnervmr9t6g kubelet[8864]: E1026 00:02:52.061585    8864 remote_runtime.go:325] "RunPodSandbox from runtime service failed" err="rpc error: code = Unknown desc = failed to setup network for sandbox \"214fe8084c1c616f905612df26a40bb1dcb17edd9fd7a237b4679c2b51a7f8ea\": plugin type=\"flannel\" failed (add): failed to load flannel 'subnet.env' file: open /run/flannel/subnet.env: no such file or directory. Check the flannel pod log for this node."
+Oct 26 00:02:52 runnervmr9t6g kubelet[8864]: E1026 00:02:52.061657    8864 kuberuntime_sandbox.go:74] "Failed to create sandbox for pod" err="rpc error: code = Unknown desc = failed to setup network for sandbox \"214fe8084c1c616f905612df26a40bb1dcb17edd9fd7a237b4679c2b51a7f8ea\": plugin type=\"flannel\" failed (add): failed to load flannel 'subnet.env' file: open /run/flannel/subnet.env: no such file or directory. Check the flannel pod log for this node." pod="kube-system/coredns-559f6c778d-tkct5"
+Oct 26 00:02:52 runnervmr9t6g kubelet[8864]: E1026 00:02:52.061678    8864 kuberuntime_manager.go:1747] "CreatePodSandbox for pod failed" err="rpc error: code = Unknown desc = failed to setup network for sandbox \"214fe8084c1c616f905612df26a40bb1dcb17edd9fd7a237b4679c2b51a7f8ea\": plugin type=\"flannel\" failed (add): failed to load flannel 'subnet.env' file: open /run/flannel/subnet.env: no such file or directory. Check the flannel pod log for this node." pod="kube-system/coredns-559f6c778d-tkct5"
+Oct 26 00:02:52 runnervmr9t6g kubelet[8864]: E1026 00:02:52.061743    8864 pod_workers.go:1338] "Error syncing pod, skipping" err="failed to \"CreatePodSandbox\" for \"coredns-559f6c778d-tkct5_kube-system(3a502437-0fd7-4c8e-87de-b77e4ea90dfa)\" with CreatePodSandboxError: \"Failed to create sandbox for pod \\\"coredns-559f6c778d-tkct5_kube-system(3a502437-0fd7-4c8e-87de-b77e4ea90dfa)\\\": rpc error: code = Unknown desc = failed to setup network for sandbox \\\"214fe8084c1c616f905612df26a40bb1dcb17edd9fd7a237b4679c2b51a7f8ea\\\": plugin type=\\\"flannel\\\" failed (add): failed to load flannel 'subnet.env' file: open /run/flannel/subnet.env: no such file or directory. Check the flannel pod log for this node.\"" pod="kube-system/coredns-559f6c778d-tkct5" podUID="3a502437-0fd7-4c8e-87de-b77e4ea90dfa"
+Oct 26 00:02:52 runnervmr9t6g kubelet[8864]: E1026 00:02:52.063944    8864 remote_runtime.go:325] "RunPodSandbox from runtime service failed" err="rpc error: code = Unknown desc = failed to setup network for sandbox \"fcf259112689f3b875da5edfb728877a3c915b4e8b4490d4b44233f9111c4341\": plugin type=\"flannel\" failed (add): failed to load flannel 'subnet.env' file: open /run/flannel/subnet.env: no such file or directory. Check the flannel pod log for this node."
+Oct 26 00:02:52 runnervmr9t6g kubelet[8864]: E1026 00:02:52.063991    8864 kuberuntime_sandbox.go:74] "Failed to create sandbox for pod" err="rpc error: code = Unknown desc = failed to setup network for sandbox \"fcf259112689f3b875da5edfb728877a3c915b4e8b4490d4b44233f9111c4341\": plugin type=\"flannel\" failed (add): failed to load flannel 'subnet.env' file: open /run/flannel/subnet.env: no such file or directory. Check the flannel pod log for this node." pod="kube-system/coredns-559f6c778d-m29cp"
+Oct 26 00:02:52 runnervmr9t6g kubelet[8864]: E1026 00:02:52.064013    8864 kuberuntime_manager.go:1747] "CreatePodSandbox for pod failed" err="rpc error: code = Unknown desc = failed to setup network for sandbox \"fcf259112689f3b875da5edfb728877a3c915b4e8b4490d4b44233f9111c4341\": plugin type=\"flannel\" failed (add): failed to load flannel 'subnet.env' file: open /run/flannel/subnet.env: no such file or directory. Check the flannel pod log for this node." pod="kube-system/coredns-559f6c778d-m29cp"
+Oct 26 00:02:52 runnervmr9t6g kubelet[8864]: E1026 00:02:52.064066    8864 pod_workers.go:1338] "Error syncing pod, skipping" err="failed to \"CreatePodSandbox\" for \"coredns-559f6c778d-m29cp_kube-system(fc488576-0187-4190-86dd-8b1b24897cbe)\" with CreatePodSandboxError: \"Failed to create sandbox for pod \\\"coredns-559f6c778d-m29cp_kube-system(fc488576-0187-4190-86dd-8b1b24897cbe)\\\": rpc error: code = Unknown desc = failed to setup network for sandbox \\\"fcf259112689f3b875da5edfb728877a3c915b4e8b4490d4b44233f9111c4341\\\": plugin type=\\\"flannel\\\" failed (add): failed to load flannel 'subnet.env' file: open /run/flannel/subnet.env: no such file or directory. Check the flannel pod log for this node.\"" pod="kube-system/coredns-559f6c778d-m29cp" podUID="fc488576-0187-4190-86dd-8b1b24897cbe"
+Oct 26 00:02:52 runnervmr9t6g kubelet[8864]: I1026 00:02:52.178359    8864 server.go:177] "Pod update broadcasted" podUID="ce917636-ec45-45bc-b311-5580e6e94772" type="MODIFIED"
+Oct 26 00:02:52 runnervmr9t6g kubelet[8864]: I1026 00:02:52.279849    8864 server.go:177] "Pod update broadcasted" podUID="ce917636-ec45-45bc-b311-5580e6e94772" type="MODIFIED"
+Oct 26 00:02:52 runnervmr9t6g kubelet[8864]: I1026 00:02:52.287585    8864 pod_startup_latency_tracker.go:144] "Observed pod startup duration" pod="kube-flannel/kube-flannel-ds-8kzg4" podStartSLOduration=6.823286712 podStartE2EDuration="9.287571993s" totalImagesPullingTime="2.464285281s" totalInitContainerRuntime="0s" isStatefulPod=true podCreationTimestamp="2026-10-26 00:02:43 +0000 UTC" imagePullSessionsCount=2 imagePullSessionsStartsCount=0 observedRunningTime="2026-10-26 00:02:52.2866001 +0000 UTC m=+15.237323411" watchObservedRunningTime="2026-10-26 00:02:52.287571993 +0000 UTC m=+15.238295304"
+Oct 26 00:02:54 runnervmr9t6g kubelet[8864]: I1026 00:02:54.562686    8864 server.go:177] "Pod update broadcasted" podUID="5a15d2581c52e2d7cb90e909d80ffb65" type="MODIFIED"
+Oct 26 00:02:54 runnervmr9t6g kubelet[8864]: I1026 00:02:54.562918    8864 server.go:177] "Pod update broadcasted" podUID="5a15d2581c52e2d7cb90e909d80ffb65" type="MODIFIED"
+Oct 26 00:02:54 runnervmr9t6g kubelet[8864]: I1026 00:02:54.752867    8864 server.go:177] "Pod update broadcasted" podUID="0b140aede71c7a9448988a7a90484ece" type="MODIFIED"
+Oct 26 00:02:54 runnervmr9t6g kubelet[8864]: I1026 00:02:54.753064    8864 server.go:177] "Pod update broadcasted" podUID="0b140aede71c7a9448988a7a90484ece" type="MODIFIED"
+Oct 26 00:02:56 runnervmr9t6g kubelet[8864]: I1026 00:02:56.188979    8864 server.go:177] "Pod update broadcasted" podUID="6a66f61a6bb0091e80e5b260f750125f" type="MODIFIED"
+Oct 26 00:02:56 runnervmr9t6g kubelet[8864]: I1026 00:02:56.189235    8864 server.go:177] "Pod update broadcasted" podUID="6a66f61a6bb0091e80e5b260f750125f" type="MODIFIED"
+Oct 26 00:03:04 runnervmr9t6g kubelet[8864]: I1026 00:03:04.271730    8864 server.go:177] "Pod update broadcasted" podUID="3a502437-0fd7-4c8e-87de-b77e4ea90dfa" type="MODIFIED"
+Oct 26 00:03:04 runnervmr9t6g kubelet[8864]: I1026 00:03:04.352787    8864 server.go:177] "Pod update broadcasted" podUID="3a502437-0fd7-4c8e-87de-b77e4ea90dfa" type="MODIFIED"
+Oct 26 00:03:05 runnervmr9t6g kubelet[8864]: I1026 00:03:05.201408    8864 server.go:177] "Pod update broadcasted" podUID="3a502437-0fd7-4c8e-87de-b77e4ea90dfa" type="MODIFIED"
+Oct 26 00:03:05 runnervmr9t6g kubelet[8864]: I1026 00:03:05.304572    8864 pod_startup_latency_tracker.go:144] "Observed pod startup duration" pod="kube-system/coredns-559f6c778d-tkct5" podStartSLOduration=21.304551844 podStartE2EDuration="21.304551844s" totalImagesPullingTime="0s" totalInitContainerRuntime="0s" isStatefulPod=false podCreationTimestamp="2026-10-26 00:02:44 +0000 UTC" imagePullSessionsCount=0 imagePullSessionsStartsCount=0 observedRunningTime="2026-10-26 00:03:04.364631531 +0000 UTC m=+27.315354842" watchObservedRunningTime="2026-10-26 00:03:05.304551844 +0000 UTC m=+28.255275155"
+Oct 26 00:03:05 runnervmr9t6g kubelet[8864]: I1026 00:03:05.430062    8864 server.go:177] "Pod update broadcasted" podUID="fc488576-0187-4190-86dd-8b1b24897cbe" type="MODIFIED"
+Oct 26 00:03:05 runnervmr9t6g kubelet[8864]: I1026 00:03:05.496366    8864 server.go:177] "Pod update broadcasted" podUID="fc488576-0187-4190-86dd-8b1b24897cbe" type="MODIFIED"
+Oct 26 00:03:05 runnervmr9t6g kubelet[8864]: I1026 00:03:05.590318    8864 pod_startup_latency_tracker.go:144] "Observed pod startup duration" pod="kube-system/coredns-559f6c778d-m29cp" podStartSLOduration=21.590301728 podStartE2EDuration="21.590301728s" totalImagesPullingTime="0s" totalInitContainerRuntime="0s" isStatefulPod=false podCreationTimestamp="2026-10-26 00:02:44 +0000 UTC" imagePullSessionsCount=0 imagePullSessionsStartsCount=0 observedRunningTime="2026-10-26 00:03:05.590047383 +0000 UTC m=+28.540770795" watchObservedRunningTime="2026-10-26 00:03:05.590301728 +0000 UTC m=+28.541025029"
+Oct 26 00:03:06 runnervmr9t6g kubelet[8864]: I1026 00:03:06.202631    8864 server.go:177] "Pod update broadcasted" podUID="3a502437-0fd7-4c8e-87de-b77e4ea90dfa" type="MODIFIED"
+Oct 26 00:03:06 runnervmr9t6g kubelet[8864]: I1026 00:03:06.203881    8864 server.go:177] "Pod update broadcasted" podUID="fc488576-0187-4190-86dd-8b1b24897cbe" type="MODIFIED"

@@ -1,0 +1,2 @@
+RuntimeError: kubectl ('create', 'namespace', 'nk-profile-9868-18e1eb6e895a0553'): The connection to the server localhost:8080 was refused - did you specify the right host or port?
+

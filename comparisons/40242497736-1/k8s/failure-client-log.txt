@@ -1,0 +1,6 @@
+diagnostic unavailable: kubectl ('logs', 'profile-client'): E1026 00:03:06.861847    9894 memcache.go:381] "Couldn't get current server API group list" err="Get \"http://localhost:8080/api?timeout=30s\": dial tcp [::1]:8080: connect: connection refused"
+E1026 00:03:06.862319    9894 memcache.go:381] "Couldn't get current server API group list" err="Get \"http://localhost:8080/api?timeout=30s\": dial tcp [::1]:8080: connect: connection refused"
+E1026 00:03:06.863825    9894 memcache.go:381] "Couldn't get current server API group list" err="Get \"http://localhost:8080/api?timeout=30s\": dial tcp [::1]:8080: connect: connection refused"
+E1026 00:03:06.864178    9894 memcache.go:381] "Couldn't get current server API group list" err="Get \"http://localhost:8080/api?timeout=30s\": dial tcp [::1]:8080: connect: connection refused"
+The connection to the server localhost:8080 was refused - did you specify the right host or port?
+
