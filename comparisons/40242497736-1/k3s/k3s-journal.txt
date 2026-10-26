@@ -1,0 +1,817 @@
+Oct 26 00:02:02 runnervmr9t6g systemd[1]: Started k3s.service - Disposable upstream profiling baseline.
+Oct 26 00:02:02 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:02Z" level=info msg="Acquiring lock file /var/lib/rancher/k3s/data/.lock"
+Oct 26 00:02:02 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:02Z" level=info msg="Preparing data dir /var/lib/rancher/k3s/data/18fd43a317b2366d41914bc17e9effe1cf7af9d12a97fcf5ec8909cb9cc4fdeb"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="Starting k3s v1.37.1+k3s1 (356c0254)"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="Configuring sqlite3 database connection pooling: maxIdle=20, maxOpen=0, maxLifetime=0s, maxIdleTime=2m0s"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="Kine built with sqlite from github.com/mattn/go-sqlite3 version 3.53.4"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="Configuring database table schema and indexes, this may take a moment..."
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="Database tables and indexes are up to date"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="Running startup VACUUM to reclaim disk space, this may take a moment..."
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="Startup VACUUM completed successfully"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="Kine available at unix://kine.sock"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="Opening etcd client connection with endpoints [unix://kine.sock]"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="Datastore connection validated successfully, proceeding with bootstrap data generation"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="generated self-signed CA certificate CN=k3s-client-ca@1792972924: notBefore=2026-10-25 23:02:04.25235489 +0000 UTC notAfter=2036-10-22 23:02:04.25235489 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="certificate CN=system:admin,O=system:masters signed by CN=k3s-client-ca@1792972924: notBefore=2026-10-25 23:02:04 +0000 UTC notAfter=2027-10-25 23:02:04 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="certificate CN=system:k3s-supervisor,O=system:masters signed by CN=k3s-client-ca@1792972924: notBefore=2026-10-25 23:02:04 +0000 UTC notAfter=2027-10-25 23:02:04 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="certificate CN=system:kube-controller-manager signed by CN=k3s-client-ca@1792972924: notBefore=2026-10-25 23:02:04 +0000 UTC notAfter=2027-10-25 23:02:04 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="certificate CN=system:kube-scheduler signed by CN=k3s-client-ca@1792972924: notBefore=2026-10-25 23:02:04 +0000 UTC notAfter=2027-10-25 23:02:04 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="certificate CN=system:apiserver,O=system:masters signed by CN=k3s-client-ca@1792972924: notBefore=2026-10-25 23:02:04 +0000 UTC notAfter=2027-10-25 23:02:04 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="certificate CN=k3s-cloud-controller-manager signed by CN=k3s-client-ca@1792972924: notBefore=2026-10-25 23:02:04 +0000 UTC notAfter=2027-10-25 23:02:04 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="generated self-signed CA certificate CN=k3s-server-ca@1792972924: notBefore=2026-10-25 23:02:04.255745449 +0000 UTC notAfter=2036-10-22 23:02:04.255745449 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="certificate CN=kube-apiserver signed by CN=k3s-server-ca@1792972924: notBefore=2026-10-25 23:02:04 +0000 UTC notAfter=2027-10-25 23:02:04 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="certificate CN=kube-scheduler signed by CN=k3s-server-ca@1792972924: notBefore=2026-10-25 23:02:04 +0000 UTC notAfter=2027-10-25 23:02:04 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="certificate CN=kube-controller-manager signed by CN=k3s-server-ca@1792972924: notBefore=2026-10-25 23:02:04 +0000 UTC notAfter=2027-10-25 23:02:04 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="generated self-signed CA certificate CN=k3s-request-header-ca@1792972924: notBefore=2026-10-25 23:02:04.257541708 +0000 UTC notAfter=2036-10-22 23:02:04.257541708 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="certificate CN=system:auth-proxy signed by CN=k3s-request-header-ca@1792972924: notBefore=2026-10-25 23:02:04 +0000 UTC notAfter=2027-10-25 23:02:04 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="generated self-signed CA certificate CN=etcd-server-ca@1792972924: notBefore=2026-10-25 23:02:04.258337791 +0000 UTC notAfter=2036-10-22 23:02:04.258337791 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="certificate CN=etcd-client signed by CN=etcd-server-ca@1792972924: notBefore=2026-10-25 23:02:04 +0000 UTC notAfter=2027-10-25 23:02:04 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="generated self-signed CA certificate CN=etcd-peer-ca@1792972924: notBefore=2026-10-25 23:02:04.259086485 +0000 UTC notAfter=2036-10-22 23:02:04.259086485 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="certificate CN=etcd-peer signed by CN=etcd-peer-ca@1792972924: notBefore=2026-10-25 23:02:04 +0000 UTC notAfter=2027-10-25 23:02:04 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="certificate CN=etcd-server signed by CN=etcd-server-ca@1792972924: notBefore=2026-10-25 23:02:04 +0000 UTC notAfter=2027-10-25 23:02:04 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="certificate CN=k3s,O=k3s signed by CN=k3s-server-ca@1792972924: notBefore=2026-10-25 23:02:04 +0000 UTC notAfter=2027-10-25 23:02:04 +0000 UTC"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=warning msg="dynamiclistener [::]:6443: no cached certificate available for preload - deferring certificate load until storage initialization or first client request"
+Oct 26 00:02:04 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:04Z" level=info msg="Active TLS secret / (ver=) (count 10): map[listener.cattle.io/cn-10.1.0.7:10.1.0.7 listener.cattle.io/cn-10.43.0.1:10.43.0.1 listener.cattle.io/cn-127.0.0.1:127.0.0.1 listener.cattle.io/cn-__1-f16284:::1 listener.cattle.io/cn-kubernetes:kubernetes listener.cattle.io/cn-kubernetes.default:kubernetes.default listener.cattle.io/cn-kubernetes.default.svc:kubernetes.default.svc listener.cattle.io/cn-kubernetes.default.svc.cluster.local:kubernetes.default.svc.cluster.local listener.cattle.io/cn-localhost:localhost listener.cattle.io/cn-runnervmr9t6g:runnervmr9t6g listener.cattle.io/fingerprint:SHA1=008C2900ACF6E6A87E38BEC17B43CB824806CCC6]"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Password verified locally for node runnervmr9t6g"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="certificate CN=runnervmr9t6g signed by CN=k3s-server-ca@1792972924: notBefore=2026-10-25 23:02:08 +0000 UTC notAfter=2027-10-25 23:02:08 +0000 UTC"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="certificate CN=system:node:runnervmr9t6g,O=system:nodes signed by CN=k3s-client-ca@1792972924: notBefore=2026-10-25 23:02:08 +0000 UTC notAfter=2027-10-25 23:02:08 +0000 UTC"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="certificate CN=system:kube-proxy signed by CN=k3s-client-ca@1792972924: notBefore=2026-10-25 23:02:08 +0000 UTC notAfter=2027-10-25 23:02:08 +0000 UTC"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="certificate CN=system:k3s-controller signed by CN=k3s-client-ca@1792972924: notBefore=2026-10-25 23:02:08 +0000 UTC notAfter=2027-10-25 23:02:08 +0000 UTC"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:51576: runtime core not ready"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Module overlay was already loaded"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Module nf_conntrack was already loaded"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Module br_netfilter was already loaded"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=warning msg="Failed to load kernel module nft-expr-counter with modprobe"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Set sysctl 'net/netfilter/nf_conntrack_max' to 131072"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Set sysctl 'net/netfilter/nf_conntrack_tcp_timeout_established' to 86400"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Set sysctl 'net/netfilter/nf_conntrack_tcp_timeout_close_wait' to 3600"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Found crun container runtime at /usr/bin/crun"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Connecting to proxy" url="wss://127.0.0.1:6443/v1-k3s/connect"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Creating k3s-cert-monitor event broadcaster"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Logging containerd to /var/lib/rancher/k3s/agent/containerd/containerd.log"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Running containerd -c /var/lib/rancher/k3s/agent/etc/containerd/config.toml"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Saving cluster bootstrap data to datastore"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Handling backend connection request [runnervmr9t6g]"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Polling for API server readiness: GET /readyz failed: the server is currently unable to handle the request"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Connected to proxy" url="wss://127.0.0.1:6443/v1-k3s/connect"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Remotedialer connected to proxy" url="wss://127.0.0.1:6443/v1-k3s/connect"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Opening etcd client connection with endpoints [unix://kine.sock]"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Connection to etcd is ready"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="ETCD server is now running"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Running kube-apiserver --advertise-port=6443 --allow-privileged=true --anonymous-auth=false --api-audiences=https://kubernetes.default.svc.cluster.local,k3s --authorization-mode=Node,RBAC --bind-address=127.0.0.1 --cert-dir=/var/lib/rancher/k3s/server/tls/temporary-certs --client-ca-file=/var/lib/rancher/k3s/server/tls/client-ca.crt --egress-selector-config-file=/var/lib/rancher/k3s/server/etc/egress-selector-config.yaml --enable-admission-plugins=NodeRestriction --enable-aggregator-routing=true --enable-bootstrap-token-auth=true --etcd-servers=unix://kine.sock --kubelet-certificate-authority=/var/lib/rancher/k3s/server/tls/server-ca.crt --kubelet-client-certificate=/var/lib/rancher/k3s/server/tls/client-kube-apiserver.crt --kubelet-client-key=/var/lib/rancher/k3s/server/tls/client-kube-apiserver.key --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname --profiling=false --proxy-client-cert-file=/var/lib/rancher/k3s/server/tls/client-auth-proxy.crt --proxy-client-key-file=/var/lib/rancher/k3s/server/tls/client-auth-proxy.key --requestheader-allowed-names=system:auth-proxy --requestheader-client-ca-file=/var/lib/rancher/k3s/server/tls/request-header-ca.crt --requestheader-extra-headers-prefix=X-Remote-Extra- --requestheader-group-headers=X-Remote-Group --requestheader-username-headers=X-Remote-User --secure-port=6444 --service-account-issuer=https://kubernetes.default.svc.cluster.local --service-account-key-file=/var/lib/rancher/k3s/server/tls/service.key --service-account-signing-key-file=/var/lib/rancher/k3s/server/tls/service.current.key --service-cluster-ip-range=10.43.0.0/16 --service-node-port-range=30000-32767 --storage-backend=etcd3 --tls-cert-file=/var/lib/rancher/k3s/server/tls/serving-kube-apiserver.crt --tls-cipher-suites=TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305 --tls-private-key-file=/var/lib/rancher/k3s/server/tls/serving-kube-apiserver.key"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Running kube-scheduler --authentication-kubeconfig=/var/lib/rancher/k3s/server/cred/scheduler.kubeconfig --authorization-kubeconfig=/var/lib/rancher/k3s/server/cred/scheduler.kubeconfig --bind-address=127.0.0.1 --kubeconfig=/var/lib/rancher/k3s/server/cred/scheduler.kubeconfig --leader-elect=false --profiling=false --secure-port=10259 --tls-cert-file=/var/lib/rancher/k3s/server/tls/kube-scheduler/kube-scheduler.crt --tls-private-key-file=/var/lib/rancher/k3s/server/tls/kube-scheduler/kube-scheduler.key"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Running kube-controller-manager --allocate-node-cidrs=true --authentication-kubeconfig=/var/lib/rancher/k3s/server/cred/controller.kubeconfig --authorization-kubeconfig=/var/lib/rancher/k3s/server/cred/controller.kubeconfig --bind-address=127.0.0.1 --cluster-cidr=10.42.0.0/16 --cluster-signing-kube-apiserver-client-cert-file=/var/lib/rancher/k3s/server/tls/client-ca.nochain.crt --cluster-signing-kube-apiserver-client-key-file=/var/lib/rancher/k3s/server/tls/client-ca.key --cluster-signing-kubelet-client-cert-file=/var/lib/rancher/k3s/server/tls/client-ca.nochain.crt --cluster-signing-kubelet-client-key-file=/var/lib/rancher/k3s/server/tls/client-ca.key --cluster-signing-kubelet-serving-cert-file=/var/lib/rancher/k3s/server/tls/server-ca.nochain.crt --cluster-signing-kubelet-serving-key-file=/var/lib/rancher/k3s/server/tls/server-ca.key --cluster-signing-legacy-unknown-cert-file=/var/lib/rancher/k3s/server/tls/server-ca.nochain.crt --cluster-signing-legacy-unknown-key-file=/var/lib/rancher/k3s/server/tls/server-ca.key --configure-cloud-routes=false --controllers=*,tokencleaner --kubeconfig=/var/lib/rancher/k3s/server/cred/controller.kubeconfig --leader-elect=false --profiling=false --root-ca-file=/var/lib/rancher/k3s/server/tls/server-ca.crt --secure-port=10257 --service-account-private-key-file=/var/lib/rancher/k3s/server/tls/service.current.key --service-cluster-ip-range=10.43.0.0/16 --tls-cert-file=/var/lib/rancher/k3s/server/tls/kube-controller-manager/kube-controller-manager.crt --tls-private-key-file=/var/lib/rancher/k3s/server/tls/kube-controller-manager/kube-controller-manager.key --use-service-account-credentials=true"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Running cloud-controller-manager --allocate-node-cidrs=true --authentication-kubeconfig=/var/lib/rancher/k3s/server/cred/cloud-controller.kubeconfig --authorization-kubeconfig=/var/lib/rancher/k3s/server/cred/cloud-controller.kubeconfig --bind-address=127.0.0.1 --cloud-config=/var/lib/rancher/k3s/server/etc/cloud-config.yaml --cloud-provider=k3s --cluster-cidr=10.42.0.0/16 --configure-cloud-routes=false --controllers=*,-route,-service --kubeconfig=/var/lib/rancher/k3s/server/cred/cloud-controller.kubeconfig --leader-elect=false --leader-elect-resource-name=k3s-cloud-controller-manager --node-status-update-frequency=1m0s --profiling=false"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: I1026 00:02:08.822550    2533 options.go:261] external host was not specified, using 10.1.0.7
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Server node token is available at /var/lib/rancher/k3s/server/token"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="To join server node to cluster: k3s server -s https://10.1.0.7:6443 -t ${SERVER_NODE_TOKEN}"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Agent node token is available at /var/lib/rancher/k3s/server/agent-token"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="To join agent node to cluster: k3s agent -s https://10.1.0.7:6443 -t ${AGENT_NODE_TOKEN}"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Wrote kubeconfig /etc/rancher/k3s/k3s.yaml"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=info msg="Run: k3s kubectl"
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: I1026 00:02:08.826440    2533 server.go:159] Version: v1.37.1+k3s1
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: I1026 00:02:08.826467    2533 server.go:161] "Golang settings" GOGC="" GOMAXPROCS="" GOTRACEBACK=""
+Oct 26 00:02:08 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:08Z" level=error msg="Sending HTTP/1.1 503 response to 127.0.0.1:51606: runtime core not ready"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.016617    2533 shared_informer.go:503] "Waiting for caches to sync" controller="node_authorizer"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: E1026 00:02:09.016837    2533 options.go:205] The manifest file is empty, ignoring.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.019829    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.023391    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.026772    2533 plugins.go:157] Loaded 15 mutating admission controller(s) successfully in the following order: NamespaceLifecycle,LimitRanger,ServiceAccount,NodeRestriction,TaintNodesByCondition,Priority,DefaultTolerationSeconds,DefaultStorageClass,StorageObjectInUseProtection,PodGroupProtection,RuntimeClass,DefaultIngressClass,PodTopologyLabels,MutatingAdmissionPolicy,MutatingAdmissionWebhook.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.026908    2533 plugins.go:160] Loaded 15 validating admission controller(s) successfully in the following order: LimitRanger,ServiceAccount,PodSecurity,Priority,PersistentVolumeClaimResize,RuntimeClass,CertificateApproval,CertificateSigning,ClusterTrustBundleAttest,CertificateSubjectRestriction,NodeDeclaredFeatureValidator,PodResizeValidator,ValidatingAdmissionPolicy,ValidatingAdmissionWebhook,ResourceQuota.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.027463    2533 instance.go:244] Using reconciler: lease
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.032502    2533 handler.go:309] Adding GroupVersion apiextensions.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.032904    2533 genericapiserver.go:798] Skipping API apiextensions.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.036574    2533 cidrallocator.go:198] starting ServiceCIDR Allocator Controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.067595    2533 handler.go:309] Adding GroupVersion  v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.068001    2533 apis.go:112] API group "internal.apiserver.k8s.io" is not enabled, skipping.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.076711    2533 apis.go:112] API group "lifecycle.k8s.io" is not enabled, skipping.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Running kube-proxy --cluster-cidr=10.42.0.0/16 --conntrack-max-per-core=0 --conntrack-tcp-timeout-close-wait=0s --conntrack-tcp-timeout-established=0s --healthz-bind-address=127.0.0.1 --hostname-override=runnervmr9t6g --kubeconfig=/var/lib/rancher/k3s/agent/kubeproxy.kubeconfig --proxy-mode=iptables"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.128297    2533 handler.go:309] Adding GroupVersion authentication.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.128516    2533 genericapiserver.go:798] Skipping API authentication.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.128596    2533 genericapiserver.go:798] Skipping API authentication.k8s.io/v1alpha1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.128985    2533 handler.go:309] Adding GroupVersion authorization.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.129064    2533 genericapiserver.go:798] Skipping API authorization.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.129664    2533 handler.go:309] Adding GroupVersion autoscaling v2 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.130226    2533 handler.go:309] Adding GroupVersion autoscaling v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.131181    2533 handler.go:309] Adding GroupVersion batch v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.131200    2533 genericapiserver.go:798] Skipping API batch/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.132614    2533 handler.go:309] Adding GroupVersion certificates.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.132636    2533 genericapiserver.go:798] Skipping API certificates.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.132644    2533 genericapiserver.go:798] Skipping API certificates.k8s.io/v1alpha1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.133089    2533 handler.go:309] Adding GroupVersion coordination.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.133110    2533 genericapiserver.go:798] Skipping API coordination.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.133118    2533 genericapiserver.go:798] Skipping API coordination.k8s.io/v1alpha2 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.133594    2533 handler.go:309] Adding GroupVersion discovery.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.133612    2533 genericapiserver.go:798] Skipping API discovery.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.135344    2533 handler.go:309] Adding GroupVersion networking.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.135360    2533 genericapiserver.go:798] Skipping API networking.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.135676    2533 handler.go:309] Adding GroupVersion node.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.135691    2533 genericapiserver.go:798] Skipping API node.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.135695    2533 genericapiserver.go:798] Skipping API node.k8s.io/v1alpha1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.136235    2533 handler.go:309] Adding GroupVersion policy v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.136251    2533 genericapiserver.go:798] Skipping API policy/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.137350    2533 handler.go:309] Adding GroupVersion rbac.authorization.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.137366    2533 genericapiserver.go:798] Skipping API rbac.authorization.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.137371    2533 genericapiserver.go:798] Skipping API rbac.authorization.k8s.io/v1alpha1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.137671    2533 handler.go:309] Adding GroupVersion scheduling.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.137686    2533 genericapiserver.go:798] Skipping API scheduling.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.137691    2533 genericapiserver.go:798] Skipping API scheduling.k8s.io/v1alpha3 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.139213    2533 handler.go:309] Adding GroupVersion storage.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.139230    2533 genericapiserver.go:798] Skipping API storage.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.139235    2533 genericapiserver.go:798] Skipping API storage.k8s.io/v1alpha1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.139641    2533 handler.go:309] Adding GroupVersion storagemigration.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.139656    2533 genericapiserver.go:798] Skipping API storagemigration.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.140390    2533 handler.go:309] Adding GroupVersion flowcontrol.apiserver.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.140406    2533 genericapiserver.go:798] Skipping API flowcontrol.apiserver.k8s.io/v1beta3 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.140411    2533 genericapiserver.go:798] Skipping API flowcontrol.apiserver.k8s.io/v1beta2 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.140414    2533 genericapiserver.go:798] Skipping API flowcontrol.apiserver.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.142716    2533 handler.go:309] Adding GroupVersion apps v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.142732    2533 genericapiserver.go:798] Skipping API apps/v1beta2 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.142738    2533 genericapiserver.go:798] Skipping API apps/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.144288    2533 handler.go:309] Adding GroupVersion admissionregistration.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.144304    2533 genericapiserver.go:798] Skipping API admissionregistration.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.144309    2533 genericapiserver.go:798] Skipping API admissionregistration.k8s.io/v1alpha1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.144677    2533 handler.go:309] Adding GroupVersion events.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.144692    2533 genericapiserver.go:798] Skipping API events.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.146202    2533 handler.go:309] Adding GroupVersion resource.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.146218    2533 genericapiserver.go:798] Skipping API resource.k8s.io/v1beta2 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.146223    2533 genericapiserver.go:798] Skipping API resource.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.146227    2533 genericapiserver.go:798] Skipping API resource.k8s.io/v1alpha3 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.148695    2533 handler.go:309] Adding GroupVersion apiregistration.k8s.io v1 to ResourceManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: W1026 00:02:09.148714    2533 genericapiserver.go:798] Skipping API apiregistration.k8s.io/v1beta1 because it has no resources.
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.482248    2533 dynamic_cafile_content.go:161] "Starting controller" name="request-header::/var/lib/rancher/k3s/server/tls/request-header-ca.crt"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.482361    2533 dynamic_serving_content.go:135] "Starting controller" name="serving-cert::/var/lib/rancher/k3s/server/tls/serving-kube-apiserver.crt::/var/lib/rancher/k3s/server/tls/serving-kube-apiserver.key"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.482384    2533 dynamic_cafile_content.go:161] "Starting controller" name="client-ca-bundle::/var/lib/rancher/k3s/server/tls/client-ca.crt"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.482534    2533 secure_serving.go:214] Serving securely on 127.0.0.1:6444
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.482654    2533 storage_readiness_hook.go:70] Storage is ready for all registered resources
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Starting legacy_token_tracking_controller" logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.482692    2533 tlsconfig.go:243] "Starting DynamicServingCertificateController"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.482808    2533 controller.go:87] "Starting OpenAPI AggregationController"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.483072    2533 controller.go:116] "Deleting old lease on startup" lease="kube-system/apiserver-di623o23nb5hv6gny6r4h6hdia"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.483111    2533 remote_available_controller.go:434] Starting RemoteAvailability controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.483121    2533 cache.go:32] Waiting for caches to sync for RemoteAvailability controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.483151    2533 apiservice_controller.go:100] Starting APIServiceRegistrationController
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.483158    2533 cache.go:32] Waiting for caches to sync for APIServiceRegistrationController controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.483306    2533 cluster_authentication_trust_controller.go:459] Starting cluster_authentication_trust_controller controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.483614    2533 customresource_discovery_controller.go:294] Starting DiscoveryController
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.484066    2533 aggregator.go:185] waiting for initial CRD sync...
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.484132    2533 dynamic_cafile_content.go:161] "Starting controller" name="client-ca-bundle::/var/lib/rancher/k3s/server/tls/client-ca.crt"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.484196    2533 dynamic_cafile_content.go:161] "Starting controller" name="request-header::/var/lib/rancher/k3s/server/tls/request-header-ca.crt"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.484272    2533 controller.go:142] Starting OpenAPI controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.484298    2533 controller.go:90] Starting OpenAPI V3 controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.484313    2533 naming_controller.go:305] Starting NamingConditionController
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.484347    2533 nonstructuralschema_controller.go:202] Starting NonStructuralSchemaConditionController
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.484371    2533 apiapproval_controller.go:196] Starting KubernetesAPIApprovalPolicyConformantConditionController
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.488185    2533 system_namespaces_controller.go:66] Starting system namespaces controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.488297    2533 local_available_controller.go:156] Starting LocalAvailability controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.488305    2533 cache.go:32] Waiting for caches to sync for LocalAvailability controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.488322    2533 controller.go:89] "Starting OpenAPI V3 AggregationController"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.488376    2533 apf_controller.go:377] Starting API Priority and Fairness config controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.488394    2533 dynamic_serving_content.go:135] "Starting controller" name="aggregator-proxy-cert::/var/lib/rancher/k3s/server/tls/client-auth-proxy.crt::/var/lib/rancher/k3s/server/tls/client-auth-proxy.key"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Waiting for caches to sync" logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.488714    2533 repairip.go:210] Starting ipallocator-repair-controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.488723    2533 shared_informer.go:503] "Waiting for caches to sync" controller="ipallocator-repair-controller"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg=Starting controller=kubernetes-service-cidr-controller logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.488952    2533 crdregistration_controller.go:114] Starting crd-autoregister controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Waiting for caches to sync" logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.488963    2533 shared_informer.go:503] "Waiting for caches to sync" controller="crd-autoregister"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Waiting for caches to sync" logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Starting CRDFinalizer" logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Starting apiserver lease garbage collector" logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Waiting for caches to sync" logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.583995    2533 cache.go:39] Caches are synced for APIServiceRegistrationController controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.584024    2533 cache.go:39] Caches are synced for RemoteAvailability controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.584052    2533 handler_discovery.go:450] Starting ResourceDiscoveryManager
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: E1026 00:02:09.585601    2533 controller.go:208] "Failed to ensure lease exists, will retry" err="namespaces \"kube-system\" not found" interval="200ms"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.588855    2533 shared_informer.go:510] "Caches are synced" controller="ipallocator-repair-controller"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.588887    2533 apf_controller.go:382] Running API Priority and Fairness config worker
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.588897    2533 apf_controller.go:385] Running API Priority and Fairness periodic rebalancing process
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Caches are synced" logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.589033    2533 cache.go:39] Caches are synced for LocalAvailability controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Caches are synced" logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Creating default ServiceCIDR" CIDRs="[10.43.0.0/16]" logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Caches are synced" logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.589213    2533 shared_informer.go:510] "Caches are synced" controller="crd-autoregister"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.589367    2533 aggregator.go:187] initial CRD sync complete...
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.589380    2533 autoregister_controller.go:144] Starting autoregister controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.589388    2533 cache.go:32] Waiting for caches to sync for autoregister controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.589398    2533 cache.go:39] Caches are synced for autoregister controller
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Caches are synced" logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.617165    2533 shared_informer.go:510] "Caches are synced" controller="node_authorizer"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.620470    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.620495    2533 policy_source.go:253] refreshing policies
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.623637    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.623655    2533 policy_source.go:253] refreshing policies
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: E1026 00:02:09.636752    2533 controller.go:95] Unable to perform initial Kubernetes service initialization: namespaces "default" not found
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=error msg="Error while syncing ConfigMap" configmap=kube-system/kube-apiserver-legacy-service-account-token-tracking error="namespaces \"kube-system\" not found" logger=k3s/UnhandledError
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.694040    2533 cidrallocator.go:302] created ClusterIP allocator for Service CIDR 10.43.0.0/16
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Setting default ServiceCIDR condition Ready to True" logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="Setting default ServiceCIDR condition Ready to True" logger=k3s
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.704568    2533 cidrallocator.go:278] updated ClusterIP allocator for Service CIDR 10.43.0.0/16
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: I1026 00:02:09.788414    2533 controller.go:667] quota admission added evaluator for: leases.coordination.k8s.io
+Oct 26 00:02:09 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:09Z" level=info msg="containerd is now running"
+Oct 26 00:02:10 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:10Z" level=info msg="Running kubelet --cloud-provider=external --config-dir=/var/lib/rancher/k3s/agent/etc/kubelet.conf.d --hostname-override=runnervmr9t6g --kubeconfig=/var/lib/rancher/k3s/agent/kubelet.kubeconfig --node-ip=10.1.0.7 --node-labels= --read-only-port=0"
+Oct 26 00:02:10 runnervmr9t6g k3s[2533]: I1026 00:02:10.491559    2533 storage_scheduling.go:189] created PriorityClass system-node-critical with value 2000001000
+Oct 26 00:02:10 runnervmr9t6g k3s[2533]: I1026 00:02:10.494212    2533 storage_scheduling.go:189] created PriorityClass system-cluster-critical with value 2000000000
+Oct 26 00:02:10 runnervmr9t6g k3s[2533]: I1026 00:02:10.494231    2533 storage_scheduling.go:205] all system priority classes are created successfully or already exist.
+Oct 26 00:02:10 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:10Z" level=info msg="Polling for API server readiness: GET /readyz failed: an error on the server (\"[+]ping ok\\n[+]log ok\\n[+]etcd ok\\n[+]etcd-readiness ok\\n[+]informer-sync ok\\n[+]poststarthook/start-apiserver-admission-initializer ok\\n[+]poststarthook/generic-apiserver-start-informers ok\\n[+]poststarthook/priority-and-fairness-config-consumer ok\\n[+]poststarthook/priority-and-fairness-filter ok\\n[+]poststarthook/storage-object-count-tracker-hook ok\\n[+]poststarthook/start-apiextensions-informers ok\\n[+]poststarthook/start-apiextensions-controllers ok\\n[+]poststarthook/crd-informer-synced ok\\n[+]poststarthook/start-system-namespaces-controller ok\\n[+]poststarthook/peer-endpoint-reconciler-controller ok\\n[+]poststarthook/start-cluster-authentication-info-controller ok\\n[+]poststarthook/start-kube-apiserver-identity-lease-controller ok\\n[+]poststarthook/start-kube-apiserver-identity-lease-garbage-collector ok\\n[+]poststarthook/storage-readiness ok\\n[+]poststarthook/start-legacy-token-tracking-controller ok\\n[+]poststarthook/start-service-ip-repair-controllers ok\\n[-]poststarthook/rbac/bootstrap-roles failed: reason withheld\\n[+]poststarthook/scheduling/bootstrap-system-priority-classes ok\\n[+]poststarthook/priority-and-fairness-config-producer ok\\n[+]poststarthook/bootstrap-controller ok\\n[+]poststarthook/start-kubernetes-service-cidr-controller ok\\n[+]poststarthook/aggregator-reload-proxy-client-cert ok\\n[+]poststarthook/start-kube-aggregator-informers ok\\n[+]poststarthook/apiservice-status-local-available-controller ok\\n[+]poststarthook/apiservice-status-remote-available-controller ok\\n[+]poststarthook/apiservice-registration-controller ok\\n[+]poststarthook/apiservice-discovery-controller ok\\n[+]poststarthook/kube-apiserver-autoregistration ok\\n[+]autoregister-completion ok\\n[+]poststarthook/apiservice-openapi-controller ok\\n[+]poststarthook/apiservice-openapiv3-controller ok\\n[+]shutdown ok\\nreadyz check failed\") has prevented the request from succeeding"
+Oct 26 00:02:10 runnervmr9t6g k3s[2533]: I1026 00:02:10.851367    2533 controller.go:667] quota admission added evaluator for: roles.rbac.authorization.k8s.io
+Oct 26 00:02:10 runnervmr9t6g k3s[2533]: I1026 00:02:10.872701    2533 controller.go:667] quota admission added evaluator for: rolebindings.rbac.authorization.k8s.io
+Oct 26 00:02:10 runnervmr9t6g k3s[2533]: I1026 00:02:10.941659    2533 alloc.go:329] "allocated clusterIPs" service="default/kubernetes" clusterIPs={"IPv4":"10.43.0.1"}
+Oct 26 00:02:10 runnervmr9t6g k3s[2533]: W1026 00:02:10.944374    2533 lease.go:270] Resetting endpoints for master service "kubernetes" to [10.1.0.7]
+Oct 26 00:02:10 runnervmr9t6g k3s[2533]: I1026 00:02:10.945039    2533 controller.go:667] quota admission added evaluator for: endpoints
+Oct 26 00:02:10 runnervmr9t6g k3s[2533]: I1026 00:02:10.947303    2533 controller.go:667] quota admission added evaluator for: endpointslices.discovery.k8s.io
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:12Z" level=info msg="Creating k3s-supervisor event broadcaster"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:12Z" level=info msg="Waiting for untainted node"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:12Z" level=info msg="Kube API server is now running"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:12Z" level=info msg="k3s is up and running"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.821363    2533 server.go:256] "Effective KubeletConfiguration" config=<
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         address: 0.0.0.0
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         apiVersion: kubelet.config.k8s.io/v1beta1
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         authentication:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:           anonymous:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:             enabled: false
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:           webhook:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:             cacheTTL: 2m0s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:             enabled: true
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:           x509:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:             clientCAFile: /var/lib/rancher/k3s/agent/client-ca.crt
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         authorization:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:           mode: Webhook
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:           webhook:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:             cacheAuthorizedTTL: 5m0s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:             cacheUnauthorizedTTL: 30s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         cgroupDriver: systemd
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         cgroupsPerQOS: true
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         clusterDNS:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         - 10.43.0.10
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         clusterDomain: cluster.local
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         configMapAndSecretChangeDetectionStrategy: Watch
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         containerLogMaxFiles: 5
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         containerLogMaxSize: 10Mi
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         containerLogMaxWorkers: 1
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         containerLogMonitorInterval: 10s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         containerRuntimeEndpoint: unix:///run/k3s/containerd/containerd.sock
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         contentType: application/vnd.kubernetes.protobuf
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         cpuCFSQuota: true
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         cpuCFSQuotaPeriod: 100ms
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         cpuManagerPolicy: none
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         cpuManagerReconcilePeriod: 10s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         crashLoopBackOff:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:           maxContainerRestartPeriod: 5m0s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         enableControllerAttachDetach: true
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         enableDebugFlagsHandler: true
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         enableDebuggingHandlers: true
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         enableProfilingHandler: true
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         enableServer: true
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         enableSystemLogHandler: true
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         enableSystemLogQuery: false
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         enforceNodeAllocatable:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         - pods
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         eventBurst: 100
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         eventRecordQPS: 50
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         evictionHard:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:           imagefs.available: 5%
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:           nodefs.available: 5%
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         evictionMinimumReclaim:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:           imagefs.available: 10%
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:           nodefs.available: 10%
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         evictionPressureTransitionPeriod: 5m0s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         failCgroupV1: true
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         failSwapOn: false
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         fileCheckFrequency: 20s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         hairpinMode: promiscuous-bridge
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         healthzBindAddress: 127.0.0.1
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         healthzPort: 10248
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         httpCheckFrequency: 20s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         imageGCHighThresholdPercent: 85
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         imageGCLowThresholdPercent: 80
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         imageMaximumGCAge: 0s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         imageMinimumGCAge: 2m0s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         imagePullCredentialsVerificationPolicy: NeverVerifyPreloadedImages
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         iptablesDropBit: 15
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         iptablesMasqueradeBit: 14
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         kind: KubeletConfiguration
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         kubeAPIBurst: 100
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         kubeAPIQPS: 50
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         localStorageCapacityIsolation: true
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         logging:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:           flushFrequency: 5s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:           format: text
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:           options:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:             json:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:               infoBufferSize: "0"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:             text:
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:               infoBufferSize: "0"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:           verbosity: 0
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         makeIPTablesUtilChains: true
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         maxOpenFiles: 1000000
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         maxPods: 110
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         memoryManagerPolicy: None
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         memoryReservationPolicy: None
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         memorySwap: {}
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         mergeDefaultEvictionSettings: false
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         nodeLeaseDurationSeconds: 40
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         nodeStatusMaxImages: 50
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         nodeStatusReportFrequency: 5m0s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         nodeStatusUpdateFrequency: 10s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         oomScoreAdj: -999
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         podLogsDir: /var/log/pods
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         podPidsLimit: -1
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         port: 10250
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         registerNode: true
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         registryBurst: 10
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         registryPullQPS: 5
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         resolvConf: /run/systemd/resolve/resolv.conf
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         runtimeRequestTimeout: 2m0s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         seccompDefault: false
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         serializeImagePulls: false
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         shutdownGracePeriod: 0s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         shutdownGracePeriodCriticalPods: 0s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         staticPodPath: /var/lib/rancher/k3s/agent/pod-manifests
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         streamingConnectionIdleTimeout: 4h0m0s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         syncFrequency: 1m0s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         tlsCertFile: /var/lib/rancher/k3s/agent/serving-kubelet.crt
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         tlsPrivateKeyFile: /var/lib/rancher/k3s/agent/serving-kubelet.key
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         topologyManagerPolicy: none
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         topologyManagerScope: container
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         volumePluginDir: /usr/libexec/kubernetes/kubelet-plugins/volume/exec/
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:         volumeStatsAggPeriod: 1m0s
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]:  >
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.827490    2533 server.go:550] "Kubelet version" kubeletVersion="v1.37.1+k3s1"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.827672    2533 server.go:552] "Golang settings" GOGC="" GOMAXPROCS="" GOTRACEBACK=""
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.827819    2533 watchdog_linux.go:94] "Systemd watchdog is not enabled"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.827934    2533 watchdog_linux.go:137] "Systemd watchdog is not enabled or the interval is invalid, so health checking will not be started."
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: E1026 00:02:12.830243    2533 options.go:205] The manifest file is empty, ignoring.
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.830585    2533 dynamic_cafile_content.go:161] "Starting controller" name="client-ca-bundle::/var/lib/rancher/k3s/agent/client-ca.crt"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:12Z" level=info msg="Event occurred" apiVersion= fieldPath= kind=Node logger=k3s message="Node and Certificate Authority certificates managed by k3s are OK" object=runnervmr9t6g reason=CertificateExpirationOK type=Normal
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.831321    2533 controllermanager.go:204] "Starting" version="v1.37.1+k3s1"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.831338    2533 controllermanager.go:206] "Golang settings" GOGC="" GOMAXPROCS="" GOTRACEBACK=""
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:12Z" level=info msg="Creating embedded CRD etcdsnapshotfiles.k3s.cattle.io"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.834949    2533 secure_serving.go:214] Serving securely on 127.0.0.1:10257
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.835639    2533 requestheader_controller.go:180] Starting RequestHeaderAuthRequestController
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.835771    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.835921    2533 dynamic_serving_content.go:135] "Starting controller" name="serving-cert::/var/lib/rancher/k3s/server/tls/kube-controller-manager/kube-controller-manager.crt::/var/lib/rancher/k3s/server/tls/kube-controller-manager/kube-controller-manager.key"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.836120    2533 tlsconfig.go:243] "Starting DynamicServingCertificateController"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.836274    2533 configmap_cafile_content.go:205] "Starting controller" name="client-ca::kube-system::extension-apiserver-authentication::client-ca-file"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.836296    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.836280    2533 configmap_cafile_content.go:205] "Starting controller" name="client-ca::kube-system::extension-apiserver-authentication::requestheader-client-ca-file"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.836328    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:12Z" level=info msg="Creating embedded CRD addons.k3s.cattle.io"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.842945    2533 server.go:1507] "Using cgroup driver setting received from the CRI runtime" cgroupDriver="systemd"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:12Z" level=info msg="Creating embedded CRD helmcharts.helm.cattle.io"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.858894    2533 controller.go:667] quota admission added evaluator for: serviceaccounts
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:12Z" level=info msg="Creating embedded CRD helmchartconfigs.helm.cattle.io"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.862919    2533 handler.go:309] Adding GroupVersion k3s.cattle.io v1 to ResourceManager
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.866901    2533 server.go:863] "--cgroups-per-qos enabled, but --cgroup-root was not specified.  Defaulting to /"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.866947    2533 server.go:924] "NoSwap is set due to memorySwapBehavior not specified" memorySwapBehavior="" FailSwapOn=false
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.867233    2533 container_manager_linux.go:273] "Container manager verified user specified cgroup-root exists" cgroupRoot=[]
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.867258    2533 container_manager_linux.go:278] "Creating Container Manager object based on Node Config" nodeConfig={"NodeName":"runnervmr9t6g","RuntimeCgroupsName":"","SystemCgroupsName":"","KubeletCgroupsName":"","KubeletOOMScoreAdj":-999,"ContainerRuntime":"","CgroupsPerQOS":true,"CgroupRoot":"/","CgroupDriver":"systemd","KubeletRootDir":"/var/lib/kubelet","ProtectKernelDefaults":false,"KubeReservedCgroupName":"","SystemReservedCgroupName":"","ReservedSystemCPUs":{},"EnforceNodeAllocatable":{"pods":{}},"KubeReserved":null,"SystemReserved":null,"HardEvictionThresholds":[{"Signal":"nodefs.available","Operator":"LessThan","Value":{"Quantity":null,"Percentage":0.05},"GracePeriod":0,"MinReclaim":null},{"Signal":"imagefs.available","Operator":"LessThan","Value":{"Quantity":null,"Percentage":0.05},"GracePeriod":0,"MinReclaim":null}],"QOSReserved":{},"CPUManagerPolicy":"none","CPUManagerPolicyOptions":null,"TopologyManagerScope":"container","CPUManagerReconcilePeriod":10000000000,"MemoryManagerPolicy":"None","MemoryManagerReservedMemory":null,"MemoryReservationPolicy":"None","MemoryThrottlingFactor":null,"PodPidsLimit":-1,"EnforceCPULimits":true,"CPUCFSQuotaPeriod":100000000,"TopologyManagerPolicy":"none","TopologyManagerPolicyOptions":null,"CgroupVersion":2}
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.867505    2533 topology_manager.go:183] "Creating topology manager with none policy"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.867518    2533 container_manager_linux.go:310] "Creating device plugin manager"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.867603    2533 container_manager_linux.go:319] "Creating Dynamic Resource Allocation (DRA) manager"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.870227    2533 state_mem.go:45] "Initialized" logger="CPUManager state memory"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.870406    2533 kubelet.go:512] "Attempting to sync node with API server"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.870435    2533 kubelet.go:389] "Adding static pod path" path="/var/lib/rancher/k3s/agent/pod-manifests"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.870455    2533 kubelet.go:400] "Adding apiserver pod source"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.870468    2533 apiserver.go:41] "Waiting for node sync before watching apiserver pods"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.871646    2533 handler.go:309] Adding GroupVersion k3s.cattle.io v1 to ResourceManager
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.872810    2533 kuberuntime_manager.go:315] "Container runtime initialized" containerRuntime="containerd" version="v2.3.4-k3s1" apiVersion="v1"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.873537    2533 kubelet.go:1011] "ClusterTrustBundle informer will be started eventually once a trust bundle is requested"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: W1026 00:02:12.873688    2533 probe.go:275] Flexvolume plugin directory at /usr/libexec/kubernetes/kubelet-plugins/volume/exec/ does not exist. Recreating.
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.875942    2533 server.go:1340] "Started kubelet"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.878417    2533 podcertificatemanager.go:340] "podcertificate.IssuingManager starting up"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.879056    2533 fs_resource_analyzer.go:69] "Starting FS ResourceAnalyzer"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: E1026 00:02:12.880609    2533 kubelet.go:1754] "Image garbage collection failed once. Stats initialization may not have completed yet" err="invalid capacity 0 on image filesystem"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.881081    2533 server.go:196] "Starting to listen" address="0.0.0.0" port=10250
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.881917    2533 server.go:365] "Adding debug handlers to kubelet server"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.882957    2533 dynamic_serving_content.go:135] "Starting controller" name="kubelet-server-cert-files::/var/lib/rancher/k3s/agent/serving-kubelet.crt::/var/lib/rancher/k3s/agent/serving-kubelet.key"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.883063    2533 tlsconfig.go:243] "Starting DynamicServingCertificateController"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.883249    2533 ratelimit.go:56] "Setting rate limiting for endpoint" service="podresources" qps=100 burstTokens=10
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.883337    2533 server_v1.go:49] "podresources" method="list" useActivePods=true
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.883504    2533 server.go:267] "Starting to serve the podresources API" endpoint="unix:/var/lib/kubelet/pod-resources/kubelet.sock"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.883710    2533 server.go:293] "Starting to serve the pods API" endpoint="unix:/var/lib/kubelet/pods-api/pods-api.sock"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.884685    2533 volume_manager.go:331] "Starting Kubelet Volume Manager"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: E1026 00:02:12.884780    2533 kubelet_node_status.go:396] "Error getting the current node from lister" err="node \"runnervmr9t6g\" not found"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: E1026 00:02:12.884899    2533 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.885524    2533 desired_state_of_world_populator.go:146] "Desired state populator starts to run"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.885649    2533 reconciler.go:29] "Reconciler: start to sync state"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.887342    2533 factory.go:220] Registration of the crio container factory failed: Get "http://%2Fvar%2Frun%2Fcrio%2Fcrio.sock/info": dial unix /var/run/crio/crio.sock: connect: no such file or directory
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.888927    2533 factory.go:222] Registration of the containerd container factory successfully
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.889036    2533 factory.go:222] Registration of the systemd container factory successfully
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.890434    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: E1026 00:02:12.902512    2533 nodelease.go:50] "Failed to get node when trying to set owner ref to the node lease" err="nodes \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:12Z" level=info msg="Waiting for CRD helmchartconfigs.helm.cattle.io to become available"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.908722    2533 handler.go:309] Adding GroupVersion helm.cattle.io v1 to ResourceManager
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.910823    2533 cpu_manager.go:239] "Starting" policy="none"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.910918    2533 cpu_manager.go:240] "Reconciling" reconcilePeriod="10s"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.911002    2533 state_mem.go:45] "Initialized" logger="CPUManager state checkpoint.CPUManager state memory"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.912073    2533 state_checkpoint.go:191] "trying to load v4 CPU manager checkpoint" logger="CPUManager state checkpoint"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.913118    2533 policy_none.go:51] "Start"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.913171    2533 memory_manager.go:209] "Starting memorymanager" policy="None"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.913187    2533 state_mem.go:39] "Initializing new in-memory state store" logger="Memory Manager state checkpoint"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.913967    2533 policy_none.go:47] "Start"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.918720    2533 handler.go:309] Adding GroupVersion helm.cattle.io v1 to ResourceManager
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.935969    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.937893    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.937939    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: E1026 00:02:12.954356    2533 manager.go:550] "Failed to read data from checkpoint" err="checkpoint is not found" checkpoint="kubelet_internal_checkpoint"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.954531    2533 eviction_manager.go:193] "Eviction manager: starting control loop"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.954543    2533 container_log_manager.go:146] "Initializing container log rotate workers" workers=1 monitorPeriod="10s"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.954974    2533 plugin_manager.go:121] "Starting Kubelet Plugin Manager"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: E1026 00:02:12.961443    2533 eviction_manager.go:280] "eviction manager: failed to check if we have separate container filesystem. Ignoring." err="no imagefs label for configured runtime"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: E1026 00:02:12.961484    2533 eviction_manager.go:305] "Eviction manager: failed to get summary stats" err="failed to get node info: node \"runnervmr9t6g\" not found"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.972747    2533 kubelet_network_linux.go:53] "Initialized iptables rules." protocol="IPv4"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.974685    2533 kubelet_network_linux.go:53] "Initialized iptables rules." protocol="IPv6"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.974704    2533 status_manager.go:283] "Starting to sync pod status with apiserver"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.974765    2533 kubelet.go:2673] "Starting kubelet main sync loop"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: E1026 00:02:12.974804    2533 kubelet.go:2697] "Skipping pod synchronization" err="PLEG is not healthy: pleg has yet to be successful"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.982524    2533 controllermanager.go:689] "Warning: controller is disabled" controller="bootstrap-signer-controller"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: E1026 00:02:12.986077    2533 kubelet.go:3596] "Unable to register mirror pod because node is not registered yet" err="node \"runnervmr9t6g\" not found" node="runnervmr9t6g"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.990728    2533 node_lifecycle_controller.go:410] "Controller will reconcile labels" logger="node-lifecycle-controller"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.991054    2533 controllermanager.go:689] "Warning: controller is disabled" controller="selinux-warning-controller"
+Oct 26 00:02:12 runnervmr9t6g k3s[2533]: I1026 00:02:12.991299    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: I1026 00:02:13.055726    2533 kubelet_node_status.go:75] "Attempting to register node" node="runnervmr9t6g"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: I1026 00:02:13.060913    2533 kubelet_node_status.go:78] "Successfully registered node" node="runnervmr9t6g"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Annotations and labels have been set successfully on node: runnervmr9t6g"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Starting flannel with backend vxlan"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: I1026 00:02:13.273860    2533 kubelet_node_status.go:431] "Fast updating node status as it just became ready"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Done waiting for CRD helmchartconfigs.helm.cattle.io to become available"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Writing static file: /var/lib/rancher/k3s/server/static/charts/gateway-api-crd-1.6.103.tgz"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Writing static file: /var/lib/rancher/k3s/server/static/charts/traefik-41.4.2+up41.4.0.tgz"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Writing static file: /var/lib/rancher/k3s/server/static/charts/traefik-crd-41.4.2+up41.4.0.tgz"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Writing manifest: /var/lib/rancher/k3s/server/manifests/ccm.yaml"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Writing manifest: /var/lib/rancher/k3s/server/manifests/coredns.yaml"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Writing manifest: /var/lib/rancher/k3s/server/manifests/gateway-api-crd.yaml"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Writing manifest: /var/lib/rancher/k3s/server/manifests/local-storage.yaml"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Writing manifest: /var/lib/rancher/k3s/server/manifests/rolebindings.yaml"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Writing manifest: /var/lib/rancher/k3s/server/manifests/runtimes.yaml"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Writing manifest: /var/lib/rancher/k3s/server/manifests/traefik.yaml"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Starting dynamiclistener CN filter node controller with SANs: [127.0.0.1 ::1 localhost runnervmr9t6g 10.1.0.7 10.43.0.1 kubernetes kubernetes.default kubernetes.default.svc kubernetes.default.svc.cluster.local]"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Tunnel server egress proxy mode: agent"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Starting k3s.cattle.io/v1, Kind=Addon controller"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Creating deploy event broadcaster"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Starting /v1, Kind=Node controller"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Creating helm-controller event broadcaster"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Registered handlers for helm-controller-chart-registration" logger=k3s/helm-controller
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Cluster dns configmap has been set successfully"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:13Z" level=info msg="Labels and annotations have been set successfully on node: runnervmr9t6g"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: I1026 00:02:13.703723    2533 range_allocator.go:113] "No Secondary Service CIDR provided. Skipping filtering out secondary service addresses" logger="node-ipam-controller"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: I1026 00:02:13.871515    2533 apiserver.go:51] "Watching apiserver"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: I1026 00:02:13.885869    2533 desired_state_of_world_populator.go:154] "Finished populating initial desired state of world"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: I1026 00:02:13.991541    2533 server.go:228] "Successfully retrieved NodeIPs" NodeIPs=["10.1.0.7"]
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: E1026 00:02:13.991673    2533 server.go:256] "Kube-proxy configuration may be incomplete or incorrect" err="nodePortAddresses is unset; NodePort connections will be accepted on all local IPs. Consider using `--nodeport-addresses primary`"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: I1026 00:02:13.996861    2533 server.go:265] "kube-proxy running in dual-stack mode" primary ipFamily="IPv4"
+Oct 26 00:02:13 runnervmr9t6g k3s[2533]: I1026 00:02:13.996900    2533 server_linux.go:144] "Using iptables Proxier"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.000446    2533 proxier.go:231] "Setting route_localnet=1 to allow node-ports on localhost; to change this either disable iptables.localhostNodePorts (--iptables-localhost-nodeports) or set nodePortAddresses (--nodeport-addresses) to filter loopback addresses" ipFamily="IPv4"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.000683    2533 proxier.go:243] "nf_conntrack_tcp_be_liberal set, not installing DROP rules for INVALID packets" ipFamily="IPv4"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.005657    2533 proxier.go:243] "nf_conntrack_tcp_be_liberal set, not installing DROP rules for INVALID packets" ipFamily="IPv6"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.005764    2533 server.go:530] "Version info" version="v1.37.1+k3s1"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.005781    2533 server.go:532] "Golang settings" GOGC="" GOMAXPROCS="" GOTRACEBACK=""
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.008243    2533 config.go:200] "Starting service config controller"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.008263    2533 shared_informer.go:503] "Waiting for caches to sync" controller="service config"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.008283    2533 config.go:106] "Starting endpoint slice config controller"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.008294    2533 shared_informer.go:503] "Waiting for caches to sync" controller="endpoint slice config"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.008311    2533 config.go:403] "Starting serviceCIDR config controller"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.008322    2533 shared_informer.go:503] "Waiting for caches to sync" controller="serviceCIDR config"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.008812    2533 config.go:309] "Starting node config controller"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.008844    2533 shared_informer.go:503] "Waiting for caches to sync" controller="node config"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.008852    2533 shared_informer.go:510] "Caches are synced" controller="node config"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.108320    2533 shared_informer.go:510] "Caches are synced" controller="service config"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.108340    2533 shared_informer.go:510] "Caches are synced" controller="serviceCIDR config"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: I1026 00:02:14.108320    2533 shared_informer.go:510] "Caches are synced" controller="endpoint slice config"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:14Z" level=info msg="Creating new TLS secret for kube-system/k3s-serving (count: 10): map[listener.cattle.io/cn-10.1.0.7:10.1.0.7 listener.cattle.io/cn-10.43.0.1:10.43.0.1 listener.cattle.io/cn-127.0.0.1:127.0.0.1 listener.cattle.io/cn-__1-f16284:::1 listener.cattle.io/cn-kubernetes:kubernetes listener.cattle.io/cn-kubernetes.default:kubernetes.default listener.cattle.io/cn-kubernetes.default.svc:kubernetes.default.svc listener.cattle.io/cn-kubernetes.default.svc.cluster.local:kubernetes.default.svc.cluster.local listener.cattle.io/cn-localhost:localhost listener.cattle.io/cn-runnervmr9t6g:runnervmr9t6g listener.cattle.io/fingerprint:SHA1=008C2900ACF6E6A87E38BEC17B43CB824806CCC6]"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:14Z" level=info msg="Active TLS secret kube-system/k3s-serving (ver=270) (count 10): map[listener.cattle.io/cn-10.1.0.7:10.1.0.7 listener.cattle.io/cn-10.43.0.1:10.43.0.1 listener.cattle.io/cn-127.0.0.1:127.0.0.1 listener.cattle.io/cn-__1-f16284:::1 listener.cattle.io/cn-kubernetes:kubernetes listener.cattle.io/cn-kubernetes.default:kubernetes.default listener.cattle.io/cn-kubernetes.default.svc:kubernetes.default.svc listener.cattle.io/cn-kubernetes.default.svc.cluster.local:kubernetes.default.svc.cluster.local listener.cattle.io/cn-localhost:localhost listener.cattle.io/cn-runnervmr9t6g:runnervmr9t6g listener.cattle.io/fingerprint:SHA1=008C2900ACF6E6A87E38BEC17B43CB824806CCC6]"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:14Z" level=info msg="Starting rbac.authorization.k8s.io/v1, Kind=ClusterRoleBinding controller"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:14Z" level=info msg="Starting batch/v1, Kind=Job controller"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:14Z" level=info msg="Starting /v1, Kind=ConfigMap controller"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:14Z" level=info msg="Starting /v1, Kind=ServiceAccount controller"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:14Z" level=info msg="Starting /v1, Kind=Secret controller"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:14Z" level=info msg="Starting helm.cattle.io/v1, Kind=HelmChartConfig controller"
+Oct 26 00:02:14 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:14Z" level=info msg="Starting helm.cattle.io/v1, Kind=HelmChart controller"
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: I1026 00:02:15.534348    2533 controller.go:667] quota admission added evaluator for: addons.k3s.cattle.io
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:15Z" level=info msg="Event occurred" apiVersion=k3s.cattle.io/v1 fieldPath= kind=Addon logger=k3s/deploy message="Applying manifest at \"/var/lib/rancher/k3s/server/manifests/ccm.yaml\"" object=kube-system/ccm reason=ApplyingManifest type=Normal
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:15Z" level=info msg="Event occurred" apiVersion=k3s.cattle.io/v1 fieldPath= kind=Addon logger=k3s/deploy message="Applied manifest at \"/var/lib/rancher/k3s/server/manifests/ccm.yaml\"" object=kube-system/ccm reason=AppliedManifest type=Normal
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:15Z" level=info msg="Event occurred" apiVersion=k3s.cattle.io/v1 fieldPath= kind=Addon logger=k3s/deploy message="Applying manifest at \"/var/lib/rancher/k3s/server/manifests/coredns.yaml\"" object=kube-system/coredns reason=ApplyingManifest type=Normal
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: I1026 00:02:15.657069    2533 controller.go:667] quota admission added evaluator for: deployments.apps
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: I1026 00:02:15.666127    2533 alloc.go:329] "allocated clusterIPs" service="kube-system/kube-dns" clusterIPs={"IPv4":"10.43.0.10"}
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:15Z" level=info msg="Event occurred" apiVersion=k3s.cattle.io/v1 fieldPath= kind=Addon logger=k3s/deploy message="Applied manifest at \"/var/lib/rancher/k3s/server/manifests/coredns.yaml\"" object=kube-system/coredns reason=AppliedManifest type=Normal
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:15Z" level=info msg="Event occurred" apiVersion=k3s.cattle.io/v1 fieldPath= kind=Addon logger=k3s/deploy message="Applying manifest at \"/var/lib/rancher/k3s/server/manifests/gateway-api-crd.yaml\"" object=kube-system/gateway-api-crd reason=ApplyingManifest type=Normal
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: I1026 00:02:15.677726    2533 controller.go:667] quota admission added evaluator for: helmcharts.helm.cattle.io
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:15Z" level=info msg="Event occurred" apiVersion=k3s.cattle.io/v1 fieldPath= kind=Addon logger=k3s/deploy message="Applied manifest at \"/var/lib/rancher/k3s/server/manifests/gateway-api-crd.yaml\"" object=kube-system/gateway-api-crd reason=AppliedManifest type=Normal
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:15Z" level=info msg="Event occurred" apiVersion=helm.cattle.io/v1 fieldPath= kind=HelmChart logger=k3s/helm-controller message="Applying HelmChart from https://%{KUBERNETES_API}%/static/charts/gateway-api-crd-1.6.103.tgz using Job kube-system/helm-install-gateway-api-crd " object=kube-system/gateway-api-crd reason=ApplyJob type=Normal
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: I1026 00:02:15.721153    2533 controller.go:667] quota admission added evaluator for: jobs.batch
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:15Z" level=info msg="Event occurred" apiVersion=k3s.cattle.io/v1 fieldPath= kind=Addon logger=k3s/deploy message="Deleting manifest at \"/var/lib/rancher/k3s/server/manifests/local-storage.yaml\"" object=kube-system/local-storage reason=DeletingManifest type=Normal
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:15Z" level=info msg="Event occurred" apiVersion=k3s.cattle.io/v1 fieldPath= kind=Addon logger=k3s/deploy message="Applying manifest at \"/var/lib/rancher/k3s/server/manifests/rolebindings.yaml\"" object=kube-system/rolebindings reason=ApplyingManifest type=Normal
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: I1026 00:02:15.798413    2533 controller_descriptor.go:94] "Controller is disabled by a feature gate" controller="storageversion-garbage-collector-controller" requiredFeatureGates=["APIServerIdentity","StorageVersionAPI"]
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: I1026 00:02:15.798460    2533 controllermanager.go:641] "Warning: skipping controller" controller="storageversion-garbage-collector-controller"
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:15Z" level=info msg="Event occurred" apiVersion=k3s.cattle.io/v1 fieldPath= kind=Addon logger=k3s/deploy message="Applied manifest at \"/var/lib/rancher/k3s/server/manifests/rolebindings.yaml\"" object=kube-system/rolebindings reason=AppliedManifest type=Normal
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:15Z" level=info msg="Event occurred" apiVersion=k3s.cattle.io/v1 fieldPath= kind=Addon logger=k3s/deploy message="Applying manifest at \"/var/lib/rancher/k3s/server/manifests/runtimes.yaml\"" object=kube-system/runtimes reason=ApplyingManifest type=Normal
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:15Z" level=info msg="Event occurred" apiVersion=k3s.cattle.io/v1 fieldPath= kind=Addon logger=k3s/deploy message="Applied manifest at \"/var/lib/rancher/k3s/server/manifests/runtimes.yaml\"" object=kube-system/runtimes reason=AppliedManifest type=Normal
+Oct 26 00:02:15 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:15Z" level=info msg="Event occurred" apiVersion=k3s.cattle.io/v1 fieldPath= kind=Addon logger=k3s/deploy message="Deleting manifest at \"/var/lib/rancher/k3s/server/manifests/traefik.yaml\"" object=kube-system/traefik reason=DeletingManifest type=Normal
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.060638    2533 serving.go:417] Generated self-signed cert in-memory
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.261137    2533 serving.go:417] Generated self-signed cert in-memory
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.427754    2533 controllermanager.go:163] Version: v1.37.1+k3s1
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.429842    2533 requestheader_controller.go:180] Starting RequestHeaderAuthRequestController
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.429861    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.429859    2533 configmap_cafile_content.go:205] "Starting controller" name="client-ca::kube-system::extension-apiserver-authentication::client-ca-file"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.429881    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.429882    2533 configmap_cafile_content.go:205] "Starting controller" name="client-ca::kube-system::extension-apiserver-authentication::requestheader-client-ca-file"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.429894    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.430233    2533 secure_serving.go:214] Serving securely on 127.0.0.1:10258
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.430652    2533 tlsconfig.go:243] "Starting DynamicServingCertificateController"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: W1026 00:02:16.435815    2533 controllermanager.go:315] "node-route-controller" is disabled
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.436075    2533 controllermanager.go:338] Started "cloud-node-controller"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.436106    2533 node_controller.go:179] Sending events to api server.
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.436142    2533 node_controller.go:188] Waiting for informer caches to sync
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.436330    2533 controllermanager.go:338] Started "cloud-node-lifecycle-controller"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: W1026 00:02:16.436347    2533 controllermanager.go:315] "service-lb-controller" is disabled
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.436482    2533 node_lifecycle_controller.go:129] Sending events to api server
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.530829    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.530848    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.530865    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.536432    2533 node_controller.go:432] Initializing node runnervmr9t6g with cloud provider
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.539605    2533 node_controller.go:477] Successfully initialized node runnervmr9t6g with cloud provider
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.539794    2533 event.go:395] "Event occurred" object="runnervmr9t6g" fieldPath="" kind="Node" apiVersion="v1" type="Normal" reason="Synced" message="Node synced successfully"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: E1026 00:02:16.544884    2533 options.go:205] The manifest file is empty, ignoring.
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:16Z" level=info msg="Synced coredns NodeHosts entries for runnervmr9t6g"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.550424    2533 server.go:185] "Starting Kubernetes Scheduler" version="v1.37.1+k3s1"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.550442    2533 server.go:187] "Golang settings" GOGC="" GOMAXPROCS="" GOTRACEBACK=""
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.553785    2533 requestheader_controller.go:180] Starting RequestHeaderAuthRequestController
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.553803    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.553826    2533 configmap_cafile_content.go:205] "Starting controller" name="client-ca::kube-system::extension-apiserver-authentication::client-ca-file"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.553840    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.553849    2533 configmap_cafile_content.go:205] "Starting controller" name="client-ca::kube-system::extension-apiserver-authentication::requestheader-client-ca-file"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.553861    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.553964    2533 secure_serving.go:214] Serving securely on 127.0.0.1:10259
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.554052    2533 dynamic_serving_content.go:135] "Starting controller" name="serving-cert::/var/lib/rancher/k3s/server/tls/kube-scheduler/kube-scheduler.crt::/var/lib/rancher/k3s/server/tls/kube-scheduler/kube-scheduler.key"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.554140    2533 tlsconfig.go:243] "Starting DynamicServingCertificateController"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.654253    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.654275    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: I1026 00:02:16.654264    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:16 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:16Z" level=info msg="Tunnel authorizer set Kubelet Port 0.0.0.0:10250"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.299793    2533 controller_descriptor.go:94] "Controller is disabled by a feature gate" controller="resourcepoolstatusrequest-controller" requiredFeatureGates=["DRAResourcePoolStatus"]
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.299820    2533 controllermanager.go:641] "Warning: skipping controller" controller="resourcepoolstatusrequest-controller"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651609    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="daemonsets.apps"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651648    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="jobs.batch"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651669    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="cronjobs.batch"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651701    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="poddisruptionbudgets.policy"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651724    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="roles.rbac.authorization.k8s.io"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651742    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="endpointslices.discovery.k8s.io"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651778    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="podtemplates"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651795    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="podcertificaterequests.certificates.k8s.io"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651828    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="addons.k3s.cattle.io"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651861    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="endpoints"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651888    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="replicasets.apps"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651917    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="networkpolicies.networking.k8s.io"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651940    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="resourceclaimtemplates.resource.k8s.io"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651965    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="rolebindings.rbac.authorization.k8s.io"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.651981    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="serviceaccounts"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.652000    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="limitranges"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.652058    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="helmcharts.helm.cattle.io"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.652090    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="horizontalpodautoscalers.autoscaling"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.652110    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="deployments.apps"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.652138    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="leases.coordination.k8s.io"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.652168    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="ingresses.networking.k8s.io"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.652195    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="csistoragecapacities.storage.k8s.io"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.652227    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="controllerrevisions.apps"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.652245    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="statefulsets.apps"
+Oct 26 00:02:17 runnervmr9t6g k3s[2533]: I1026 00:02:17.652267    2533 resource_quota_monitor.go:229] "QuotaMonitor created object count evaluator" logger="resourcequota-controller" resource="helmchartconfigs.helm.cattle.io"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.147485    2533 controller_descriptor.go:94] "Controller is disabled by a feature gate" controller="podgroup-protection-controller" requiredFeatureGates=["GenericWorkload"]
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.147516    2533 controllermanager.go:641] "Warning: skipping controller" controller="podgroup-protection-controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151539    2533 disruption.go:453] "Sending events to api server."
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151572    2533 disruption.go:460] "Starting disruption controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151580    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151587    2533 stateful_set.go:234] "Starting stateful set controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151598    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151609    2533 certificate_controller.go:120] "Starting certificate controller" name="csrapproving"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151611    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151619    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151649    2533 cronjob_controllerv2.go:166] "Starting cronjob controller v2"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151658    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151663    2533 publisher.go:107] "Starting root CA cert publisher controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151674    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151680    2533 certificate_controller.go:120] "Starting certificate controller" name="csrsigning-legacy-unknown"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151689    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151713    2533 controller.go:819] "Starting resource claim controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151726    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151727    2533 attach_detach_controller.go:343] "Starting attach detach controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151737    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151757    2533 endpoints_controller.go:193] "Starting endpoint controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151767    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151776    2533 legacy_serviceaccount_token_cleaner.go:103] "Starting legacy service account token cleaner controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151797    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151803    2533 daemon_controller.go:364] "Starting daemon sets controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151813    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151817    2533 migrationrunner.go:140] "Starting" controller="migration-runner-controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151828    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151827    2533 expand_controller.go:332] "Starting expand controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151836    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151841    2533 serviceaccounts_controller.go:117] "Starting service account controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151850    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151850    2533 pvc_protection_controller.go:178] "Starting PVC protection controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151860    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151865    2533 ttl_controller.go:129] "Starting TTL controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151874    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151902    2533 node_lifecycle_controller.go:452] "Sending events to api server"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151908    2533 endpointslicemirroring_controller.go:226] "Starting EndpointSliceMirroring controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151919    2533 node_lifecycle_controller.go:459] "Starting node controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151924    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151929    2533 namespace_controller.go:202] "Starting namespace controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151938    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151953    2533 cleaner.go:83] "Starting CSR cleaner controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151960    2533 endpointslice_controller.go:280] "Starting endpoint slice controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151969    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151994    2533 controller.go:181] "Starting ephemeral volume controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152003    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153292    2533 clusterroleaggregation_controller.go:176] "Starting ClusterRoleAggregator controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153311    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153342    2533 replica_set.go:285] "Starting controller" name="replicaset"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153353    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152049    2533 gc_controller.go:98] "Starting GC controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152067    2533 horizontal.go:228] "Starting HPA controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153369    2533 publisher.go:337] "Starting ClusterTrustBundle CA cert publisher controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153383    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152161    2533 tokencleaner.go:117] "Starting token cleaner controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153398    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151650    2533 pv_controller_base.go:328] "Starting persistent volume controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153435    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152257    2533 certificate_controller.go:120] "Starting certificate controller" name="csrsigning-kubelet-serving"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153447    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152271    2533 certificate_controller.go:120] "Starting certificate controller" name="csrsigning-kubelet-client"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153457    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152285    2533 certificate_controller.go:120] "Starting certificate controller" name="csrsigning-kube-apiserver-client"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153467    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152307    2533 dynamic_serving_content.go:135] "Starting controller" name="csr-controller::/var/lib/rancher/k3s/server/tls/server-ca.nochain.crt::/var/lib/rancher/k3s/server/tls/server-ca.key"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153488    2533 taint_eviction.go:283] "Starting" controller="taint-eviction-controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153518    2533 taint_eviction.go:288] "Sending events to API server"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153525    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152327    2533 storageversionmigrator.go:142] "Starting" controller="storage-version-migrator-controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153544    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153218    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152402    2533 dynamic_serving_content.go:135] "Starting controller" name="csr-controller::/var/lib/rancher/k3s/server/tls/server-ca.nochain.crt::/var/lib/rancher/k3s/server/tls/server-ca.key"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153249    2533 servicecidrs_controller.go:137] "Starting" controller="service-cidr-controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153563    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152032    2533 replica_set.go:285] "Starting controller" name="replicationcontroller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153575    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153367    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152137    2533 pv_protection_controller.go:84] "Starting PV protection controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153595    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152078    2533 pcrcleaner.go:69] "Starting PodCertificateRequest cleaner controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152344    2533 resourceversion.go:133] "Starting" controller="resource-version-controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152122    2533 node_ipam_controller.go:142] "Starting ipam controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153613    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151872    2533 ttlafterfinished_controller.go:112] "Starting TTL after finished controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153626    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151919    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153614    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152429    2533 dynamic_serving_content.go:135] "Starting controller" name="csr-controller::/var/lib/rancher/k3s/server/tls/client-ca.nochain.crt::/var/lib/rancher/k3s/server/tls/client-ca.key"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153375    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152150    2533 vac_protection_controller.go:215] "Starting VAC protection controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153701    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.151754    2533 device_taint_eviction.go:785] "Starting" controller="device-taint-eviction-controller" numWorkers=8
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153542    2533 resource_quota_controller.go:297] "Starting resource quota controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153723    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153279    2533 deployment_controller.go:180] "Starting controller" controller="deployment"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153739    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152388    2533 garbagecollector.go:141] "Starting controller" controller="garbagecollector"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153779    2533 device_taint_eviction.go:825] "Sending events to api server"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153786    2533 graph_builder.go:387] "Running" component="GraphBuilder"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.152416    2533 dynamic_serving_content.go:135] "Starting controller" name="csr-controller::/var/lib/rancher/k3s/server/tls/client-ca.nochain.crt::/var/lib/rancher/k3s/server/tls/client-ca.key"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153848    2533 device_taint_eviction.go:1025] "Waiting" for="cache and event handler sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153349    2533 job_controller.go:334] "Starting job controller"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153870    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153780    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.153883    2533 resource_quota_monitor.go:309] "QuotaMonitor running"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.173869    2533 device_taint_eviction.go:1025] "Done waiting" for="cache and event handler sync" instance="SharedIndexInformer *v1.DeviceTaintRule + event handler k8s.io/kubernetes/pkg/controller/devicetainteviction.(*Controller).Run"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.174083    2533 device_taint_eviction.go:1025] "Done waiting" for="cache and event handler sync" instance="SharedIndexInformer *v1.DeviceTaintRule"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.175446    2533 device_taint_eviction.go:1025] "Done waiting" for="cache and event handler sync" instance="SharedIndexInformer *v1.Pod"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.175538    2533 device_taint_eviction.go:1025] "Done waiting" for="cache and event handler sync" instance="SharedIndexInformer *v1.Pod + event handler k8s.io/kubernetes/pkg/controller/devicetainteviction.(*Controller).Run"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.175875    2533 actual_state_of_world.go:541] "Failed to update statusUpdateNeeded field in actual state of world" logger="persistentvolume-attach-detach-controller" err="Failed to set statusUpdateNeeded to needed true, because nodeName=\"runnervmr9t6g\" does not exist"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.175923    2533 device_taint_eviction.go:1025] "Done waiting" for="cache and event handler sync" instance="SharedIndexInformer *v1.ResourceSlice + event handler k8s.io/kubernetes/pkg/controller/devicetainteviction.(*Controller).Run"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.176685    2533 device_taint_eviction.go:1025] "Done waiting" for="cache and event handler sync" instance="SharedIndexInformer *v1.ResourceSlice"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.177293    2533 device_taint_eviction.go:1025] "Done waiting" for="cache and event handler sync" instance="SharedIndexInformer *v1.ResourceClaim"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.177318    2533 device_taint_eviction.go:1025] "Done waiting" for="cache and event handler sync" instance="SharedIndexInformer *v1.ResourceClaim + event handler k8s.io/kubernetes/pkg/controller/devicetainteviction.(*Controller).Run"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.177658    2533 device_taint_eviction.go:1025] "Done waiting" for="cache and event handler sync" instance="SharedIndexInformer *v1.DeviceClass"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.179494    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.179516    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.251770    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.251832    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.251858    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.251880    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.251898    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.251923    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.251934    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.251941    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.251948    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.251978    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.251998    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.251994    2533 node_lifecycle_controller.go:1287] "Initializing eviction metric for zone" zone=""
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.252054    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.252094    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.252109    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.252116    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.251770    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.252211    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.252226    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.252109    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.252782    2533 node_lifecycle_controller.go:910] "Missing timestamp for Node. Assuming now as a timestamp" node="runnervmr9t6g"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.252832    2533 node_lifecycle_controller.go:1133] "Controller detected that zone is now in new state" zone="" newState="Normal"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.253440    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.253726    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.253755    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.253796    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.253865    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.254085    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.254121    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.254138    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.254257    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.254276    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.254401    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.254427    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.254467    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.255067    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.255120    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.255146    2533 range_allocator.go:177] "Sending events to api server"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.255166    2533 range_allocator.go:181] "Starting range CIDR allocator"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.255173    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.255180    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.255421    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.255499    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.255925    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.258457    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:18Z" level=info msg="Flannel found PodCIDR assigned for node runnervmr9t6g"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.267181    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.267752    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.267887    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.267990    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.268148    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.268258    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.267251    2533 shared_informer.go:524] "Waiting for caches to sync"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.268741    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.268067    2533 range_allocator.go:433] "Set node PodCIDR" node="runnervmr9t6g" podCIDRs=["10.42.0.0/24"]
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:18Z" level=info msg="The interface eth0 with ipv4 address 10.1.0.7 will be used by flannel"
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.270419    2533 kube.go:139] Waiting 10m0s for node controller to sync
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: I1026 00:02:18.270976    2533 kube.go:537] Starting kube subnet manager
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:18Z" level=info msg="Event occurred" apiVersion= fieldPath= kind=Node logger=k3s message="Deferred node password secret validation complete" object=runnervmr9t6g reason=NodePasswordValidationComplete type=Normal
+Oct 26 00:02:18 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:18Z" level=info msg="Adding node OwnerReference to node-password secret runnervmr9t6g.node-password.k3s"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.101166    2533 cidrallocator.go:278] updated ClusterIP allocator for Service CIDR 10.43.0.0/16
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.103368    2533 cidrallocator.go:278] updated ClusterIP allocator for Service CIDR 10.43.0.0/16
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.151133    2533 controller.go:667] quota admission added evaluator for: replicasets.apps
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=info msg="Event occurred" apiVersion=helm.cattle.io/v1 fieldPath= kind=HelmChart logger=k3s/helm-controller message="Resumed synced Job kube-system/helm-install-gateway-api-crd" object=kube-system/gateway-api-crd reason=ResumeJob type=Normal
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.228884    2533 server.go:177] "Pod update broadcasted" podUID="a0e9fa13-bf14-435c-a6d9-4128fb02aa4f" type="ADDED"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.270620    2533 kube.go:163] Node controller sync successful
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.270673    2533 vxlan.go:128] VXLAN config: VNI=1 Port=0 GBP=false Learning=false DirectRouting=false
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.272386    2533 kube.go:704] List of node(runnervmr9t6g) annotations: map[string]string{"alpha.kubernetes.io/provided-node-ip":"10.1.0.7", "k3s.io/hostname":"runnervmr9t6g", "k3s.io/internal-ip":"10.1.0.7", "k3s.io/node-args":"[\"server\",\"--cluster-cidr\",\"10.42.0.0/16\",\"--service-cidr\",\"10.43.0.0/16\",\"--disable\",\"traefik,servicelb,local-storage,metrics-server\",\"--write-kubeconfig-mode\",\"644\"]", "k3s.io/node-config-hash":"6PW2IMJO3ULY4OQQ3L2T6RDV7WP5QWGQOFZF5XAON4ZXVW2HPT6A====", "k3s.io/node-env":"{}", "node.alpha.kubernetes.io/ttl":"0", "volumes.kubernetes.io/controller-managed-attach-detach":"true"}
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.314463    2533 kube.go:558] Creating the node lease for IPv4. This is the n.Spec.PodCIDRs: [10.42.0.0/24]
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.316304    2533 iptables.go:50] Starting flannel in iptables mode...
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=warning msg="no subnet found for key: FLANNEL_NETWORK in file: /run/flannel/subnet.env"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=warning msg="no subnet found for key: FLANNEL_SUBNET in file: /run/flannel/subnet.env"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=warning msg="no subnet found for key: FLANNEL_IPV6_NETWORK in file: /run/flannel/subnet.env"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=warning msg="no subnet found for key: FLANNEL_IPV6_SUBNET in file: /run/flannel/subnet.env"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.316377    2533 iptables.go:101] Current network or subnet (10.42.0.0/16, 10.42.0.0/24) is not equal to previous one (0.0.0.0/0, 0.0.0.0/0), trying to recycle old iptables rules
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.321662    2533 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"klipper-helm\" (UniqueName: \"kubernetes.io/empty-dir/a0e9fa13-bf14-435c-a6d9-4128fb02aa4f-klipper-helm\") pod \"helm-install-gateway-api-crd-bhjsr\" (UID: \"a0e9fa13-bf14-435c-a6d9-4128fb02aa4f\") " pod="kube-system/helm-install-gateway-api-crd-bhjsr"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.321704    2533 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"klipper-cache\" (UniqueName: \"kubernetes.io/empty-dir/a0e9fa13-bf14-435c-a6d9-4128fb02aa4f-klipper-cache\") pod \"helm-install-gateway-api-crd-bhjsr\" (UID: \"a0e9fa13-bf14-435c-a6d9-4128fb02aa4f\") " pod="kube-system/helm-install-gateway-api-crd-bhjsr"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.321728    2533 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"klipper-config\" (UniqueName: \"kubernetes.io/empty-dir/a0e9fa13-bf14-435c-a6d9-4128fb02aa4f-klipper-config\") pod \"helm-install-gateway-api-crd-bhjsr\" (UID: \"a0e9fa13-bf14-435c-a6d9-4128fb02aa4f\") " pod="kube-system/helm-install-gateway-api-crd-bhjsr"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.321749    2533 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"tmp\" (UniqueName: \"kubernetes.io/empty-dir/a0e9fa13-bf14-435c-a6d9-4128fb02aa4f-tmp\") pod \"helm-install-gateway-api-crd-bhjsr\" (UID: \"a0e9fa13-bf14-435c-a6d9-4128fb02aa4f\") " pod="kube-system/helm-install-gateway-api-crd-bhjsr"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.321773    2533 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"values\" (UniqueName: \"kubernetes.io/projected/a0e9fa13-bf14-435c-a6d9-4128fb02aa4f-values\") pod \"helm-install-gateway-api-crd-bhjsr\" (UID: \"a0e9fa13-bf14-435c-a6d9-4128fb02aa4f\") " pod="kube-system/helm-install-gateway-api-crd-bhjsr"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.321793    2533 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"content\" (UniqueName: \"kubernetes.io/configmap/a0e9fa13-bf14-435c-a6d9-4128fb02aa4f-content\") pod \"helm-install-gateway-api-crd-bhjsr\" (UID: \"a0e9fa13-bf14-435c-a6d9-4128fb02aa4f\") " pod="kube-system/helm-install-gateway-api-crd-bhjsr"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.321817    2533 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kube-api-access-nwpkt\" (UniqueName: \"kubernetes.io/projected/a0e9fa13-bf14-435c-a6d9-4128fb02aa4f-kube-api-access-nwpkt\") pod \"helm-install-gateway-api-crd-bhjsr\" (UID: \"a0e9fa13-bf14-435c-a6d9-4128fb02aa4f\") " pod="kube-system/helm-install-gateway-api-crd-bhjsr"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.338177    2533 iptables.go:111] Setting up masking rules
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.341738    2533 iptables.go:212] Changing default FORWARD chain policy to ACCEPT
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=info msg="Wrote flannel subnet file to /run/flannel/subnet.env"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=info msg="Running flannel backend"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.344467    2533 vxlan_network.go:68] watching for new subnet leases
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.344479    2533 vxlan_network.go:115] starting vxlan device watcher
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.354144    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.354162    2533 garbagecollector.go:166] "Garbage collector: all resource monitors have synced"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.354168    2533 garbagecollector.go:169] "Proceeding to collect garbage"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: E1026 00:02:19.372121    2533 replica_set.go:640] "Unhandled Error" err="sync \"kube-system/coredns-577d995dff\" failed with read version: 397 is not as new as written version: 399 for group resource replicasets.apps" logger="UnhandledError"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.372561    2533 server.go:177] "Pod update broadcasted" podUID="6c14e77f-c6aa-45be-a81f-ed4621564088" type="ADDED"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.373706    2533 iptables.go:358] bootstrap done
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.374929    2533 shared_informer.go:531] "Caches are synced"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.374962    2533 iptables.go:358] bootstrap done
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.422231    2533 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"config-volume\" (UniqueName: \"kubernetes.io/configmap/6c14e77f-c6aa-45be-a81f-ed4621564088-config-volume\") pod \"coredns-577d995dff-q9j8s\" (UID: \"6c14e77f-c6aa-45be-a81f-ed4621564088\") " pod="kube-system/coredns-577d995dff-q9j8s"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.422273    2533 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"custom-config-volume\" (UniqueName: \"kubernetes.io/configmap/6c14e77f-c6aa-45be-a81f-ed4621564088-custom-config-volume\") pod \"coredns-577d995dff-q9j8s\" (UID: \"6c14e77f-c6aa-45be-a81f-ed4621564088\") " pod="kube-system/coredns-577d995dff-q9j8s"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: I1026 00:02:19.422296    2533 reconciler_common.go:251] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kube-api-access-2wlgc\" (UniqueName: \"kubernetes.io/projected/6c14e77f-c6aa-45be-a81f-ed4621564088-kube-api-access-2wlgc\") pod \"coredns-577d995dff-q9j8s\" (UID: \"6c14e77f-c6aa-45be-a81f-ed4621564088\") " pod="kube-system/coredns-577d995dff-q9j8s"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=info msg="Started tunnel to 10.1.0.7:6443"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=info msg="Stopped tunnel to 127.0.0.1:6443"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=info msg="Connecting to proxy" url="wss://10.1.0.7:6443/v1-k3s/connect"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=info msg="Proxy done" err="context canceled" url="wss://127.0.0.1:6443/v1-k3s/connect"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=info msg="error in remotedialer server [400]: websocket: close 1006 (abnormal closure): unexpected EOF"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=info msg="Handling backend connection request [runnervmr9t6g]"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=info msg="Connected to proxy" url="wss://10.1.0.7:6443/v1-k3s/connect"
+Oct 26 00:02:19 runnervmr9t6g k3s[2533]: time="2026-10-26T00:02:19Z" level=info msg="Remotedialer connected to proxy" url="wss://10.1.0.7:6443/v1-k3s/connect"
+Oct 26 00:02:20 runnervmr9t6g k3s[2533]: I1026 00:02:20.669272    2533 server.go:177] "Pod update broadcasted" podUID="a0e9fa13-bf14-435c-a6d9-4128fb02aa4f" type="MODIFIED"
+Oct 26 00:02:20 runnervmr9t6g k3s[2533]: I1026 00:02:20.676572    2533 server.go:177] "Pod update broadcasted" podUID="6c14e77f-c6aa-45be-a81f-ed4621564088" type="MODIFIED"
+Oct 26 00:02:22 runnervmr9t6g k3s[2533]: I1026 00:02:22.634675    2533 server.go:177] "Pod update broadcasted" podUID="6c14e77f-c6aa-45be-a81f-ed4621564088" type="MODIFIED"
+Oct 26 00:02:22 runnervmr9t6g k3s[2533]: I1026 00:02:22.648761    2533 pod_startup_latency_tracker.go:144] "Observed pod startup duration" pod="kube-system/coredns-577d995dff-q9j8s" podStartSLOduration=1.7958954999999999 podStartE2EDuration="3.648746799s" totalImagesPullingTime="1.852851299s" totalInitContainerRuntime="0s" isStatefulPod=false podCreationTimestamp="2026-10-26 00:02:19 +0000 UTC" imagePullSessionsCount=1 imagePullSessionsStartsCount=0 observedRunningTime="2026-10-26 00:02:22.646702585 +0000 UTC m=+18.486889369" watchObservedRunningTime="2026-10-26 00:02:22.648746799 +0000 UTC m=+18.488933583"
+Oct 26 00:02:22 runnervmr9t6g k3s[2533]: I1026 00:02:22.842348    2533 server.go:177] "Pod update broadcasted" podUID="a0e9fa13-bf14-435c-a6d9-4128fb02aa4f" type="MODIFIED"
+Oct 26 00:02:22 runnervmr9t6g k3s[2533]: I1026 00:02:22.851660    2533 pod_startup_latency_tracker.go:144] "Observed pod startup duration" pod="kube-system/helm-install-gateway-api-crd-bhjsr" podStartSLOduration=1.7669055280000001 podStartE2EDuration="3.851643949s" totalImagesPullingTime="2.084738421s" totalInitContainerRuntime="0s" isStatefulPod=false podCreationTimestamp="2026-10-26 00:02:19 +0000 UTC" imagePullSessionsCount=1 imagePullSessionsStartsCount=0 observedRunningTime="2026-10-26 00:02:22.851301501 +0000 UTC m=+18.691488285" watchObservedRunningTime="2026-10-26 00:02:22.851643949 +0000 UTC m=+18.691830733"
+Oct 26 00:02:22 runnervmr9t6g k3s[2533]: I1026 00:02:22.993176    2533 server.go:177] "Pod update broadcasted" podUID="6c14e77f-c6aa-45be-a81f-ed4621564088" type="MODIFIED"
+Oct 26 00:02:23 runnervmr9t6g k3s[2533]: I1026 00:02:23.134263    2533 kuberuntime_manager.go:2315] "Updating runtime config through cri with podcidr" CIDR="10.42.0.0/24"
+Oct 26 00:02:23 runnervmr9t6g k3s[2533]: I1026 00:02:23.135004    2533 kubelet_network.go:48] "Updating Pod CIDR" originalPodCIDR="" newPodCIDR="10.42.0.0/24"
+Oct 26 00:02:23 runnervmr9t6g k3s[2533]: I1026 00:02:23.988641    2533 handler.go:309] Adding GroupVersion gateway.networking.k8s.io v1 to ResourceManager
+Oct 26 00:02:23 runnervmr9t6g k3s[2533]: I1026 00:02:23.993186    2533 handler.go:309] Adding GroupVersion gateway.networking.k8s.io v1beta1 to ResourceManager
+Oct 26 00:02:24 runnervmr9t6g k3s[2533]: I1026 00:02:24.127057    2533 handler.go:309] Adding GroupVersion gateway.networking.k8s.io v1 to ResourceManager
+Oct 26 00:02:24 runnervmr9t6g k3s[2533]: I1026 00:02:24.127333    2533 handler.go:309] Adding GroupVersion gateway.networking.k8s.io v1beta1 to ResourceManager

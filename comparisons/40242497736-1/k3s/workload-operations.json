@@ -1,0 +1,70 @@
+[
+  {
+    "time": 1792972943.5110435,
+    "operation": [
+      "create",
+      "namespace",
+      "nk-profile-3282-18e1eb647b2d48e9"
+    ],
+    "seconds": 0.04489295900000201,
+    "exit_code": 1,
+    "error": "The connection to the server localhost:8080 was refused - did you specify the right host or port?\n"
+  },
+  {
+    "time": 1792972943.5589685,
+    "operation": [
+      "get",
+      "pods",
+      "-o",
+      "json"
+    ],
+    "seconds": 0.047754819000005,
+    "exit_code": 1,
+    "error": "E1026 00:02:23.553807    3289 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.554317    3289 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.555800    3289 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.556227    3289 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.557700    3289 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nThe connection to the server localhost:8080 was refused - did you specify the right host or port?\n"
+  },
+  {
+    "time": 1792972943.6097047,
+    "operation": [
+      "get",
+      "events",
+      "-o",
+      "json"
+    ],
+    "seconds": 0.050558412999997415,
+    "exit_code": 1,
+    "error": "E1026 00:02:23.604199    3296 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.604648    3296 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.606202    3296 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.606567    3296 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.608064    3296 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nThe connection to the server localhost:8080 was refused - did you specify the right host or port?\n"
+  },
+  {
+    "time": 1792972943.6800423,
+    "operation": [
+      "describe",
+      "pod/profile-client"
+    ],
+    "seconds": 0.07017695300000071,
+    "exit_code": 1,
+    "error": "E1026 00:02:23.668476    3302 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.668945    3302 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.670536    3302 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.670909    3302 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nThe connection to the server localhost:8080 was refused - did you specify the right host or port?\n"
+  },
+  {
+    "time": 1792972943.7522025,
+    "operation": [
+      "logs",
+      "profile-client"
+    ],
+    "seconds": 0.07190860600000093,
+    "exit_code": 1,
+    "error": "E1026 00:02:23.745322    3308 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.745885    3308 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.747557    3308 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.748163    3308 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nThe connection to the server localhost:8080 was refused - did you specify the right host or port?\n"
+  },
+  {
+    "time": 1792972943.8316913,
+    "operation": [
+      "delete",
+      "namespace",
+      "nk-profile-3282-18e1eb647b2d48e9",
+      "--ignore-not-found",
+      "--wait=false"
+    ],
+    "seconds": 0.07927141700000107,
+    "exit_code": 1,
+    "error": "E1026 00:02:23.823881    3317 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.824480    3317 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.826390    3317 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.826724    3317 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nE1026 00:02:23.829310    3317 memcache.go:381] \"Couldn't get current server API group list\" err=\"Get \\\"http://localhost:8080/api?timeout=30s\\\": dial tcp [::1]:8080: connect: connection refused\"\nThe connection to the server localhost:8080 was refused - did you specify the right host or port?\n"
+  }
+]
