@@ -51,10 +51,21 @@ runs:
       run: |
         set -euo pipefail
         sudo apt-get update -qq
-        sudo apt-get install -y -qq linux-tools-azure linux-tools-common perl
+        kernel_release=$(uname -r)
+        kernel_flavor=${kernel_release##*-}
+        kernel_tools_package="linux-tools-$kernel_flavor"
+        if ! apt-cache show "$kernel_tools_package" | grep -F "Package: $kernel_tools_package" >/dev/null; then
+          kernel_tools_package="linux-tools-$kernel_release"
+        fi
+        if ! apt-cache show "$kernel_tools_package" | grep -F "Package: $kernel_tools_package" >/dev/null; then
+          echo "No Ubuntu perf tools package found for kernel $kernel_release" >&2
+          exit 1
+        fi
+        echo "Installing $kernel_tools_package for kernel $kernel_release"
+        sudo apt-get install -y -qq "$kernel_tools_package" linux-tools-common perl
         python3 -m pip install --quiet --break-system-packages matplotlib numpy
         # Use Ubuntu's perf wrapper so it selects the tool matching the
-        # Azure kernel running on GitHub-hosted Ubuntu runners.
+        # kernel flavor found on this GitHub-hosted runner.
         perf_bin=$(command -v perf || true)
         [[ -n "$perf_bin" && -x "$perf_bin" ]] || { echo 'No usable perf executable installed' >&2; exit 1; }
         echo "PERF_BIN=$perf_bin" >> "$GITHUB_ENV"
