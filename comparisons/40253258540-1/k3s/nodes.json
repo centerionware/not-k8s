@@ -1,0 +1,172 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": {
+                "annotations": {
+                    "alpha.kubernetes.io/provided-node-ip": "10.1.0.64",
+                    "flannel.alpha.coreos.com/backend-data": "{\"VNI\":1,\"VtepMAC\":\"7e:1a:cc:74:ae:17\"}",
+                    "flannel.alpha.coreos.com/backend-type": "vxlan",
+                    "flannel.alpha.coreos.com/kube-subnet-manager": "true",
+                    "flannel.alpha.coreos.com/public-ip": "10.1.0.64",
+                    "k3s.io/hostname": "runnervmr9t6g",
+                    "k3s.io/internal-ip": "10.1.0.64",
+                    "k3s.io/node-args": "[\"server\",\"--cluster-cidr\",\"10.42.0.0/16\",\"--service-cidr\",\"10.43.0.0/16\",\"--disable\",\"traefik,servicelb,local-storage,metrics-server\",\"--write-kubeconfig-mode\",\"644\"]",
+                    "k3s.io/node-config-hash": "6PW2IMJO3ULY4OQQ3L2T6RDV7WP5QWGQOFZF5XAON4ZXVW2HPT6A====",
+                    "k3s.io/node-env": "{}",
+                    "node.alpha.kubernetes.io/ttl": "0",
+                    "volumes.kubernetes.io/controller-managed-attach-detach": "true"
+                },
+                "creationTimestamp": "2026-10-26T01:25:23Z",
+                "finalizers": [
+                    "wrangler.cattle.io/node"
+                ],
+                "labels": {
+                    "beta.kubernetes.io/arch": "amd64",
+                    "beta.kubernetes.io/instance-type": "k3s",
+                    "beta.kubernetes.io/os": "linux",
+                    "kubernetes.io/arch": "amd64",
+                    "kubernetes.io/hostname": "runnervmr9t6g",
+                    "kubernetes.io/os": "linux",
+                    "node-role.kubernetes.io/control-plane": "true",
+                    "node.kubernetes.io/instance-type": "k3s"
+                },
+                "name": "runnervmr9t6g",
+                "resourceVersion": "411",
+                "uid": "5e50dbfc-98db-4c0b-84a5-74f854dcb67c"
+            },
+            "spec": {
+                "podCIDR": "10.42.0.0/24",
+                "podCIDRs": [
+                    "10.42.0.0/24"
+                ],
+                "providerID": "k3s://runnervmr9t6g"
+            },
+            "status": {
+                "addresses": [
+                    {
+                        "address": "10.1.0.64",
+                        "type": "InternalIP"
+                    },
+                    {
+                        "address": "runnervmr9t6g",
+                        "type": "Hostname"
+                    }
+                ],
+                "allocatable": {
+                    "cpu": "4",
+                    "ephemeral-storage": "147243988467",
+                    "hugepages-1Gi": "0",
+                    "hugepages-2Mi": "0",
+                    "memory": "16366644Ki",
+                    "pods": "110"
+                },
+                "capacity": {
+                    "cpu": "4",
+                    "ephemeral-storage": "154993672192",
+                    "hugepages-1Gi": "0",
+                    "hugepages-2Mi": "0",
+                    "memory": "16366644Ki",
+                    "pods": "110"
+                },
+                "conditions": [
+                    {
+                        "lastHeartbeatTime": "2026-10-26T01:25:34Z",
+                        "lastTransitionTime": "2026-10-26T01:25:23Z",
+                        "message": "kubelet has sufficient memory available",
+                        "reason": "KubeletHasSufficientMemory",
+                        "status": "False",
+                        "type": "MemoryPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-10-26T01:25:34Z",
+                        "lastTransitionTime": "2026-10-26T01:25:23Z",
+                        "message": "kubelet has no disk pressure",
+                        "reason": "KubeletHasNoDiskPressure",
+                        "status": "False",
+                        "type": "DiskPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-10-26T01:25:34Z",
+                        "lastTransitionTime": "2026-10-26T01:25:23Z",
+                        "message": "kubelet has sufficient PID available",
+                        "reason": "KubeletHasSufficientPID",
+                        "status": "False",
+                        "type": "PIDPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-10-26T01:25:34Z",
+                        "lastTransitionTime": "2026-10-26T01:25:24Z",
+                        "message": "kubelet is posting ready status",
+                        "reason": "KubeletReady",
+                        "status": "True",
+                        "type": "Ready"
+                    }
+                ],
+                "daemonEndpoints": {
+                    "kubeletEndpoint": {
+                        "Port": 10250
+                    }
+                },
+                "declaredFeatures": [
+                    "ExtendWebSocketsToKubelet",
+                    "InPlacePodLevelResourcesVerticalScaling",
+                    "InPlacePodVerticalScalingInitContainers",
+                    "RestartAllContainersOnContainerExits"
+                ],
+                "features": {
+                    "supplementalGroupsPolicy": true
+                },
+                "nodeInfo": {
+                    "architecture": "amd64",
+                    "bootID": "aabff0c6-7da7-43de-9319-44e12ff5194d",
+                    "containerRuntimeVersion": "containerd://2.3.4-k3s1",
+                    "kernelVersion": "7.0.0-1017-azure",
+                    "kubeProxyVersion": "",
+                    "kubeletVersion": "v1.37.1+k3s1",
+                    "machineID": "0f7649834d2c436391726847da57e6ad",
+                    "operatingSystem": "linux",
+                    "osImage": "Ubuntu 26.04.1 LTS",
+                    "runningInUserNamespace": false,
+                    "systemUUID": "d79598aa-5914-402b-905d-9230c8292e0d"
+                },
+                "runtimeHandlers": [
+                    {
+                        "features": {
+                            "recursiveReadOnlyMounts": true,
+                            "userNamespaces": true
+                        },
+                        "name": ""
+                    },
+                    {
+                        "features": {
+                            "recursiveReadOnlyMounts": true,
+                            "userNamespaces": true
+                        },
+                        "name": "crun"
+                    },
+                    {
+                        "features": {
+                            "recursiveReadOnlyMounts": true,
+                            "userNamespaces": true
+                        },
+                        "name": "runc"
+                    },
+                    {
+                        "features": {
+                            "recursiveReadOnlyMounts": false,
+                            "userNamespaces": false
+                        },
+                        "name": "runhcs-wcow-process"
+                    }
+                ]
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}
