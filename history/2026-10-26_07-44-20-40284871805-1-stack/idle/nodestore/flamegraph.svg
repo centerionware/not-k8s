@@ -1,0 +1,1674 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="1190" onload="init(evt)" viewBox="0 0 1200 1190" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="1190.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >idle/nodestore CPU samples</text>
+<text id="details" x="10.00" y="1173" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="1173" > </text>
+<g id="frames">
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="586.9" y="661" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="589.89" y="671.5" >[..</text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;rusqlite::row::Rows&gt; (20,408,163 samples, 2.22%)</title><rect x="586.9" y="821" width="26.2" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="589.89" y="831.5" >c..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="581" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="591.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="350.9" y="1093" width="52.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="353.89" y="1103.5" >[[ker..</text>
+</g>
+<g >
+<title>&lt;tonic::transport::service::grpc_timeout::ResponseFuture&lt;tonic::service::router::RoutesFuture&gt; as core::future::future::Future&gt;::poll (306,122,445 samples, 33.33%)</title><rect x="508.2" y="933" width="393.4" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="511.22" y="943.5" >&lt;tonic::transport::service::grpc_timeout::ResponseFut..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="277" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="287.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="586.9" y="581" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="589.89" y="591.5" >[..</text>
+</g>
+<g >
+<title>sqlite3MallocZero (20,408,163 samples, 2.22%)</title><rect x="770.4" y="725" width="26.3" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="773.44" y="735.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1163.8" y="1093" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1166.78" y="1103.5" >[..</text>
+</g>
+<g >
+<title>&lt;h2::proto::streams::recv::Recv&gt;::recv_data (20,408,163 samples, 2.22%)</title><rect x="1058.9" y="901" width="26.2" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="1061.89" y="911.5" >&lt;..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="586.9" y="565" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="589.89" y="575.5" >[..</text>
+</g>
+<g >
+<title>sqlite3BtreeIndexMoveto (20,408,163 samples, 2.22%)</title><rect x="560.7" y="773" width="26.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="563.67" y="783.5" >s..</text>
+</g>
+<g >
+<title>sqlite3RunParser (20,408,163 samples, 2.22%)</title><rect x="796.7" y="693" width="26.2" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="799.67" y="703.5" >s..</text>
+</g>
+<g >
+<title>&lt;nodestore::server::EtcdApi as nodestore::pb::etcdserverpb::kv_server::Kv&gt;::range::{closure#0} (224,489,793 samples, 24.44%)</title><rect x="508.2" y="853" width="288.5" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="511.22" y="863.5" >&lt;nodestore::server::EtcdApi as nodesto..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="549" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="559.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="325" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="335.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="741" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="751.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="469" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="479.5" >[[kernel...</text>
+</g>
+<g >
+<title>sqlite3GenerateColumnNames (20,408,163 samples, 2.22%)</title><rect x="875.3" y="661" width="26.3" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="878.33" y="671.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1163.8" y="965" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1166.78" y="975.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="453" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="463.5" >[..</text>
+</g>
+<g >
+<title>&lt;h2::codec::framed_write::FramedWrite&lt;hyper::common::io::compat::Compat&lt;hyper_util::common::rewind::Rewind&lt;hyper_util::rt::tokio::TokioIo&lt;tonic::transport::server::service::io::ServerIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt;, h2::proto::streams::prioritize::Prioritized&lt;hyper::proto::h2::SendBuf&lt;bytes::bytes::Bytes&gt;&gt;&gt;&gt;::flush (81,632,652 samples, 8.89%)</title><rect x="954.0" y="917" width="104.9" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="957.00" y="927.5" >&lt;h2::codec::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="219.8" y="1013" width="52.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="222.78" y="1023.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1163.8" y="981" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1166.78" y="991.5" >[..</text>
+</g>
+<g >
+<title>&lt;rustls::msgs::deframer::buffers::DeframerVecBuffer&gt;::read (61,224,489 samples, 6.67%)</title><rect x="1085.1" y="837" width="78.7" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="1088.11" y="847.5" >&lt;rustls::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="181" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="191.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (122,448,978 samples, 13.33%)</title><rect x="10.0" y="1077" width="157.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="1087.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>sqlite3_prepare_v3 (40,816,326 samples, 4.44%)</title><rect x="849.1" y="757" width="52.5" height="15.0" fill="rgb(213,36,8)" rx="2" ry="2" />
+<text  x="852.11" y="767.5" >sqlit..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="246.0" y="981" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="249.00" y="991.5" >[..</text>
+</g>
+<g >
+<title>&lt;rusqlite::inner_connection::InnerConnection&gt;::prepare (20,408,163 samples, 2.22%)</title><rect x="482.0" y="917" width="26.2" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="485.00" y="927.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;nodestore::server::EtcdApi as nodestore::pb::etcdserverpb::kv_server::Kv&gt;::txn::{closure#0} (81,632,652 samples, 8.89%)</title><rect x="796.7" y="853" width="104.9" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="799.67" y="863.5" >&lt;nodestore::..</text>
+</g>
+<g >
+<title>&lt;rusqlite::inner_connection::InnerConnection&gt;::prepare (40,816,326 samples, 4.44%)</title><rect x="849.1" y="773" width="52.5" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="852.11" y="783.5" >&lt;rusq..</text>
+</g>
+<g >
+<title>sqlite3Parser (40,816,326 samples, 4.44%)</title><rect x="849.1" y="693" width="52.5" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="852.11" y="703.5" >sqlit..</text>
+</g>
+<g >
+<title>memcmp (20,408,163 samples, 2.22%)</title><rect x="455.8" y="965" width="26.2" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="458.78" y="975.5" >m..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="324.7" y="1061" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="327.67" y="1071.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="341" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="351.5" >[..</text>
+</g>
+<g >
+<title>std::sys::backtrace::__rust_begin_short_backtrace::&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::spawn_thread::{closure#0},  (591,836,727 samples, 64.44%)</title><rect x="403.3" y="1061" width="760.5" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="406.33" y="1071.5" >std::sys::backtrace::__rust_begin_short_backtrace::&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::spawn_thre..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="229" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="239.5" >[[kernel...</text>
+</g>
+<g >
+<title>&lt;h2::proto::connection::DynConnection&lt;hyper::proto::h2::SendBuf&lt;bytes::bytes::Bytes&gt;&gt;&gt;::recv_frame (20,408,163 samples, 2.22%)</title><rect x="1058.9" y="917" width="26.2" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="1061.89" y="927.5" >&lt;..</text>
+</g>
+<g >
+<title>sqlite3VdbeExec (142,857,141 samples, 15.56%)</title><rect x="613.1" y="789" width="183.6" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="616.11" y="799.5" >sqlite3VdbeExec</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="377.1" y="885" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="380.11" y="895.5" >[..</text>
+</g>
+<g >
+<title>tokio::runtime::scheduler::multi_thread::worker::run (591,836,727 samples, 64.44%)</title><rect x="403.3" y="1029" width="760.5" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="406.33" y="1039.5" >tokio::runtime::scheduler::multi_thread::worker::run</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="789" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="799.5" >[[ker..</text>
+</g>
+<g >
+<title>sqlite3VdbeHalt (20,408,163 samples, 2.22%)</title><rect x="586.9" y="773" width="26.2" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="589.89" y="783.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="88.7" y="917" width="78.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="91.67" y="927.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="37" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="47.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="586.9" y="645" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="589.89" y="655.5" >[..</text>
+</g>
+<g >
+<title>sqlite3LockAndPrepare (40,816,326 samples, 4.44%)</title><rect x="849.1" y="741" width="52.5" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="852.11" y="751.5" >sqlit..</text>
+</g>
+<g >
+<title>&lt;nodestore::store::Store&gt;::events_since (20,408,163 samples, 2.22%)</title><rect x="482.0" y="949" width="26.2" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="485.00" y="959.5" >&lt;..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="324.7" y="965" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="327.67" y="975.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="661" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="671.5" >[[ker..</text>
+</g>
+<g >
+<title>alloc_slot (81,632,652 samples, 8.89%)</title><rect x="167.3" y="1093" width="104.9" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="170.33" y="1103.5" >alloc_slot</text>
+</g>
+<g >
+<title>btreeGetPage (40,816,326 samples, 4.44%)</title><rect x="639.3" y="757" width="52.5" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="642.33" y="767.5" >btree..</text>
+</g>
+<g >
+<title>sqlite3Select (20,408,163 samples, 2.22%)</title><rect x="508.2" y="725" width="26.2" height="15.0" fill="rgb(205,4,0)" rx="2" ry="2" />
+<text  x="511.22" y="735.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="629" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="639.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="141.1" y="869" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="144.11" y="879.5" >[..</text>
+</g>
+<g >
+<title>&lt;nodestore::consensus::Node&gt;::propose::{closure#0} (81,632,652 samples, 8.89%)</title><rect x="796.7" y="837" width="104.9" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="799.67" y="847.5" >&lt;nodestore::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="245" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="255.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="377.1" y="917" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="380.11" y="927.5" >[..</text>
+</g>
+<g >
+<title>tonic::transport::server::serve_connection::&lt;tonic::body::Body, hyper_util::rt::tokio::TokioIo&lt;tonic::transport::server::service::io::ServerIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;, hyper_util::service::glue::TowerToHyperService&lt;tower::util::map_request::MapRequest&lt;tower::util::boxed_clone::BoxCloneService&lt;http::request::Request&lt;tonic::body::Body&gt;, http::response::Response&lt;tonic::body::Body&gt;, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Sync + core::marker::Send&gt;&gt;, &lt;tonic::transport::server::Server&gt;::serve_internal&lt;tonic::service::router::Routes, tonic::transport::server::incoming::TcpIncoming, core::future::ready::Ready&lt; (204,081,630 samples, 22.22%)</title><rect x="901.6" y="981" width="262.2" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="904.56" y="991.5" >tonic::transport::server::serve_con..</text>
+</g>
+<g >
+<title>sqlite3WalEndReadTransaction (20,408,163 samples, 2.22%)</title><rect x="586.9" y="725" width="26.2" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="589.89" y="735.5" >s..</text>
+</g>
+<g >
+<title>sqlite3_prepare_v3 (20,408,163 samples, 2.22%)</title><rect x="822.9" y="741" width="26.2" height="15.0" fill="rgb(213,36,8)" rx="2" ry="2" />
+<text  x="825.89" y="751.5" >s..</text>
+</g>
+<g >
+<title>nontrivial_free (20,408,163 samples, 2.22%)</title><rect x="272.2" y="1093" width="26.2" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="275.22" y="1103.5" >n..</text>
+</g>
+<g >
+<title>&lt;nodestore::store::Store&gt;::meta (81,632,652 samples, 8.89%)</title><rect x="508.2" y="837" width="104.9" height="15.0" fill="rgb(231,119,28)" rx="2" ry="2" />
+<text  x="511.22" y="847.5" >&lt;nodestore::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="517" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="527.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="437" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="447.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1163.8" y="1013" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1166.78" y="1023.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="62.4" y="997" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="65.44" y="1007.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>syscall (20,408,163 samples, 2.22%)</title><rect x="1163.8" y="1109" width="26.2" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1166.78" y="1119.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="350.9" y="997" width="52.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="353.89" y="1007.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="357" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="367.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="629" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="639.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>unixShmLock (20,408,163 samples, 2.22%)</title><rect x="586.9" y="709" width="26.2" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="589.89" y="719.5" >u..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="197" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="207.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="246.0" y="901" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="249.00" y="911.5" >[..</text>
+</g>
+<g >
+<title>sqlite3_step (20,408,163 samples, 2.22%)</title><rect x="560.7" y="805" width="26.2" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="563.67" y="815.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="405" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="415.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="485" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="495.5" >[..</text>
+</g>
+<g >
+<title>&lt;axum::util::MapIntoResponseFuture&lt;core::pin::Pin&lt;alloc::boxed::Box&lt;dyn core::future::future::Future&lt;Output = core::result::Result&lt;http::response::Response&lt;tonic::body::Body&gt;, core::convert::Infallible&gt;&gt; + core::marker::Send&gt;&gt;&gt; as core::future::future::Future&gt;::poll (306,122,445 samples, 33.33%)</title><rect x="508.2" y="901" width="393.4" height="15.0" fill="rgb(216,54,12)" rx="2" ry="2" />
+<text  x="511.22" y="911.5" >&lt;axum::util::MapIntoResponseFuture&lt;core::pin::Pin&lt;all..</text>
+</g>
+<g >
+<title>sqlite3Prepare (20,408,163 samples, 2.22%)</title><rect x="796.7" y="709" width="26.2" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="799.67" y="719.5" >s..</text>
+</g>
+<g >
+<title>sccp (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="805" width="52.5" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1114.33" y="815.5" >sccp</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="725" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="735.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="133" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="143.5" >[..</text>
+</g>
+<g >
+<title>sqlite3Prepare (40,816,326 samples, 4.44%)</title><rect x="849.1" y="725" width="52.5" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="852.11" y="735.5" >sqlit..</text>
+</g>
+<g >
+<title>selectExpander (20,408,163 samples, 2.22%)</title><rect x="508.2" y="677" width="26.2" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="511.22" y="687.5" >s..</text>
+</g>
+<g >
+<title>&lt;tokio::runtime::scheduler::multi_thread::worker::Context&gt;::run_task (591,836,727 samples, 64.44%)</title><rect x="403.3" y="1013" width="760.5" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="406.33" y="1023.5" >&lt;tokio::runtime::scheduler::multi_thread::worker::Context&gt;::run_task</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="677" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="687.5" >[[ker..</text>
+</g>
+<g >
+<title>sqlite3BtreeOpen (20,408,163 samples, 2.22%)</title><rect x="770.4" y="773" width="26.3" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="773.44" y="783.5" >s..</text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;&lt;nodestore::server::EtcdApi as nodestore::pb::etcdserverpb::watch_server::Watch&gt;::watch::{closure#0}::{closure#0}, alloc::sync::Arc&lt;tokio::runtime::scheduler::multi_thread::handle::Handle&gt;&gt; (81,632,652 samples, 8.89%)</title><rect x="403.3" y="997" width="104.9" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="406.33" y="1007.5" >tokio::runti..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="437" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="447.5" >[..</text>
+</g>
+<g >
+<title>fcntl (20,408,163 samples, 2.22%)</title><rect x="586.9" y="693" width="26.2" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="589.89" y="703.5" >f..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1163.8" y="1077" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1166.78" y="1087.5" >[..</text>
+</g>
+<g >
+<title>sqlite3BtreeCommitPhaseTwo (20,408,163 samples, 2.22%)</title><rect x="586.9" y="757" width="26.2" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="589.89" y="767.5" >s..</text>
+</g>
+<g >
+<title>&lt;hyper::proto::h2::server::H2Stream&lt;hyper_util::service::glue::TowerToHyperServiceFuture&lt;tower::util::map_request::MapRequest&lt;tower::util::boxed_clone::BoxCloneService&lt;http::request::Request&lt;tonic::body::Body&gt;, http::response::Response&lt;tonic::body::Body&gt;, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Sync + core::marker::Send&gt;&gt;, &lt;tonic::transport::server::Server&gt;::serve_internal&lt;tonic::service::router::Routes, tonic::transport::server::incoming::TcpIncoming, core::future::ready::Ready&lt; (306,122,445 samples, 33.33%)</title><rect x="508.2" y="981" width="393.4" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="511.22" y="991.5" >&lt;hyper::proto::h2::server::H2Stream&lt;hyper_util::servi..</text>
+</g>
+<g >
+<title>&lt;std::sys::thread::unix::Thread&gt;::new::thread_start (591,836,727 samples, 64.44%)</title><rect x="403.3" y="1093" width="760.5" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="406.33" y="1103.5" >&lt;std::sys::thread::unix::Thread&gt;::new::thread_start</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="85" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="95.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="213" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="223.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="219.8" y="997" width="52.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="222.78" y="1007.5" >[[ker..</text>
+</g>
+<g >
+<title>sqlite3_prepare_v3 (20,408,163 samples, 2.22%)</title><rect x="482.0" y="901" width="26.2" height="15.0" fill="rgb(213,36,8)" rx="2" ry="2" />
+<text  x="485.00" y="911.5" >s..</text>
+</g>
+<g >
+<title>sqlite3LockAndPrepare (20,408,163 samples, 2.22%)</title><rect x="796.7" y="725" width="26.2" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="799.67" y="735.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="645" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="655.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="586.9" y="677" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="589.89" y="687.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="485" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="495.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>&lt;rusqlite::row::Rows&gt;::next (142,857,141 samples, 15.56%)</title><rect x="613.1" y="821" width="183.6" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="616.11" y="831.5" >&lt;rusqlite::row::Rows&gt;::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="789" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="799.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="549" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="559.5" >[[ker..</text>
+</g>
+<g >
+<title>&lt;rusqlite::Connection&gt;::execute::&lt;&amp;[&amp;dyn rusqlite::types::to_sql::ToSql]&gt; (20,408,163 samples, 2.22%)</title><rect x="796.7" y="773" width="26.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="799.67" y="783.5" >&lt;..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="193.6" y="1077" width="78.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="196.56" y="1087.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="377.1" y="933" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="380.11" y="943.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="350.9" y="1013" width="52.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="353.89" y="1023.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="469" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="479.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="149" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="159.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (122,448,978 samples, 13.33%)</title><rect x="10.0" y="1029" width="157.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="1039.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="805" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="815.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="586.9" y="597" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="589.89" y="607.5" >[..</text>
+</g>
+<g >
+<title>&lt;tokio_rustls::common::SyncReadAdapter&lt;tokio::net::tcp::stream::TcpStream&gt; as alloc::io::read::Read&gt;::read (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="821" width="52.5" height="15.0" fill="rgb(248,197,47)" rx="2" ry="2" />
+<text  x="1114.33" y="831.5" >&lt;toki..</text>
+</g>
+<g >
+<title>&lt;nodestore::server::EtcdApi as nodestore::pb::etcdserverpb::watch_server::Watch&gt;::watch::{closure#0}::{closure#0} (81,632,652 samples, 8.89%)</title><rect x="403.3" y="981" width="104.9" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="406.33" y="991.5" >&lt;nodestore::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="693" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="703.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="350.9" y="1029" width="52.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="353.89" y="1039.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="350.9" y="949" width="52.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="353.89" y="959.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="88.7" y="901" width="78.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="91.67" y="911.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="389" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="399.5" >[[kernel...</text>
+</g>
+<g >
+<title>sqlite3Parser (40,816,326 samples, 4.44%)</title><rect x="508.2" y="741" width="52.5" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="511.22" y="751.5" >sqlit..</text>
+</g>
+<g >
+<title>[[nf_conntrack]] (20,408,163 samples, 2.22%)</title><rect x="1137.6" y="453" width="26.2" height="15.0" fill="rgb(232,125,29)" rx="2" ry="2" />
+<text  x="1140.56" y="463.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (102,040,815 samples, 11.11%)</title><rect x="36.2" y="1013" width="131.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="39.22" y="1023.5" >[[kernel.kallsym..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="246.0" y="885" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="249.00" y="895.5" >[..</text>
+</g>
+<g >
+<title>sqlite3RunParser (20,408,163 samples, 2.22%)</title><rect x="822.9" y="693" width="26.2" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="825.89" y="703.5" >s..</text>
+</g>
+<g >
+<title>&lt;&lt;nodestore::pb::etcdserverpb::kv_server::KvServer&lt;_&gt; as tower_service::Service&lt;http::request::Request&lt;_&gt;&gt;&gt;::call::RangeSvc&lt;nodestore::server::EtcdApi&gt; as tonic::server::service::UnaryService&lt;nodestore::pb::etcdserverpb::RangeRequest&gt;&gt;::call::{closure#0} (224,489,793 samples, 24.44%)</title><rect x="508.2" y="869" width="288.5" height="15.0" fill="rgb(205,4,0)" rx="2" ry="2" />
+<text  x="511.22" y="879.5" >&lt;&lt;nodestore::pb::etcdserverpb::kv_serv..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="357" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="367.5" >[[kernel...</text>
+</g>
+<g >
+<title>sqlite3SelectPrep (20,408,163 samples, 2.22%)</title><rect x="482.0" y="805" width="26.2" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="485.00" y="815.5" >s..</text>
+</g>
+<g >
+<title>__mmap (122,448,978 samples, 13.33%)</title><rect x="10.0" y="1093" width="157.3" height="15.0" fill="rgb(227,104,25)" rx="2" ry="2" />
+<text  x="13.00" y="1103.5" >__mmap</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1163.8" y="1029" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1166.78" y="1039.5" >[..</text>
+</g>
+<g >
+<title>&lt;rusqlite::inner_connection::InnerConnection&gt;::prepare (20,408,163 samples, 2.22%)</title><rect x="796.7" y="757" width="26.2" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="799.67" y="767.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;hyper_util::service::oneshot::Oneshot&lt;tower::util::map_request::MapRequest&lt;tower::util::boxed_clone::BoxCloneService&lt;http::request::Request&lt;tonic::body::Body&gt;, http::response::Response&lt;tonic::body::Body&gt;, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Sync + core::marker::Send&gt;&gt;, &lt;tonic::transport::server::Server&gt;::serve_internal&lt;tonic::service::router::Routes, tonic::transport::server::incoming::TcpIncoming, core::future::ready::Ready&lt; (306,122,445 samples, 33.33%)</title><rect x="508.2" y="965" width="393.4" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="511.22" y="975.5" >&lt;hyper_util::service::oneshot::Oneshot&lt;tower::util::m..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="421" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="431.5" >[..</text>
+</g>
+<g >
+<title>&lt;tonic::transport::server::service::io::ServerIo&lt;tokio::net::tcp::stream::TcpStream&gt; as tokio::io::async_write::AsyncWrite&gt;::poll_write_vectored (81,632,652 samples, 8.89%)</title><rect x="954.0" y="901" width="104.9" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="957.00" y="911.5" >&lt;tonic::tran..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="501" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="511.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="277" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="287.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1163.8" y="997" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1166.78" y="1007.5" >[..</text>
+</g>
+<g >
+<title>&lt;hyper_util::rt::tokio::TokioIo&lt;tonic::transport::server::service::io::ServerIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt; as hyper::rt::io::Read&gt;::poll_read (61,224,489 samples, 6.67%)</title><rect x="1085.1" y="885" width="78.7" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="1088.11" y="895.5" >&lt;hyper_ut..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="821" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="831.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="597" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="607.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="101" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="111.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="165" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="175.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="229" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="239.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="165" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="175.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="405" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="415.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="725" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="735.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>sqlite3_prepare_v3 (40,816,326 samples, 4.44%)</title><rect x="508.2" y="805" width="52.5" height="15.0" fill="rgb(213,36,8)" rx="2" ry="2" />
+<text  x="511.22" y="815.5" >sqlit..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1032.7" y="117" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1035.67" y="127.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="197" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="207.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="350.9" y="1077" width="52.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="353.89" y="1087.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="181" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="191.5" >[[kernel...</text>
+</g>
+<g >
+<title>getPageNormal (20,408,163 samples, 2.22%)</title><rect x="560.7" y="741" width="26.2" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="563.67" y="751.5" >g..</text>
+</g>
+<g >
+<title>sqlite3VdbeMemSetStr (20,408,163 samples, 2.22%)</title><rect x="875.3" y="645" width="26.3" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="878.33" y="655.5" >s..</text>
+</g>
+<g >
+<title>&lt;rusqlite::inner_connection::InnerConnection&gt;::prepare (20,408,163 samples, 2.22%)</title><rect x="822.9" y="757" width="26.2" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="825.89" y="767.5" >&lt;..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="421" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="431.5" >[[kernel...</text>
+</g>
+<g >
+<title>&lt;tonic::transport::server::SvcFuture&lt;tonic::service::recover_error::ResponseFuture&lt;tower::util::either::EitherResponseFuture&lt;tower::load_shed::future::ResponseFuture&lt;tower::util::either::EitherResponseFuture&lt;tower::limit::concurrency::future::ResponseFuture&lt;tonic::transport::service::grpc_timeout::ResponseFuture&lt;tonic::service::router::RoutesFuture&gt;&gt;, tonic::transport::service::grpc_timeout::ResponseFuture&lt;tonic::service::router::RoutesFuture&gt;&gt;&gt;, tower::util::either::EitherResponseFuture&lt;tower::limit::concurrency::future::ResponseFuture&lt;tonic::transport::service::grpc_timeout::ResponseFuture&lt;tonic::service::router::RoutesFuture&gt;&gt;, tonic::transport::service::grpc_timeout::ResponseFuture&lt;tonic::service::router::RoutesFuture&gt;&gt;&gt;&gt;&gt; as core::future::future::Future&gt;::poll (306,122,445 samples, 33.33%)</title><rect x="508.2" y="949" width="393.4" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="511.22" y="959.5" >&lt;tonic::transport::server::SvcFuture&lt;tonic::service::..</text>
+</g>
+<g >
+<title>nodestore::store::range_in (142,857,141 samples, 15.56%)</title><rect x="613.1" y="837" width="183.6" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="616.11" y="847.5" >nodestore::store::range..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1163.8" y="1045" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1166.78" y="1055.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="586.9" y="613" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="589.89" y="623.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="53" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="63.5" >[..</text>
+</g>
+<g >
+<title>sqlite3Prepare (40,816,326 samples, 4.44%)</title><rect x="508.2" y="773" width="52.5" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="511.22" y="783.5" >sqlit..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="773" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="783.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>nodestore::server::watch::resync::{closure#0} (20,408,163 samples, 2.22%)</title><rect x="482.0" y="965" width="26.2" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="485.00" y="975.5" >n..</text>
+</g>
+<g >
+<title>btreeBeginTrans (61,224,489 samples, 6.67%)</title><rect x="639.3" y="773" width="78.7" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="642.33" y="783.5" >btreeBegi..</text>
+</g>
+<g >
+<title>[unknown] (224,489,793 samples, 24.44%)</title><rect x="10.0" y="1109" width="288.4" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="1119.5" >[unknown]</text>
+</g>
+<g >
+<title>&lt;nodestore::consensus::Node&gt;::apply_committed (81,632,652 samples, 8.89%)</title><rect x="796.7" y="821" width="104.9" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="799.67" y="831.5" >&lt;nodestore::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="757" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="767.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="661" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="671.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>sqlite3Parser (20,408,163 samples, 2.22%)</title><rect x="482.0" y="837" width="26.2" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="485.00" y="847.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="741" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="751.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="324.7" y="1093" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="327.67" y="1103.5" >[..</text>
+</g>
+<g >
+<title>sqlite3PagerSharedLock (20,408,163 samples, 2.22%)</title><rect x="691.8" y="757" width="26.2" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="694.78" y="767.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="773" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="783.5" >[[ker..</text>
+</g>
+<g >
+<title>sqlite3LockAndPrepare (20,408,163 samples, 2.22%)</title><rect x="482.0" y="885" width="26.2" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="485.00" y="895.5" >s..</text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;tokio::runtime::blocking::task::BlockingTask&lt;&lt;tokio::runtime::scheduler::multi_thread::worker::Launch&gt;::launch::{closure#0}&gt;, tokio::runtime::blocking::schedule::BlockingSchedule&gt; (591,836,727 samples, 64.44%)</title><rect x="403.3" y="1045" width="760.5" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="406.33" y="1055.5" >tokio::runtime::task::raw::poll::&lt;tokio::runtime::blocking::task::BlockingTask&lt;&lt;tokio::runtime::scheduler..</text>
+</g>
+<g >
+<title>sqlite3Select (20,408,163 samples, 2.22%)</title><rect x="875.3" y="677" width="26.3" height="15.0" fill="rgb(205,4,0)" rx="2" ry="2" />
+<text  x="878.33" y="687.5" >s..</text>
+</g>
+<g >
+<title>nodestore::store::current_in (40,816,326 samples, 4.44%)</title><rect x="849.1" y="789" width="52.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="852.11" y="799.5" >nodes..</text>
+</g>
+<g >
+<title>sqlite3VdbeMemSetStr (20,408,163 samples, 2.22%)</title><rect x="822.9" y="629" width="26.2" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="825.89" y="639.5" >s..</text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;hyper::proto::h2::server::H2Stream&lt;hyper_util::service::glue::TowerToHyperServiceFuture&lt;tower::util::map_request::MapRequest&lt;tower::util::boxed_clone::BoxCloneService&lt;http::request::Request&lt;tonic::body::Body&gt;, http::response::Response&lt;tonic::body::Body&gt;, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Sync + core::marker::Send&gt;&gt;, &lt;tonic::transport::server::Server&gt;::serve_internal&lt;tonic::service::router::Routes, tonic::transport::server::incoming::TcpIncoming, core::future::ready::Ready&lt; (306,122,445 samples, 33.33%)</title><rect x="508.2" y="997" width="393.4" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="511.22" y="1007.5" >tokio::runtime::task::raw::poll::&lt;hyper::proto::h2::s..</text>
+</g>
+<g >
+<title>&lt;nodestore::store::Store&gt;::meta (20,408,163 samples, 2.22%)</title><rect x="482.0" y="933" width="26.2" height="15.0" fill="rgb(231,119,28)" rx="2" ry="2" />
+<text  x="485.00" y="943.5" >&lt;..</text>
+</g>
+<g >
+<title>sqlite3Select (20,408,163 samples, 2.22%)</title><rect x="482.0" y="821" width="26.2" height="15.0" fill="rgb(205,4,0)" rx="2" ry="2" />
+<text  x="485.00" y="831.5" >s..</text>
+</g>
+<g >
+<title>getPageNormal (40,816,326 samples, 4.44%)</title><rect x="639.3" y="741" width="52.5" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="642.33" y="751.5" >getPa..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="246.0" y="965" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="249.00" y="975.5" >[..</text>
+</g>
+<g >
+<title>sqlite3Insert (20,408,163 samples, 2.22%)</title><rect x="796.7" y="661" width="26.2" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="799.67" y="671.5" >s..</text>
+</g>
+<g >
+<title>&lt;rusqlite::inner_connection::InnerConnection&gt;::prepare (40,816,326 samples, 4.44%)</title><rect x="508.2" y="821" width="52.5" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="511.22" y="831.5" >&lt;rusq..</text>
+</g>
+<g >
+<title>sqlite3Prepare (20,408,163 samples, 2.22%)</title><rect x="482.0" y="869" width="26.2" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="485.00" y="879.5" >s..</text>
+</g>
+<g >
+<title>__libc_malloc_impl (40,816,326 samples, 4.44%)</title><rect x="298.4" y="1109" width="52.5" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="301.44" y="1119.5" >__lib..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="350.9" y="1045" width="52.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="353.89" y="1055.5" >[[ker..</text>
+</g>
+<g >
+<title>&lt;hyper::common::io::compat::Compat&lt;hyper_util::common::rewind::Rewind&lt;hyper_util::rt::tokio::TokioIo&lt;tonic::transport::server::service::io::ServerIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt; as tokio::io::async_read::AsyncRead&gt;::poll_read (61,224,489 samples, 6.67%)</title><rect x="1085.1" y="917" width="78.7" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1088.11" y="927.5" >&lt;hyper::c..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="677" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="687.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>tokio::runtime::task::raw::poll::&lt;tonic::transport::server::serve_connection&lt;tonic::body::Body, hyper_util::rt::tokio::TokioIo&lt;tonic::transport::server::service::io::ServerIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;, hyper_util::service::glue::TowerToHyperService&lt;tower::util::map_request::MapRequest&lt;tower::util::boxed_clone::BoxCloneService&lt;http::request::Request&lt;tonic::body::Body&gt;, http::response::Response&lt;tonic::body::Body&gt;, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Sync + core::marker::Send&gt;&gt;, &lt;tonic::transport::server::Server&gt;::serve_internal&lt;tonic::service::router::Routes, tonic::transport::server::incoming::TcpIncoming, core::future::ready::Ready&lt; (204,081,630 samples, 22.22%)</title><rect x="901.6" y="997" width="262.2" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="904.56" y="1007.5" >tokio::runtime::task::raw::poll::&lt;t..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="213" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="223.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="193.6" y="1045" width="78.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="196.56" y="1055.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="586.9" y="629" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="589.89" y="639.5" >[..</text>
+</g>
+<g >
+<title>sqlite3RunParser (20,408,163 samples, 2.22%)</title><rect x="482.0" y="853" width="26.2" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="485.00" y="863.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="133" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="143.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="613" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="623.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="246.0" y="933" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="249.00" y="943.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="293" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="303.5" >[..</text>
+</g>
+<g >
+<title>walIndexPage (20,408,163 samples, 2.22%)</title><rect x="691.8" y="725" width="26.2" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="694.78" y="735.5" >w..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="373" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="383.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="581" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="591.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>pcache1Create (20,408,163 samples, 2.22%)</title><rect x="770.4" y="741" width="26.3" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="773.44" y="751.5" >p..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="565" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="575.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>sqlite3RunParser (40,816,326 samples, 4.44%)</title><rect x="849.1" y="709" width="52.5" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="852.11" y="719.5" >sqlit..</text>
+</g>
+<g >
+<title>tokio-rt-worker (918,367,335 samples, 100.00%)</title><rect x="10.0" y="1125" width="1180.0" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="13.00" y="1135.5" >tokio-rt-worker</text>
+</g>
+<g >
+<title>sqlite3WalkSelect (20,408,163 samples, 2.22%)</title><rect x="508.2" y="693" width="26.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="511.22" y="703.5" >s..</text>
+</g>
+<g >
+<title>&lt;hyper_util::common::rewind::Rewind&lt;hyper_util::rt::tokio::TokioIo&lt;tonic::transport::server::service::io::ServerIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt; as hyper::rt::io::Read&gt;::poll_read (61,224,489 samples, 6.67%)</title><rect x="1085.1" y="901" width="78.7" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="1088.11" y="911.5" >&lt;hyper_ut..</text>
+</g>
+<g >
+<title>&lt;std::thread::lifecycle::spawn_unchecked&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::spawn_thread::{closure#0},  (591,836,727 samples, 64.44%)</title><rect x="403.3" y="1077" width="760.5" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="406.33" y="1087.5" >&lt;std::thread::lifecycle::spawn_unchecked&lt;&lt;tokio::runtime::blocking::pool::Spawner&gt;::spawn_thread::{closur..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="309" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="319.5" >[[kernel...</text>
+</g>
+<g >
+<title>sqlite3LockAndPrepare (40,816,326 samples, 4.44%)</title><rect x="508.2" y="789" width="52.5" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="511.22" y="799.5" >sqlit..</text>
+</g>
+<g >
+<title>walTryBeginRead (20,408,163 samples, 2.22%)</title><rect x="691.8" y="741" width="26.2" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="694.78" y="751.5" >w..</text>
+</g>
+<g >
+<title>[[nf_conntrack]] (20,408,163 samples, 2.22%)</title><rect x="1137.6" y="437" width="26.2" height="15.0" fill="rgb(232,125,29)" rx="2" ry="2" />
+<text  x="1140.56" y="447.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="324.7" y="1045" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="327.67" y="1055.5" >[..</text>
+</g>
+<g >
+<title>sqlite3_step (142,857,141 samples, 15.56%)</title><rect x="613.1" y="805" width="183.6" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="616.11" y="815.5" >sqlite3_step</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="261" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="271.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="565" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="575.5" >[[ker..</text>
+</g>
+<g >
+<title>sqlite3_reset (20,408,163 samples, 2.22%)</title><rect x="586.9" y="805" width="26.2" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="589.89" y="815.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="117" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="127.5" >[..</text>
+</g>
+<g >
+<title>sqlite3WalkSelect (20,408,163 samples, 2.22%)</title><rect x="482.0" y="789" width="26.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="485.00" y="799.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="757" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="767.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="62.4" y="981" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="65.44" y="991.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="709" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="719.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>&lt;tonic::service::router::RoutesFuture as core::future::future::Future&gt;::poll (306,122,445 samples, 33.33%)</title><rect x="508.2" y="917" width="393.4" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="511.22" y="927.5" >&lt;tonic::service::router::RoutesFuture as core::future..</text>
+</g>
+<g >
+<title>&lt;h2::server::Connection&lt;hyper::common::io::compat::Compat&lt;hyper_util::common::rewind::Rewind&lt;hyper_util::rt::tokio::TokioIo&lt;tonic::transport::server::service::io::ServerIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt;, hyper::proto::h2::SendBuf&lt;bytes::bytes::Bytes&gt;&gt;&gt;::poll_closed (20,408,163 samples, 2.22%)</title><rect x="901.6" y="965" width="26.2" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="904.56" y="975.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;nodestore::pb::etcdserverpb::kv_server::KvServer&lt;nodestore::server::EtcdApi&gt; as tower_service::Service&lt;http::request::Request&lt;tonic::body::Body&gt;&gt;&gt;::call::{closure#3} (81,632,652 samples, 8.89%)</title><rect x="796.7" y="885" width="104.9" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="799.67" y="895.5" >&lt;nodestore::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="193.6" y="1061" width="78.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="196.56" y="1071.5" >[[kernel...</text>
+</g>
+<g >
+<title>sqlite3VdbeExec (20,408,163 samples, 2.22%)</title><rect x="560.7" y="789" width="26.2" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="563.67" y="799.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="373" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="383.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="245" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="255.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="324.7" y="997" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="327.67" y="1007.5" >[..</text>
+</g>
+<g >
+<title>&lt;rusqlite::row::Rows&gt;::next (20,408,163 samples, 2.22%)</title><rect x="560.7" y="821" width="26.2" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="563.67" y="831.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;tokio_rustls::common::SyncWriteAdapter&lt;hyper_util::rt::tokio::TokioIo&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt; as core::io::write::Write&gt;::write_vectored (81,632,652 samples, 8.89%)</title><rect x="954.0" y="853" width="104.9" height="15.0" fill="rgb(226,97,23)" rx="2" ry="2" />
+<text  x="957.00" y="863.5" >&lt;tokio_rustl..</text>
+</g>
+<g >
+<title>sqlite3GenerateColumnNames (20,408,163 samples, 2.22%)</title><rect x="822.9" y="645" width="26.2" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="825.89" y="655.5" >s..</text>
+</g>
+<g >
+<title>sqlite3VdbeReset (20,408,163 samples, 2.22%)</title><rect x="586.9" y="789" width="26.2" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="589.89" y="799.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="350.9" y="981" width="52.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="353.89" y="991.5" >[[ker..</text>
+</g>
+<g >
+<title>pager_unlock (20,408,163 samples, 2.22%)</title><rect x="586.9" y="741" width="26.2" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="589.89" y="751.5" >p..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="62.4" y="965" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="65.44" y="975.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="69" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="79.5" >[..</text>
+</g>
+<g >
+<title>&lt;hyper_util::server::conn::auto::Connection&lt;hyper_util::rt::tokio::TokioIo&lt;tonic::transport::server::service::io::ServerIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;, hyper_util::service::glue::TowerToHyperService&lt;tower::util::map_request::MapRequest&lt;tower::util::boxed_clone::BoxCloneService&lt;http::request::Request&lt;tonic::body::Body&gt;, http::response::Response&lt;tonic::body::Body&gt;, alloc::boxed::Box&lt;dyn core::error::Error + core::marker::Sync + core::marker::Send&gt;&gt;, &lt;tonic::transport::server::Server&gt;::serve_internal&lt;tonic::service::router::Routes, tonic::transport::server::incoming::TcpIncoming, core::future::ready::Ready&lt; (183,673,467 samples, 20.00%)</title><rect x="927.8" y="965" width="236.0" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="930.78" y="975.5" >&lt;hyper_util::server::conn::auto..</text>
+</g>
+<g >
+<title>&lt;rustls::conn::ConnectionCommon&lt;rustls::server::server_conn::ServerConnectionData&gt;&gt;::read_tls (61,224,489 samples, 6.67%)</title><rect x="1085.1" y="853" width="78.7" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="1088.11" y="863.5" >&lt;rustls::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="62.4" y="949" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="65.44" y="959.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>sqlite3SelectPrep (20,408,163 samples, 2.22%)</title><rect x="508.2" y="709" width="26.2" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="511.22" y="719.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="533" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="543.5" >[[ker..</text>
+</g>
+<g >
+<title>start (591,836,727 samples, 64.44%)</title><rect x="403.3" y="1109" width="760.5" height="15.0" fill="rgb(208,18,4)" rx="2" ry="2" />
+<text  x="406.33" y="1119.5" >start</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="219.8" y="1029" width="52.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="222.78" y="1039.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="261" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="271.5" >[[kernel...</text>
+</g>
+<g >
+<title>btreeLast (20,408,163 samples, 2.22%)</title><rect x="718.0" y="773" width="26.2" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="721.00" y="783.5" >b..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="246.0" y="949" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="249.00" y="959.5" >[..</text>
+</g>
+<g >
+<title>&lt;tonic_prost::codec::ProstDecoder&lt;nodebootstrap::cluster::MemberAddResponse&gt; as tonic::codec::Decoder&gt;::buffer_settings (20,408,163 samples, 2.22%)</title><rect x="429.6" y="965" width="26.2" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="432.56" y="975.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;&lt;nodestore::pb::etcdserverpb::kv_server::KvServer&lt;_&gt; as tower_service::Service&lt;http::request::Request&lt;_&gt;&gt;&gt;::call::TxnSvc&lt;nodestore::server::EtcdApi&gt; as tonic::server::service::UnaryService&lt;nodestore::pb::etcdserverpb::TxnRequest&gt;&gt;::call::{closure#0} (81,632,652 samples, 8.89%)</title><rect x="796.7" y="869" width="104.9" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="799.67" y="879.5" >&lt;&lt;nodestore:..</text>
+</g>
+<g >
+<title>sqlite3Parser (20,408,163 samples, 2.22%)</title><rect x="822.9" y="677" width="26.2" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="825.89" y="687.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="501" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="511.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="62.4" y="933" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="65.44" y="943.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>nodestore::store::apply_put (40,816,326 samples, 4.44%)</title><rect x="796.7" y="789" width="52.4" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="799.67" y="799.5" >nodes..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="324.7" y="1013" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="327.67" y="1023.5" >[..</text>
+</g>
+<g >
+<title>&lt;h2::proto::connection::Connection&lt;hyper::common::io::compat::Compat&lt;hyper_util::common::rewind::Rewind&lt;hyper_util::rt::tokio::TokioIo&lt;tonic::transport::server::service::io::ServerIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt;, h2::server::Peer, hyper::proto::h2::SendBuf&lt;bytes::bytes::Bytes&gt;&gt;&gt;::poll (183,673,467 samples, 20.00%)</title><rect x="927.8" y="933" width="236.0" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="930.78" y="943.5" >&lt;h2::proto::connection::Connect..</text>
+</g>
+<g >
+<title>allocateBtreePage (20,408,163 samples, 2.22%)</title><rect x="744.2" y="757" width="26.2" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="747.22" y="767.5" >a..</text>
+</g>
+<g >
+<title>sqlite3PcacheSetPageSize (20,408,163 samples, 2.22%)</title><rect x="770.4" y="757" width="26.3" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="773.44" y="767.5" >s..</text>
+</g>
+<g >
+<title>sqlite3RunParser (40,816,326 samples, 4.44%)</title><rect x="508.2" y="757" width="52.5" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="511.22" y="767.5" >sqlit..</text>
+</g>
+<g >
+<title>sccp (81,632,652 samples, 8.89%)</title><rect x="954.0" y="837" width="104.9" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="957.00" y="847.5" >sccp</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="309" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="319.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="350.9" y="965" width="52.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="353.89" y="975.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="149" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="159.5" >[[kernel...</text>
+</g>
+<g >
+<title>&lt;tokio_rustls::common::Stream&lt;hyper_util::rt::tokio::TokioIo&lt;hyper_util::rt::tokio::TokioIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;, rustls::client::client_conn::connection::ClientConnection&gt;&gt;::write_io (81,632,652 samples, 8.89%)</title><rect x="954.0" y="885" width="104.9" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="957.00" y="895.5" >&lt;tokio_rustl..</text>
+</g>
+<g >
+<title>sqlite3LockAndPrepare (20,408,163 samples, 2.22%)</title><rect x="822.9" y="725" width="26.2" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="825.89" y="735.5" >s..</text>
+</g>
+<g >
+<title>moveToRoot (20,408,163 samples, 2.22%)</title><rect x="560.7" y="757" width="26.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="563.67" y="767.5" >m..</text>
+</g>
+<g >
+<title>&lt;tokio_rustls::common::Stream&lt;tokio::net::tcp::stream::TcpStream, rustls::server::server_conn::connection::ServerConnection&gt;&gt;::read_io (61,224,489 samples, 6.67%)</title><rect x="1085.1" y="869" width="78.7" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="1088.11" y="879.5" >&lt;tokio_ru..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="324.7" y="981" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="327.67" y="991.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="325" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="335.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (122,448,978 samples, 13.33%)</title><rect x="10.0" y="1061" width="157.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="1071.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="533" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="543.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="350.9" y="1061" width="52.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="353.89" y="1071.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="246.0" y="917" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="249.00" y="927.5" >[..</text>
+</g>
+<g >
+<title>[[nf_conntrack]] (20,408,163 samples, 2.22%)</title><rect x="1137.6" y="469" width="26.2" height="15.0" fill="rgb(232,125,29)" rx="2" ry="2" />
+<text  x="1140.56" y="479.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="341" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="351.5" >[[kernel...</text>
+</g>
+<g >
+<title>moveToRoot (20,408,163 samples, 2.22%)</title><rect x="718.0" y="757" width="26.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="721.00" y="767.5" >m..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="377.1" y="901" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="380.11" y="911.5" >[..</text>
+</g>
+<g >
+<title>sqlite3_prepare_v3 (20,408,163 samples, 2.22%)</title><rect x="796.7" y="741" width="26.2" height="15.0" fill="rgb(213,36,8)" rx="2" ry="2" />
+<text  x="799.67" y="751.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (122,448,978 samples, 13.33%)</title><rect x="10.0" y="1045" width="157.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="1055.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>sqlite3Prepare (20,408,163 samples, 2.22%)</title><rect x="822.9" y="709" width="26.2" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="825.89" y="719.5" >s..</text>
+</g>
+<g >
+<title>&lt;rustls::vecbuf::ChunkVecBuffer&gt;::write_to (81,632,652 samples, 8.89%)</title><rect x="954.0" y="869" width="104.9" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="957.00" y="879.5" >&lt;rustls::vec..</text>
+</g>
+<g >
+<title>__munmap (40,816,326 samples, 4.44%)</title><rect x="350.9" y="1109" width="52.4" height="15.0" fill="rgb(211,29,7)" rx="2" ry="2" />
+<text  x="353.89" y="1119.5" >__mun..</text>
+</g>
+<g >
+<title>nodestore::store::current_in (20,408,163 samples, 2.22%)</title><rect x="822.9" y="773" width="26.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="825.89" y="783.5" >n..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="693" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="703.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>sqlite3BtreeCreateTable (20,408,163 samples, 2.22%)</title><rect x="744.2" y="773" width="26.2" height="15.0" fill="rgb(213,41,9)" rx="2" ry="2" />
+<text  x="747.22" y="783.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="517" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="527.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="709" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="719.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="613" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="623.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>sqlite3DbMallocRawNN (20,408,163 samples, 2.22%)</title><rect x="875.3" y="629" width="26.3" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="878.33" y="639.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (40,816,326 samples, 4.44%)</title><rect x="1111.3" y="597" width="52.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="607.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="324.7" y="1077" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="327.67" y="1087.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="293" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="303.5" >[[kernel...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1111.3" y="389" width="26.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1114.33" y="399.5" >[..</text>
+</g>
+<g >
+<title>&lt;h2::server::Connection&lt;hyper::common::io::compat::Compat&lt;hyper_util::common::rewind::Rewind&lt;hyper_util::rt::tokio::TokioIo&lt;tonic::transport::server::service::io::ServerIo&lt;tokio::net::tcp::stream::TcpStream&gt;&gt;&gt;&gt;, hyper::proto::h2::SendBuf&lt;bytes::bytes::Bytes&gt;&gt;&gt;::poll_closed (183,673,467 samples, 20.00%)</title><rect x="927.8" y="949" width="236.0" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="930.78" y="959.5" >&lt;h2::server::Connection&lt;hyper::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="324.7" y="1029" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="327.67" y="1039.5" >[..</text>
+</g>
+<g >
+<title>nodestore::store::apply_txn (81,632,652 samples, 8.89%)</title><rect x="796.7" y="805" width="104.9" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="799.67" y="815.5" >nodestore::s..</text>
+</g>
+<g >
+<title>&lt;nodestore::pb::etcdserverpb::kv_server::KvServer&lt;nodestore::server::EtcdApi&gt; as tower_service::Service&lt;http::request::Request&lt;tonic::body::Body&gt;&gt;&gt;::call::{closure#0} (224,489,793 samples, 24.44%)</title><rect x="508.2" y="885" width="288.5" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="511.22" y="895.5" >&lt;nodestore::pb::etcdserverpb::kv_serve..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="980.2" y="453" width="78.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="983.22" y="463.5" >[[kernel...</text>
+</g>
+<g >
+<title>all (918,367,335 samples, 100%)</title><rect x="10.0" y="1141" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="1151.5" ></text>
+</g>
+<g >
+<title>sqlite3Select (20,408,163 samples, 2.22%)</title><rect x="822.9" y="661" width="26.2" height="15.0" fill="rgb(205,4,0)" rx="2" ry="2" />
+<text  x="825.89" y="671.5" >s..</text>
+</g>
+<g >
+<title>[[nf_conntrack]] (20,408,163 samples, 2.22%)</title><rect x="1137.6" y="485" width="26.2" height="15.0" fill="rgb(232,125,29)" rx="2" ry="2" />
+<text  x="1140.56" y="495.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81,632,652 samples, 8.89%)</title><rect x="954.0" y="645" width="104.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="957.00" y="655.5" >[[kernel.kal..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="1163.8" y="1061" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1166.78" y="1071.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20,408,163 samples, 2.22%)</title><rect x="246.0" y="869" width="26.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="249.00" y="879.5" >[..</text>
+</g>
+<g >
+<title>tokenExpr (20,408,163 samples, 2.22%)</title><rect x="534.4" y="725" width="26.3" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="537.44" y="735.5" >t..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,224,489 samples, 6.67%)</title><rect x="88.7" y="885" width="78.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="91.67" y="895.5" >[[kernel...</text>
+</g>
+<g >
+<title>sqlite3Parser (20,408,163 samples, 2.22%)</title><rect x="796.7" y="677" width="26.2" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="799.67" y="687.5" >s..</text>
+</g>
+</g>
+</svg>
