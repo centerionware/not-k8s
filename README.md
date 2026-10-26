@@ -3,9 +3,9 @@
 **Status: running. Publication is not a validation pass.**
 
 - [Published release](https://github.com/centerionware/not-k8s/releases/tag/v0.9.0)
-- [Workflow and job status](https://github.com/centerionware/not-k8s/actions/runs/40270765268)
-- Source: 66adb692800e692ea4b316e197066e1c38a467ad
-- [E2e shards](e2e/40270765268-1/)
+- [Workflow and job status](https://github.com/centerionware/not-k8s/actions/runs/40276276164)
+- Source: bd019d473a039f8a41c2c48898c4b43ccd7c7b97
+- [E2e shards](e2e/40276276164-1/)
 - [Latest stack flamegraphs](latest-stack.md)
 - [Latest three-way comparison](latest-comparison.md)
 
