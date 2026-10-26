@@ -663,6 +663,11 @@ impl TestWork {
             &context.namespace,
             &self.activator_image,
             &self.signer_image,
+            if self.published_image {
+                "/usr/local/bin/nodeactivator-cert-signer"
+            } else {
+                "/nodeactivator-cert-signer"
+            },
             &base64::engine::general_purpose::STANDARD.encode(serving_ca_key),
             &base64::engine::general_purpose::STANDARD.encode(proxy_ca),
             &base64::engine::general_purpose::STANDARD.encode(serving_ca),
@@ -754,6 +759,7 @@ fn fixture_yaml(
     namespace: &str,
     image: &str,
     signer_image: &str,
+    signer_command: &str,
     signer_ca_key: &str,
     proxy_ca: &str,
     serving_ca: &str,
@@ -841,6 +847,7 @@ spec:
       - name: signer
         image: {signer_image}
         imagePullPolicy: Never
+        command: ["{signer_command}"]
         env:
         - name: POD_NAMESPACE
           valueFrom: {{fieldRef: {{fieldPath: metadata.namespace}}}}
