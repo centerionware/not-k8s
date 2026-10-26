@@ -1,0 +1,43 @@
+phase,stack,component,metric,unit,min,mean,max
+idle,not-k8s,nodeapiserver,cpu_pct_one_core,% of one CPU,0.0,0.5384885372900166,29.83657980119085
+idle,not-k8s,nodecontroller,cpu_pct_one_core,% of one CPU,0.0,0.19951126520378595,8.950973940357255
+idle,not-k8s,nodelet,cpu_pct_one_core,% of one CPU,0.0,0.09308045447500038,1.98910532007939
+idle,not-k8s,nodeproxy,cpu_pct_one_core,% of one CPU,0.0,0.006649537840113665,0.9945137222869154
+idle,not-k8s,nodescheduler,cpu_pct_one_core,% of one CPU,0.0,0.0465684689507574,1.98910532007939
+idle,not-k8s,nodestore,cpu_pct_one_core,% of one CPU,0.0,0.32586675924956254,9.945526600396951
+idle,not-k8s,combined,cpu_pct_one_core,% of one CPU,0.0,1.2101650230092365,52.71129098210384
+idle,not-k8s,nodeapiserver,rss_kib,MiB,135.6171875,136.432195861204,137.078125
+idle,not-k8s,nodecontroller,rss_kib,MiB,47.24609375,48.056451191471574,49.35546875
+idle,not-k8s,nodelet,rss_kib,MiB,21.78515625,21.923677884615383,22.06640625
+idle,not-k8s,nodeproxy,rss_kib,MiB,13.6015625,13.634171195652174,13.8515625
+idle,not-k8s,nodescheduler,rss_kib,MiB,20.2578125,20.54878239966555,20.8828125
+idle,not-k8s,nodestore,rss_kib,MiB,17.14453125,17.37948108277592,17.76953125
+idle,not-k8s,combined,rss_kib,MiB,256.3515625,257.97475961538464,260.7421875
+idle,not-k8s,nodeapiserver,pss_kib,MiB,125.1533203125,125.88929569920569,126.3544921875
+idle,not-k8s,nodecontroller,pss_kib,MiB,35.2509765625,35.73720670464047,37.001953125
+idle,not-k8s,nodelet,pss_kib,MiB,9.8115234375,9.84686585493311,10.064453125
+idle,not-k8s,nodeproxy,pss_kib,MiB,4.4892578125,4.502207880434782,4.5556640625
+idle,not-k8s,nodescheduler,pss_kib,MiB,8.8828125,8.905952785326088,9.080078125
+idle,not-k8s,nodestore,pss_kib,MiB,9.0703125,9.181986831103679,9.38671875
+idle,not-k8s,combined,pss_kib,MiB,193.1728515625,194.0635157556438,195.9033203125
+load,not-k8s,nodeapiserver,cpu_pct_one_core,% of one CPU,5.710111139043408,15.396021588255335,64.42812455970345
+load,not-k8s,nodecontroller,cpu_pct_one_core,% of one CPU,0.0,1.6095514377932347,9.761837054500521
+load,not-k8s,nodelet,cpu_pct_one_core,% of one CPU,0.0,1.6108842057198547,5.938127655144554
+load,not-k8s,nodeproxy,cpu_pct_one_core,% of one CPU,0.0,0.019985256294690137,0.9842221609096243
+load,not-k8s,nodescheduler,cpu_pct_one_core,% of one CPU,0.0,0.39463775930579925,3.773645522511854
+load,not-k8s,nodestore,cpu_pct_one_core,% of one CPU,1.9033703796811363,5.14012595757808,20.499857814451097
+load,not-k8s,combined,cpu_pct_one_core,% of one CPU,7.613481518724544,24.171206204946994,103.47547277770553
+load,not-k8s,nodeapiserver,rss_kib,MiB,136.9609375,146.78954081632654,158.90625
+load,not-k8s,nodecontroller,rss_kib,MiB,49.4765625,53.44774394132653,55.4765625
+load,not-k8s,nodelet,rss_kib,MiB,22.015625,23.41412893282313,24.3984375
+load,not-k8s,nodeproxy,rss_kib,MiB,13.8515625,13.8515625,13.8515625
+load,not-k8s,nodescheduler,rss_kib,MiB,20.8828125,21.346420599489797,21.609375
+load,not-k8s,nodestore,rss_kib,MiB,17.76953125,19.03522268282313,19.33203125
+load,not-k8s,combined,rss_kib,MiB,260.95703125,277.8846194727891,292.5078125
+load,not-k8s,nodeapiserver,pss_kib,MiB,126.38671875,136.18971885629253,148.2783203125
+load,not-k8s,nodecontroller,pss_kib,MiB,36.9677734375,41.03859082695578,43.1279296875
+load,not-k8s,nodelet,pss_kib,MiB,9.8623046875,11.190628985969388,12.2529296875
+load,not-k8s,nodeproxy,pss_kib,MiB,4.5556640625,4.587883981717687,4.5986328125
+load,not-k8s,nodescheduler,pss_kib,MiB,9.0771484375,9.41955649447279,9.6630859375
+load,not-k8s,nodestore,pss_kib,MiB,9.390625,10.676658163265307,10.8310546875
+load,not-k8s,combined,pss_kib,MiB,196.248046875,213.10303730867346,227.955078125

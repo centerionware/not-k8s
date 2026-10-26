@@ -1,0 +1,19 @@
+{
+  "namespace": "nk-profile-4655-18e2235f9d1d5c7b",
+  "backend": "notk8s",
+  "components": [
+    "nodestore",
+    "nodeapiserver",
+    "nodescheduler",
+    "nodecontroller",
+    "nodelet",
+    "nodeproxy"
+  ],
+  "whole_stack": false,
+  "metrics_only": false,
+  "preset": "heavy",
+  "replicas": 10,
+  "api_workers": 4,
+  "seconds_per_phase": 300,
+  "http_successes": 5856
+}
