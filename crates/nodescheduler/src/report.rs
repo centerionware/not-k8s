@@ -52,8 +52,8 @@
 //! will report again.
 
 use crate::cache::PodInfo;
-use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, Patch, PatchParams};
+use k8s_openapi::api::core::v1::{Event, Pod};
+use kube::api::{Api, Patch, PatchParams, PostParams};
 
 /// Field manager for the status patch, so `kubectl get pod -o yaml
 /// --show-managed-fields` names us rather than an anonymous writer.
@@ -156,21 +156,24 @@ async fn emit_event(
     scheduler_name: &str,
 ) -> anyhow::Result<()> {
     let now = k8s_openapi::jiff::Timestamp::now().to_string();
+    // Keep the legacy core/v1 Event endpoint for kubectl describe, while
+    // using the typed helper for namespaced routing and Event serialization.
+    let event = failed_scheduling_event(pod, reason, scheduler_name, &now)?;
+    let events: Api<Event> = Api::namespaced(client.clone(), &pod.namespace);
+    events.create(&PostParams::default(), &event).await?;
+    Ok(())
+}
 
-    // core/v1 Events rather than events.k8s.io/v1: this is what `kubectl
-    // describe pod` renders, which is the entire audience for this.
-    //
-    // POSTed raw for the same reason DefaultBinder is — it keeps this
-    // independent of which helpers the client generates, and matches the
-    // house pattern in nodelet's container_support.rs.
-    let event = serde_json::json!({
+fn failed_scheduling_event(
+    pod: &PodInfo,
+    reason: &str,
+    scheduler_name: &str,
+    now: &str,
+) -> Result<Event, serde_json::Error> {
+    serde_json::from_value(serde_json::json!({
         "apiVersion": "v1",
         "kind": "Event",
         "metadata": {
-            // generateName, so repeated failures do not collide on a fixed
-            // name. Upstream instead updates one event and increments its
-            // count; this is the simpler shape and reads the same in
-            // `kubectl describe`.
             "generateName": format!("{}.", pod.name),
             "namespace": pod.namespace,
         },
@@ -179,8 +182,6 @@ async fn emit_event(
             "kind": "Pod",
             "name": pod.name,
             "namespace": pod.namespace,
-            // The uid matters: without it an event outlives the pod it
-            // describes and reattaches to a later pod of the same name.
             "uid": pod.uid,
         },
         "reason": "FailedScheduling",
@@ -190,16 +191,7 @@ async fn emit_event(
         "firstTimestamp": now,
         "lastTimestamp": now,
         "count": 1,
-    });
-
-    let req = http::Request::builder()
-        .method("POST")
-        .uri(format!("/api/v1/namespaces/{}/events", pod.namespace))
-        .header("Content-Type", "application/json")
-        .body(serde_json::to_vec(&event)?)?;
-
-    client.request::<serde_json::Value>(req).await?;
-    Ok(())
+    }))
 }
 
 #[cfg(test)]
@@ -245,13 +237,26 @@ mod tests {
         // Without it the event outlives the pod and reattaches to a later pod
         // of the same name — so `kubectl describe` shows a fresh pod failing
         // for a reason that belonged to its predecessor.
-        let pod = sample_pod();
-        let involved = serde_json::json!({
-            "kind": "Pod",
-            "name": pod.name,
-            "namespace": pod.namespace,
-            "uid": pod.uid,
-        });
-        assert_eq!(involved["uid"], "abc-123");
+        let event = failed_scheduling_event(
+            &sample_pod(),
+            "0/1 nodes are available: 1 Insufficient cpu",
+            "default-scheduler",
+            "2026-10-26T00:00:00Z",
+        )
+        .expect("failed scheduling event payload is valid");
+        assert_eq!(event.involved_object.uid.as_deref(), Some("abc-123"));
+        assert_eq!(event.reason.as_deref(), Some("FailedScheduling"));
+        assert_eq!(event.type_.as_deref(), Some("Warning"));
+        assert_eq!(
+            event.message.as_deref(),
+            Some("0/1 nodes are available: 1 Insufficient cpu")
+        );
+        assert_eq!(
+            event
+                .source
+                .as_ref()
+                .and_then(|source| source.component.as_deref()),
+            Some("default-scheduler")
+        );
     }
 }

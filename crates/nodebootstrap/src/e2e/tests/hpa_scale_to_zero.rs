@@ -395,6 +395,7 @@ struct TestWork {
     activator_image: String,
     signer_image: String,
     bootstrap_image: String,
+    published_image: bool,
 }
 
 impl TestWork {
@@ -405,29 +406,60 @@ impl TestWork {
             context.namespace
         ));
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        let published_image = std::env::var("NODEBOOTSTRAP_E2E_NODEACTIVATOR_IMAGE")
+            .ok()
+            .filter(|image| !image.trim().is_empty());
+        let (activator_image, signer_image, bootstrap_image, use_published_image) =
+            if let Some(image) = published_image {
+                (image.clone(), image.clone(), image, true)
+            } else {
+                (
+                    format!("nodeactivator-e2e:{}", context.namespace),
+                    format!("nodeactivator-cert-signer-e2e:{}", context.namespace),
+                    format!("nodeactivator-bootstrap-e2e:{}", context.namespace),
+                    false,
+                )
+            };
         Ok(Self {
             dir,
-            activator_image: format!("nodeactivator-e2e:{}", context.namespace),
-            signer_image: format!("nodeactivator-cert-signer-e2e:{}", context.namespace),
-            bootstrap_image: format!("nodeactivator-bootstrap-e2e:{}", context.namespace),
+            activator_image,
+            signer_image,
+            bootstrap_image,
+            published_image: use_published_image,
         })
     }
 
     fn install_bootstrap_addon(&self) -> Result<()> {
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let output = Command::new("docker")
-            .current_dir(&repo)
-            .args([
-                "build", "--file", "addons/nodeactivator/e2e-addon.Dockerfile",
-                "--tag", &self.bootstrap_image, ".",
-            ])
-            .output()
-            .context("building the combined bootstrap addon image")?;
-        anyhow::ensure!(output.status.success(), "docker build for bootstrap addon failed: {}", String::from_utf8_lossy(&output.stderr));
-        let archive = self.dir.join("bootstrap-addon.tar");
-        let archive_string = archive.to_string_lossy().into_owned();
-        root_run(&["docker", "save", "--output", &archive_string, &self.bootstrap_image])?;
-        root_run(&["ctr", "-n", "k8s.io", "images", "import", &archive_string])?;
+        if !self.published_image {
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let output = Command::new("docker")
+                .current_dir(&repo)
+                .args([
+                    "build",
+                    "--file",
+                    "addons/nodeactivator/e2e-addon.Dockerfile",
+                    "--tag",
+                    &self.bootstrap_image,
+                    ".",
+                ])
+                .output()
+                .context("building the combined bootstrap addon image")?;
+            anyhow::ensure!(
+                output.status.success(),
+                "docker build for bootstrap addon failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let archive = self.dir.join("bootstrap-addon.tar");
+            let archive_string = archive.to_string_lossy().into_owned();
+            root_run(&[
+                "docker",
+                "save",
+                "--output",
+                &archive_string,
+                &self.bootstrap_image,
+            ])?;
+            root_run(&["ctr", "-n", "k8s.io", "images", "import", &archive_string])?;
+        }
 
         let mut config = crate::config::Config::from_env()?;
         config.nodeactivator_image = Some(self.bootstrap_image.clone());
@@ -459,7 +491,9 @@ impl TestWork {
                     "--timestamps",
                 ])
                 .output()
-                .context("getting prior bootstrap activator logs after addon installation failed")?;
+                .context(
+                    "getting prior bootstrap activator logs after addon installation failed",
+                )?;
             let activator_pods = Command::new("kubectl")
                 .args([
                     "--request-timeout=10s",
@@ -512,65 +546,72 @@ impl TestWork {
     }
 
     fn load_test_images(&self) -> Result<()> {
-        let binary = Path::new("dist-bin/nodeactivator");
-        let signer_binary = Path::new("dist-bin/nodeactivator-cert-signer");
-        anyhow::ensure!(
-            binary.is_file(),
-            "e2e artifact is missing {}",
-            binary.display()
-        );
-        anyhow::ensure!(
-            signer_binary.is_file(),
-            "e2e artifact is missing {}",
-            signer_binary.display()
-        );
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let output = Command::new("docker")
-            .current_dir(&repo)
-            .args([
-                "build",
-                "--file",
-                "addons/nodeactivator/e2e.Dockerfile",
-                "--tag",
-                &self.activator_image,
-                ".",
-            ])
-            .output()
-            .context("building the e2e nodeactivator image")?;
-        anyhow::ensure!(
-            output.status.success(),
-            "docker build failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let output = Command::new("docker")
-            .current_dir(&repo)
-            .args([
-                "build",
-                "--file",
-                "addons/nodeactivator/e2e-cert-signer.Dockerfile",
-                "--tag",
-                &self.signer_image,
-                ".",
-            ])
-            .output()
-            .context("building the e2e nodeactivator certificate signer image")?;
-        anyhow::ensure!(
-            output.status.success(),
-            "docker build failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        if self.published_image {
+            root_run(&["docker", "pull", &self.activator_image])?;
+        } else {
+            let binary = Path::new("dist-bin/nodeactivator");
+            let signer_binary = Path::new("dist-bin/nodeactivator-cert-signer");
+            anyhow::ensure!(
+                binary.is_file(),
+                "e2e artifact is missing {}",
+                binary.display()
+            );
+            anyhow::ensure!(
+                signer_binary.is_file(),
+                "e2e artifact is missing {}",
+                signer_binary.display()
+            );
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let output = Command::new("docker")
+                .current_dir(&repo)
+                .args([
+                    "build",
+                    "--file",
+                    "addons/nodeactivator/e2e.Dockerfile",
+                    "--tag",
+                    &self.activator_image,
+                    ".",
+                ])
+                .output()
+                .context("building the e2e nodeactivator image")?;
+            anyhow::ensure!(
+                output.status.success(),
+                "docker build failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let output = Command::new("docker")
+                .current_dir(&repo)
+                .args([
+                    "build",
+                    "--file",
+                    "addons/nodeactivator/e2e-cert-signer.Dockerfile",
+                    "--tag",
+                    &self.signer_image,
+                    ".",
+                ])
+                .output()
+                .context("building the e2e nodeactivator certificate signer image")?;
+            anyhow::ensure!(
+                output.status.success(),
+                "docker build failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         root_run(&["docker", "pull", BUSYBOX_IMAGE])?;
         let archive = self.dir.join("images.tar");
         let archive_string = archive.to_string_lossy().into_owned();
-        root_run(&[
+        let mut save_args = vec![
             "docker",
             "save",
             "--output",
-            &archive_string,
+            archive_string.as_str(),
             BUSYBOX_IMAGE,
-            &self.activator_image,
-            &self.signer_image,
-        ])?;
+        ];
+        save_args.push(&self.activator_image);
+        if self.signer_image != self.activator_image {
+            save_args.push(&self.signer_image);
+        }
+        root_run(&save_args)?;
         root_run(&["ctr", "-n", "k8s.io", "images", "import", &archive_string])?;
         Ok(())
     }
@@ -622,6 +663,11 @@ impl TestWork {
             &context.namespace,
             &self.activator_image,
             &self.signer_image,
+            if self.published_image {
+                "/usr/local/bin/nodeactivator-cert-signer"
+            } else {
+                "/nodeactivator-cert-signer"
+            },
             &base64::engine::general_purpose::STANDARD.encode(serving_ca_key),
             &base64::engine::general_purpose::STANDARD.encode(proxy_ca),
             &base64::engine::general_purpose::STANDARD.encode(serving_ca),
@@ -713,6 +759,7 @@ fn fixture_yaml(
     namespace: &str,
     image: &str,
     signer_image: &str,
+    signer_command: &str,
     signer_ca_key: &str,
     proxy_ca: &str,
     serving_ca: &str,
@@ -800,6 +847,7 @@ spec:
       - name: signer
         image: {signer_image}
         imagePullPolicy: Never
+        command: ["{signer_command}"]
         env:
         - name: POD_NAMESPACE
           valueFrom: {{fieldRef: {{fieldPath: metadata.namespace}}}}
