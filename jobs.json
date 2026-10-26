@@ -1,0 +1,40 @@
+{
+  "publish-release": {
+    "result": "failure",
+    "outputs": {
+      "published": "true",
+      "tag": "v0.9.0"
+    }
+  },
+  "prepare-validation": {
+    "result": "success",
+    "outputs": {
+      "matrix": "{\"include\":[{\"shard\":1,\"needs_drivers\":true},{\"shard\":2,\"needs_drivers\":true},{\"shard\":3,\"needs_drivers\":false},{\"shard\":4,\"needs_drivers\":false},{\"shard\":5,\"needs_drivers\":false}]}",
+      "branch": "e2e-prof-v0.9.0"
+    }
+  },
+  "release-e2e": {
+    "result": "failure",
+    "outputs": {}
+  },
+  "release-flamegraphs": {
+    "result": "failure",
+    "outputs": {}
+  },
+  "cleanup-profile-artifact": {
+    "result": "success",
+    "outputs": {}
+  },
+  "release-comparison": {
+    "result": "failure",
+    "outputs": {}
+  },
+  "release-comparison-publish": {
+    "result": "success",
+    "outputs": {}
+  },
+  "release-comparison-report": {
+    "result": "skipped",
+    "outputs": {}
+  }
+}
