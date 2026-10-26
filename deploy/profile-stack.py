@@ -159,8 +159,8 @@ class Workload:
                     f"deployment/{name} exceeded its progress deadline: "
                     f"{json.dumps(latest, sort_keys=True)}")
             remaining = deadline - time.monotonic()
-            if (observed_generation >= generation and updated >= desired
-                    and total <= updated and available >= updated and remaining >= 0):
+            if (observed_generation >= generation and total == desired
+                    and updated == desired and available >= desired and remaining >= 0):
                 return
             if remaining <= 0:
                 raise RuntimeError(
