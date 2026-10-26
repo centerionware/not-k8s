@@ -31,6 +31,9 @@ inputs:
   metrics_server:
     description: 'metrics_server'
     default: 'false'
+  nodeactivator_image:
+    description: 'published nodeactivator image for release validation'
+    default: ''
   results_branch:
     description: 'results_branch'
     default: 'e2e-results'
@@ -147,6 +150,7 @@ runs:
         SHARD: ${{ inputs.shard }}
         NETWORK: ${{ inputs.network }}
         NODEBOOTSTRAP_E2E_REQUIRE_SCALE_TO_ZERO: 'true'
+        NODEBOOTSTRAP_E2E_NODEACTIVATOR_IMAGE: ${{ inputs.nodeactivator_image }}
         NODEBOOTSTRAP_SERVICE_CIDR: ${{ inputs.cidr || '10.43.0.0/16' }}
         NODEBOOTSTRAP_SERVICE_CIDR6: ${{ inputs.cidr6 }}
       shell: bash

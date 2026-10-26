@@ -622,8 +622,9 @@ jobs:
     # Publishes shard results directly; no build or source_ref execution.
     permissions:
       contents: write
-    needs: [publish-release, prepare-validation]
-    if: ${{ always() && needs.prepare-validation.result == 'success' }}
+      packages: read
+    needs: [release-identity, publish-release, publish-activator, prepare-validation]
+    if: ${{ always() && needs.prepare-validation.result == 'success' && (needs.publish-activator.result == 'success' || needs.publish-activator.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -640,12 +641,15 @@ jobs:
           persist-credentials: false
       - name: Get release runtime
         run: bash deploy/download-release-runtime.sh "$RELEASE_TAG" release "$GITHUB_WORKSPACE/dist-bin"
+      - name: Login to GHCR
+        run: printf '%s' "$GH_TOKEN" | sudo docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - name: Run e2e shard
         uses: ./.github/actions/e2e-run
         with:
           shard: ${{ matrix.shard }}
           needs_drivers: ${{ matrix.needs_drivers }}
           apiserver: nodeapiserver
+          nodeactivator_image: ghcr.io/centerionware/not-k8s/nodeactivator:${{ needs.release-identity.outputs.version }}
           results_branch: ${{ needs.prepare-validation.outputs.branch }}
           results_prefix: e2e/${{ github.run_id }}-${{ github.run_attempt }}
 
