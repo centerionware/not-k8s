@@ -1,0 +1,52 @@
+{
+  "nodestore@8914": {
+    "pid": 8914,
+    "exe": "/usr/local/bin/etcd",
+    "start_ticks": "11741"
+  },
+  "nodeapiserver@8918": {
+    "pid": 8918,
+    "exe": "/usr/local/bin/kube-apiserver",
+    "start_ticks": "11741"
+  },
+  "nodescheduler@8909": {
+    "pid": 8909,
+    "exe": "/usr/local/bin/kube-scheduler",
+    "start_ticks": "11740"
+  },
+  "nodecontroller@8902": {
+    "pid": 8902,
+    "exe": "/usr/local/bin/kube-controller-manager",
+    "start_ticks": "11740"
+  },
+  "nodelet@9057": {
+    "pid": 9057,
+    "exe": "/usr/bin/kubelet",
+    "start_ticks": "12162"
+  },
+  "nodeproxy@9233": {
+    "pid": 9233,
+    "exe": "/usr/local/bin/kube-proxy",
+    "start_ticks": "12916"
+  },
+  "containerd@8253": {
+    "pid": 8253,
+    "exe": "/usr/bin/containerd",
+    "start_ticks": "10554"
+  },
+  "flanneld@9558": {
+    "pid": 9558,
+    "exe": "/opt/bin/flanneld",
+    "start_ticks": "13281"
+  },
+  "coredns@9873": {
+    "pid": 9873,
+    "exe": "/coredns",
+    "start_ticks": "14592"
+  },
+  "coredns@10001": {
+    "pid": 10001,
+    "exe": "/coredns",
+    "start_ticks": "14790"
+  }
+}
