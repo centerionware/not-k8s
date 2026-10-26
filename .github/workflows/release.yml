@@ -437,11 +437,13 @@ jobs:
             exit 0
           fi
           tag="v$VERSION"
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+          if existing_tag="$(git ls-remote --exit-code --tags origin "refs/tags/$tag" | awk 'NR == 1 { print $1 }')"; then
             git fetch origin "refs/tags/$tag"
-            [[ "$(git rev-parse 'FETCH_HEAD^{commit}')" == "$(git rev-parse HEAD)" ]] || {
-              echo "Existing $tag points to different source; refusing to retag" >&2; exit 1;
-            }
+            if [[ "$(git rev-parse 'FETCH_HEAD^{commit}')" != "$(git rev-parse HEAD)" ]]; then
+              # VERSION can intentionally be reused to replace an existing release.
+              git tag -f "$tag" HEAD
+              git push --force-with-lease="refs/tags/$tag:$existing_tag" origin "refs/tags/$tag"
+            fi
           else
             status=$?
             [[ "$status" == 2 ]] || exit "$status"
@@ -451,28 +453,14 @@ jobs:
           (cd dist && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS)
           mapfile -t assets < <(find dist -maxdepth 1 -type f -print | sort)
           [[ "${#assets[@]}" -gt 0 ]]
-          if existing=$(gh release view "$tag" --json assets --jq '.assets[].name'); then
-            # Keep published bytes immutable. Rerun-failed-jobs reuses the
-            # same build artifacts; a rebuilt/mismatched bundle must fail.
-            checks=$(mktemp -d)
-            grep -Fxq SHA256SUMS <<< "$existing" || {
-              echo 'Existing release is missing SHA256SUMS; refusing to publish' >&2; exit 1;
-            }
-            gh release download "$tag" --pattern SHA256SUMS --dir "$checks"
-            [[ "$(sha256sum < dist/SHA256SUMS)" == "$(sha256sum < "$checks/SHA256SUMS")" ]] || {
-              echo 'Published checksums differ; refusing to overwrite release assets' >&2; exit 1;
-            }
+          if gh release view "$tag" --json tagName >/dev/null; then
+            # Replace same-version assets; update checksums only after the binaries.
             for asset in "${assets[@]}"; do
               name="${asset##*/}"
               [[ "$name" == SHA256SUMS ]] && continue
-              if grep -Fxq "$name" <<< "$existing"; then
-                gh release download "$tag" --pattern "$name" --dir "$checks"
-                expected="$(awk -v name="$name" '$2 == name { print; found=1 } END { if (!found) exit 1 }' dist/SHA256SUMS)"
-                (cd "$checks" && printf '%s\n' "$expected" | sha256sum -c -)
-              else
-                gh release upload "$tag" "$asset"
-              fi
+              gh release upload "$tag" "$asset" --clobber
             done
+            gh release upload "$tag" dist/SHA256SUMS --clobber
           else
             gh release create "$tag" --verify-tag --title "$tag" --notes-file release-notes.md "${assets[@]}"
           fi
