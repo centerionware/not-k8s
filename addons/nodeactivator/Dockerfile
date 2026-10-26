@@ -1,7 +1,7 @@
 FROM rust:bookworm AS build
 WORKDIR /src
 COPY . .
-RUN cargo build --release --locked -p nodeactivator
+RUN cargo build --release -p nodeactivator
 
 FROM debian:bookworm-slim
 RUN apt-get update \

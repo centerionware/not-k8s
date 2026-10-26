@@ -507,7 +507,10 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.release-identity.outputs.tag }}
+          # A manual image publish for an existing release uses the workflow
+          # ref's Docker build files and source; ordinary releases use the
+          # tag just created from that same commit.
+          ref: ${{ inputs.reuse_release_tag != '' && inputs.publish_activator_image && github.sha || needs.release-identity.outputs.tag }}
           persist-credentials: false
       - name: Login to GHCR
         run: |
