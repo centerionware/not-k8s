@@ -2,8 +2,8 @@
   "publish-release": {
     "result": "success",
     "outputs": {
-      "tag": "v0.9.0",
-      "published": "true"
+      "published": "true",
+      "tag": "v0.9.0"
     }
   },
   "prepare-validation": {
@@ -14,7 +14,7 @@
     }
   },
   "release-e2e": {
-    "result": "success",
+    "result": "failure",
     "outputs": {}
   },
   "release-flamegraphs": {
@@ -26,7 +26,7 @@
     "outputs": {}
   },
   "release-comparison": {
-    "result": "failure",
+    "result": "success",
     "outputs": {}
   },
   "release-comparison-publish": {
@@ -34,7 +34,7 @@
     "outputs": {}
   },
   "release-comparison-report": {
-    "result": "skipped",
+    "result": "success",
     "outputs": {}
   }
 }
