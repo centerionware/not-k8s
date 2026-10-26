@@ -51,10 +51,11 @@ runs:
       run: |
         set -euo pipefail
         sudo apt-get update -qq
-        sudo apt-get install -y -qq linux-tools-generic perl
+        sudo apt-get install -y -qq linux-tools-azure linux-tools-common perl
         python3 -m pip install --quiet --break-system-packages matplotlib numpy
-        # Ubuntu's versioned kernel directory contains symlinks to the real tool.
-        perf_bin=$(find -L /usr/lib/linux-tools -type f -name perf | sort -V | tail -1)
+        # Use Ubuntu's perf wrapper so it selects the tool matching the
+        # Azure kernel running on GitHub-hosted Ubuntu runners.
+        perf_bin=$(command -v perf || true)
         [[ -n "$perf_bin" && -x "$perf_bin" ]] || { echo 'No usable perf executable installed' >&2; exit 1; }
         echo "PERF_BIN=$perf_bin" >> "$GITHUB_ENV"
         echo "$(dirname "$perf_bin")" >> "$GITHUB_PATH"
@@ -117,7 +118,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        sudo -E env "PATH=$PATH" NOTK8S_COMBINED_PREBUILT="$PROFILE_BINARY" NOTK8S_BUILD_LAYOUT=combined \
+        sudo -E env "PATH=$PATH" "KUBECONFIG=$KUBECONFIG" NOTK8S_COMBINED_PREBUILT="$PROFILE_BINARY" NOTK8S_BUILD_LAYOUT=combined \
           "$PERF_BIN" record -e cpu-clock -F 49 --call-graph fp -o "$GITHUB_WORKSPACE/profile-data/bootstrap/perf.data" -- \
           "$PROFILE_BINARY" nodebootstrap --layout=combined --apiserver=nodeapiserver --datastore=nodestore --scheduler=nodescheduler --controller-manager=nodecontroller --proxy=nodeproxy
         sudo chmod 644 "$KUBECONFIG"
@@ -130,7 +131,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        sudo -E env "PATH=$PATH" PERF_BIN="$PERF_BIN" python3 deploy/profile-stack.py --workload "$PROFILE_WORKLOAD" --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data"
+        sudo -E env "PATH=$PATH" "KUBECONFIG=$KUBECONFIG" PERF_BIN="$PERF_BIN" python3 deploy/profile-stack.py --workload "$PROFILE_WORKLOAD" --seconds "$PROFILE_SECONDS" --output "$GITHUB_WORKSPACE/profile-data"
     - name: Render diagnostics
       id: render
       if: ${{ always() && (steps.build.outcome == 'success' || steps.artifact.outcome == 'success') }}
