@@ -2,8 +2,8 @@
   "publish-release": {
     "result": "success",
     "outputs": {
-      "published": "true",
-      "tag": "v0.9.0"
+      "tag": "v0.9.0",
+      "published": "true"
     }
   },
   "prepare-validation": {
@@ -18,7 +18,7 @@
     "outputs": {}
   },
   "release-flamegraphs": {
-    "result": "failure",
+    "result": "success",
     "outputs": {}
   },
   "cleanup-profile-artifact": {
@@ -26,7 +26,7 @@
     "outputs": {}
   },
   "release-comparison": {
-    "result": "success",
+    "result": "failure",
     "outputs": {}
   },
   "release-comparison-publish": {
@@ -34,7 +34,7 @@
     "outputs": {}
   },
   "release-comparison-report": {
-    "result": "success",
+    "result": "skipped",
     "outputs": {}
   }
 }
