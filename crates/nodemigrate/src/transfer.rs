@@ -4137,7 +4137,9 @@ fn backup_cni_paths(directory: &Path, paths: &[PathBuf]) -> Result<Vec<CniPathBa
 
 fn run_cp_following_symlinks(source: &Path, destination: &Path) -> Result<()> {
     let output = Command::new("cp")
-        .args(["-aL", "--"])
+        // Keep the recovery snapshot copy-on-write when this filesystem
+        // supports reflinks; GNU cp falls back to a regular copy otherwise.
+        .args(["--reflink=auto", "-aL", "--"])
         .arg(source)
         .arg(destination)
         .output()
@@ -4467,7 +4469,9 @@ fn safe_backup_name(value: &str) -> String {
 
 fn run_cp(source: &Path, destination: &Path) -> Result<()> {
     let output = Command::new("cp")
-        .args(["-a", "--"])
+        // Host-path snapshots can be large. Share extents where supported to
+        // avoid requiring a second full copy during either migration direction.
+        .args(["--reflink=auto", "-a", "--"])
         .arg(source)
         .arg(destination)
         .output()
